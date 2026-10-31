@@ -1,6 +1,7 @@
 use crate::{
     AppResult,
     config::Config,
+    dns::{self, DnsOutcome, DnsStatus, QueryPlan},
     icmp::{EchoOutcome, EchoProbe, EchoStatus, EchoTarget},
     statistics::{Summary, summarize},
 };
@@ -20,6 +21,8 @@ pub struct Endpoint {
     pub address: String,
     #[serde(default)]
     pub protocol: ProbeProtocol,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnsQuery: Option<QueryPlan>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -28,6 +31,7 @@ pub enum ProbeProtocol {
     #[default]
     TcpConnect,
     IcmpEcho,
+    DnsLookup,
 }
 
 impl ProbeProtocol {
@@ -35,6 +39,7 @@ impl ProbeProtocol {
         match self {
             Self::TcpConnect => "tcpConnect",
             Self::IcmpEcho => "icmpEcho",
+            Self::DnsLookup => "dnsLookup",
         }
     }
 }
@@ -43,6 +48,7 @@ impl ProbeProtocol {
 enum ParsedTarget {
     Tcp(SocketAddr),
     Echo(EchoTarget),
+    Dns(SocketAddr),
 }
 
 impl Endpoint {
@@ -56,6 +62,7 @@ impl Endpoint {
                 Ok(ParsedTarget::Tcp(address))
             }
             ProbeProtocol::IcmpEcho => Ok(ParsedTarget::Echo(EchoTarget::parse(&self.address).map_err(|error| format!("ICMP targets require a numeric IP without a port; link-local IPv6 requires %scopeId: {error}"))?)),
+            ProbeProtocol::DnsLookup => Ok(ParsedTarget::Dns(dns::parseResolver(&self.address)?)),
         }
     }
 }
@@ -70,6 +77,8 @@ pub struct Sample {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub echo: Option<EchoOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<DnsOutcome>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -79,6 +88,22 @@ pub struct EndpointResult {
     pub summary: Summary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub echoCounts: Option<EchoCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnsCounts: Option<DnsCounts>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsCounts {
+    pub resolved: usize,
+    pub noData: usize,
+    pub nxDomain: usize,
+    pub dnsErrors: usize,
+    pub timeouts: usize,
+    pub invalidResponses: usize,
+    pub osErrors: usize,
+    pub tcpFallbacks: usize,
+    pub addressSetChanges: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -119,8 +144,27 @@ pub fn validateEndpoints(endpoints: &[Endpoint]) -> AppResult<()> {
             return Err("Endpoint identifier or address is invalid".into());
         }
         let target = endpoint.target()?;
+        if endpoint.protocol == ProbeProtocol::DnsLookup {
+            let query = endpoint
+                .dnsQuery
+                .as_ref()
+                .ok_or("DNS benchmarks require a query name and record type")?
+                .normalized()?;
+            let firstQuery = endpoints[0]
+                .dnsQuery
+                .as_ref()
+                .ok_or("DNS benchmarks require a query name and record type")?
+                .normalized()?;
+            if query != firstQuery {
+                return Err(
+                    "Compare DNS resolvers with the same query name and record type".into(),
+                );
+            }
+        } else if endpoint.dnsQuery.is_some() {
+            return Err("DNS query options are only valid for a DNS benchmark".into());
+        }
         if endpoint.protocol != endpoints[0].protocol {
-            return Err("A baseline cohort must use one protocol; run separate matched TCP and ICMP baselines".into());
+            return Err("A baseline cohort must use one protocol; run separate matched TCP, ICMP, and DNS baselines".into());
         }
         for previous in &endpoints[..index] {
             if previous.id == endpoint.id || previous.target()? == target {
@@ -160,14 +204,14 @@ pub fn runBenchmark(
             if timeout.as_millis() == 0 {
                 break 'measurements;
             }
-            let (connectMs, error, echo) = match target {
+            let (connectMs, error, echo, dns) = match target {
                 ParsedTarget::Tcp(address) => match TcpStream::connect_timeout(address, timeout) {
                     Ok(stream) => {
                         let duration = start.elapsed().as_secs_f64() * 1000.0;
                         drop(stream);
-                        (Some(duration), None, None)
+                        (Some(duration), None, None, None)
                     }
-                    Err(error) => (None, Some(error.to_string()), None),
+                    Err(error) => (None, Some(error.to_string()), None, None),
                 },
                 ParsedTarget::Echo(target) => {
                     let result = echoProbe.measure(target, timeout, cancelled)?;
@@ -182,7 +226,25 @@ pub fn runBenchmark(
                             result.status, result.nativeCode
                         ))
                     };
-                    (None, error, Some(result))
+                    (None, error, Some(result), None)
+                }
+                ParsedTarget::Dns(resolver) => {
+                    let query = endpoint.dnsQuery.as_ref().expect("validated DNS query");
+                    let result = dns::measure(*resolver, query, timeout, cancelled)?;
+                    if result.status == DnsStatus::Cancelled {
+                        break 'measurements;
+                    }
+                    let error = if result.status == DnsStatus::Resolved {
+                        None
+                    } else {
+                        Some(result.error.clone().unwrap_or_else(|| {
+                            format!(
+                                "DNS {:?}; response code {:?}",
+                                result.status, result.responseCode
+                            )
+                        }))
+                    };
+                    (None, error, None, Some(result))
                 }
             };
             let sample = Sample {
@@ -192,6 +254,7 @@ pub fn runBenchmark(
                 connectMs,
                 error,
                 echo,
+                dns,
             };
             samples.push(sample);
             onSample(
@@ -241,9 +304,13 @@ fn summarizeEndpoint(endpoint: Endpoint, samples: &[Sample]) -> EndpointResult {
     let values: Vec<_> = samples
         .iter()
         .filter(|sample| sample.endpointId == endpoint.id)
-        .map(|sample| match &sample.echo {
-            Some(echo) => echo.rttMs.map(f64::from),
-            None => sample.connectMs,
+        .map(|sample| match endpoint.protocol {
+            ProbeProtocol::IcmpEcho => sample
+                .echo
+                .as_ref()
+                .and_then(|echo| echo.rttMs.map(f64::from)),
+            ProbeProtocol::DnsLookup => sample.dns.as_ref().and_then(|dns| dns.lookupMs),
+            ProbeProtocol::TcpConnect => sample.connectMs,
         })
         .collect();
     let mut summary = summarize(&values);
@@ -275,10 +342,54 @@ fn summarizeEndpoint(endpoint: Endpoint, samples: &[Sample]) -> EndpointResult {
     } else {
         None
     };
+    let dnsCounts = if endpoint.protocol == ProbeProtocol::DnsLookup {
+        let mut counts = DnsCounts::default();
+        let mut previousAddresses = None;
+        for dns in samples
+            .iter()
+            .filter(|sample| sample.endpointId == endpoint.id)
+            .filter_map(|sample| sample.dns.as_ref())
+        {
+            match dns.status {
+                DnsStatus::Resolved => counts.resolved += 1,
+                DnsStatus::NoData => counts.noData += 1,
+                DnsStatus::NxDomain => counts.nxDomain += 1,
+                DnsStatus::DnsError => counts.dnsErrors += 1,
+                DnsStatus::TimedOut => counts.timeouts += 1,
+                DnsStatus::InvalidResponse => counts.invalidResponses += 1,
+                DnsStatus::OsError => counts.osErrors += 1,
+                DnsStatus::Cancelled => {}
+            }
+            if dns.transport == dns::Transport::TcpFallback {
+                counts.tcpFallbacks += 1;
+            }
+            if dns.status == DnsStatus::Resolved {
+                let addresses: std::collections::BTreeSet<_> =
+                    dns.answers.iter().map(|answer| answer.address).collect();
+                if previousAddresses
+                    .as_ref()
+                    .is_some_and(|previous| *previous != addresses)
+                {
+                    counts.addressSetChanges += 1;
+                }
+                previousAddresses = Some(addresses);
+            }
+        }
+        summary.connectionFailurePercent = None;
+        summary.dnsFailurePercent = if summary.attempted > 0 {
+            Some((summary.attempted - counts.resolved) as f64 * 100.0 / summary.attempted as f64)
+        } else {
+            None
+        };
+        Some(counts)
+    } else {
+        None
+    };
     EndpointResult {
         endpoint,
         summary,
         echoCounts,
+        dnsCounts,
     }
 }
 #[cfg(test)]
@@ -303,11 +414,13 @@ mod tests {
                 id: "open".into(),
                 address: listener.local_addr().unwrap().to_string(),
                 protocol: ProbeProtocol::TcpConnect,
+                dnsQuery: None,
             },
             Endpoint {
                 id: "closed".into(),
                 address: closedAddress.to_string(),
                 protocol: ProbeProtocol::TcpConnect,
+                dnsQuery: None,
             },
         ];
         let run = runBenchmark(config, endpoints, &AtomicBool::new(false), |_, _, _| {}).unwrap();
@@ -324,11 +437,13 @@ mod tests {
                 id: "first".into(),
                 address: "127.0.0.1:1".into(),
                 protocol: ProbeProtocol::TcpConnect,
+                dnsQuery: None,
             },
             Endpoint {
                 id: "second".into(),
                 address: "127.0.0.1:2".into(),
                 protocol: ProbeProtocol::TcpConnect,
+                dnsQuery: None,
             },
         ];
         let run = runBenchmark(
@@ -348,6 +463,7 @@ mod tests {
             id: "same".into(),
             address: "127.0.0.1:443".into(),
             protocol: ProbeProtocol::TcpConnect,
+            dnsQuery: None,
         };
         assert!(validateEndpoints(&[endpoint.clone(), endpoint]).is_err());
         assert!(validateEndpoints(&[]).is_err());
@@ -358,6 +474,7 @@ mod tests {
             id: id.into(),
             address: address.into(),
             protocol: ProbeProtocol::IcmpEcho,
+            dnsQuery: None,
         }
     }
 
@@ -374,6 +491,7 @@ mod tests {
             id: "tcp".into(),
             address: "127.0.0.1:443".into(),
             protocol: ProbeProtocol::TcpConnect,
+            dnsQuery: None,
         };
         assert!(validateEndpoints(&[tcp, echoEndpoint("echo", "127.0.0.1")]).is_err());
         for address in ["1.1.1.1:53", "127.0.0.1%0", "fe80::1", "::ffff:127.0.0.1"] {
@@ -406,6 +524,7 @@ mod tests {
             timestamp: Utc::now().to_rfc3339(),
             connectMs: None,
             error: None,
+            dns: None,
             echo: Some(EchoOutcome {
                 status,
                 rttMs,

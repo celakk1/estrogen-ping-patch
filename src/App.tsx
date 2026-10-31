@@ -8,6 +8,7 @@ import type {
   BackupSummary,
   BenchmarkRun,
   Config,
+  DnsQuery,
   Inventory,
   Profile,
   ProbeProtocol,
@@ -16,7 +17,16 @@ import type {
   ServiceReport,
 } from './types';
 import { downloadBackup, downloadReport } from './report';
-import { failurePercent, formatProbeMs, protocolNotes, sampleLatency } from './measurement';
+import {
+  dnsAnswerText,
+  dnsCountsText,
+  failureNames,
+  failurePercent,
+  formatProbeMs,
+  protocolNames,
+  protocolNotes,
+  sampleLatency,
+} from './measurement';
 
 type View = 'overview' | 'inventory' | 'history' | 'backups' | 'policy';
 const profiles: Profile[] = ['latency', 'balanced', 'download'];
@@ -35,9 +45,11 @@ function LatencyChart({ samples, protocol }: { samples: Sample[]; protocol: Prob
         viewBox="0 0 900 180"
         role="img"
         aria-label={
-          protocol === 'icmpEcho'
-            ? 'Measured ICMP echo round-trip times'
-            : 'Measured TCP connection establishment times'
+          protocol === 'dnsLookup'
+            ? 'Measured successful DNS lookup times'
+            : protocol === 'icmpEcho'
+              ? 'Measured ICMP echo round-trip times'
+              : 'Measured TCP connection establishment times'
         }
       >
         {[30, 90, 150].map((y) => (
@@ -116,7 +128,9 @@ export default function App() {
   const [targets, setTargets] = useState<Record<ProbeProtocol, [string, string]>>({
     tcpConnect: ['1.1.1.1:53', '8.8.8.8:53'],
     icmpEcho: ['1.1.1.1', '8.8.8.8'],
+    dnsLookup: ['1.1.1.1:53', '8.8.8.8:53'],
   });
+  const [dnsQuery, setDnsQuery] = useState<DnsQuery>({ name: 'example.com', recordType: 'A' });
   const [firstAddress, secondAddress] = targets[protocol];
   function setAddress(index: 0 | 1, address: string) {
     setTargets((previous) => {
@@ -249,6 +263,7 @@ export default function App() {
                 : 'First destination',
             address: firstAddress,
             protocol,
+            ...(protocol === 'dnsLookup' ? { dnsQuery } : {}),
           },
           {
             id:
@@ -257,6 +272,7 @@ export default function App() {
                 : 'Second destination',
             address: secondAddress,
             protocol,
+            ...(protocol === 'dnsLookup' ? { dnsQuery } : {}),
           },
         ],
       });
@@ -276,6 +292,7 @@ export default function App() {
   const shownSamples = selected?.samples ?? samples;
   const shownProtocol = selected?.protocol ?? protocol;
   const showingEcho = shownProtocol === 'icmpEcho';
+  const showingDns = shownProtocol === 'dnsLookup';
   const completed = progress?.completed ?? 0;
   const percent = progress ? Math.round((completed / progress.total) * 100) : 0;
   const backupPayload = useMemo<BackupPayload | null>(
@@ -384,17 +401,25 @@ export default function App() {
                   </span>
                 </article>
                 <article>
-                  <label>{showingEcho ? 'ICMP ECHO RTT MEDIAN' : 'TCP CONNECT MEDIAN'}</label>
+                  <label>
+                    {showingDns
+                      ? 'DNS LOOKUP MEDIAN'
+                      : showingEcho
+                        ? 'ICMP ECHO RTT MEDIAN'
+                        : 'TCP CONNECT MEDIAN'}
+                  </label>
                   <strong>{formatProbeMs(primary?.medianMs, shownProtocol)}</strong>
                   <span>{selected?.results[0]?.endpoint.id ?? 'Run a baseline to measure'}</span>
                 </article>
                 <article>
-                  <label>{showingEcho ? 'ICMP ECHO TIMEOUTS' : 'CONNECTION FAILURES'}</label>
+                  <label>{failureNames[shownProtocol].toUpperCase()}</label>
                   <strong>{primary ? failurePercent(primary, shownProtocol) : '--'}</strong>
                   <span>
-                    {showingEcho
-                      ? 'Echo attempts; errors reported separately'
-                      : 'TCP attempts, protocol specific'}
+                    {showingDns
+                      ? 'Negative answers and errors included; not packet loss'
+                      : showingEcho
+                        ? 'Echo attempts; errors reported separately'
+                        : 'TCP attempts, protocol specific'}
                   </span>
                 </article>
                 <article>
@@ -406,11 +431,19 @@ export default function App() {
               <section className="panel">
                 <div className="panel-heading">
                   <div>
-                    <h2>{showingEcho ? 'Echo RTT timeline' : 'Connection timeline'}</h2>
+                    <h2>
+                      {showingDns
+                        ? 'DNS lookup timeline'
+                        : showingEcho
+                          ? 'Echo RTT timeline'
+                          : 'Connection timeline'}
+                    </h2>
                     <p>
-                      {showingEcho
-                        ? 'Direct ICMP echo RTT across the selected network endpoints'
-                        : 'TCP establishment time across independent destinations'}
+                      {showingDns
+                        ? 'Validated successful name resolution across selected resolvers'
+                        : showingEcho
+                          ? 'Direct ICMP echo RTT across the selected network endpoints'
+                          : 'TCP establishment time across independent destinations'}
                     </p>
                   </div>
                   <span className="pill">
@@ -438,6 +471,7 @@ export default function App() {
                       >
                         <option value="tcpConnect">TCP connection establishment</option>
                         <option value="icmpEcho">ICMP echo RTT (IPv4 / IPv6)</option>
+                        <option value="dnsLookup">DNS resolution (direct resolver)</option>
                       </select>
                     </label>
                     <label>Optimization profile</label>
@@ -507,11 +541,42 @@ export default function App() {
                         onChange={(event) => setAddress(1, event.target.value)}
                       />
                     </label>
+                    {protocol === 'dnsLookup' && (
+                      <>
+                        <label>
+                          DNS query name
+                          <input
+                            disabled={running}
+                            value={dnsQuery.name}
+                            maxLength={254}
+                            onChange={(event) =>
+                              setDnsQuery({ ...dnsQuery, name: event.target.value })
+                            }
+                          />
+                        </label>
+                        <label>
+                          DNS record type
+                          <select
+                            disabled={running}
+                            value={dnsQuery.recordType}
+                            onChange={(event) =>
+                              setDnsQuery({
+                                ...dnsQuery,
+                                recordType: event.target.value as DnsQuery['recordType'],
+                              })
+                            }
+                          >
+                            <option value="A">A (IPv4 addresses)</option>
+                            <option value="AAAA">AAAA (IPv6 addresses)</option>
+                          </select>
+                        </label>
+                      </>
+                    )}
                     <p className="form-note">
-                      Starting sends {protocol === 'icmpEcho' ? 'ICMP echo requests' : 'TCP probes'}{' '}
-                      to these addresses. Change them only to endpoints you are permitted to test.
-                      Public resolver controls do not represent every internet route or measure DNS
-                      lookup time. ICMP link-local IPv6 requires a numeric interface scope ID.
+                      {protocol === 'dnsLookup'
+                        ? 'Starting sends the query name to both selected resolvers over UDP, with TCP fallback if truncated. Windows DNS settings stay unchanged. Choose a public name for public resolvers; private names may expose internal information or produce different split-DNS results. Resolver cache state is unknown.'
+                        : `Starting sends ${protocol === 'icmpEcho' ? 'ICMP echo requests' : 'TCP probes'} to these addresses. Public resolver controls do not represent every internet route or measure DNS lookup time. ICMP link-local IPv6 requires a numeric interface scope ID.`}{' '}
+                      Use endpoints you are permitted to test.
                     </p>
                     <div className="button-row">
                       <button
@@ -569,7 +634,7 @@ export default function App() {
                     ) : selected ? (
                       <>
                         <div className="result-list">
-                          {selected.results.map(({ endpoint, summary, echoCounts }) => (
+                          {selected.results.map(({ endpoint, summary, echoCounts, dnsCounts }) => (
                             <div key={endpoint.id}>
                               <strong>{endpoint.id}</strong>
                               <span>
@@ -585,9 +650,11 @@ export default function App() {
                               </span>
                               <span>
                                 {summary.successful}/{summary.attempted}{' '}
-                                {selected.protocol === 'icmpEcho'
-                                  ? 'echo replies'
-                                  : 'successful connections'}
+                                {selected.protocol === 'dnsLookup'
+                                  ? 'resolved lookups'
+                                  : selected.protocol === 'icmpEcho'
+                                    ? 'echo replies'
+                                    : 'successful connections'}
                               </span>
                               {echoCounts && (
                                 <span>
@@ -595,6 +662,24 @@ export default function App() {
                                   system errors {echoCounts.osErrors}; invalid replies{' '}
                                   {echoCounts.invalidReplies}; unsupported {echoCounts.unsupported}
                                 </span>
+                              )}
+                              {dnsCounts && (
+                                <>
+                                  <span>{dnsCountsText(dnsCounts)}</span>
+                                  <span>
+                                    {(() => {
+                                      const last = selected.samples
+                                        .filter(
+                                          (sample) =>
+                                            sample.endpointId === endpoint.id && sample.dns,
+                                        )
+                                        .at(-1)?.dns;
+                                      return last
+                                        ? `Last response: ${dnsAnswerText(last)}`
+                                        : 'No DNS response recorded';
+                                    })()}
+                                  </span>
+                                </>
                               )}
                             </div>
                           ))}
@@ -730,7 +815,13 @@ export default function App() {
                           <td>#{run.id}</td>
                           <td>{new Date(run.startedAt).toLocaleString()}</td>
                           <td>{run.config.profile}</td>
-                          <td>{run.protocol === 'icmpEcho' ? 'ICMP echo' : 'TCP connect'}</td>
+                          <td>
+                            {run.protocol === 'dnsLookup'
+                              ? protocolNames.dnsLookup
+                              : run.protocol === 'icmpEcho'
+                                ? 'ICMP echo'
+                                : 'TCP connect'}
+                          </td>
                           <td>{run.samples.length}</td>
                           <td>{run.status}</td>
                           <td>

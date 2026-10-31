@@ -2,6 +2,10 @@
 
 Research checked on 2026-10-31. These references establish design constraints; they do not prove improvements on a particular Windows client or adapter. Exact crate/npm resolutions are recorded in lockfiles.
 
+- [Cloudflare resolver addresses](https://developers.cloudflare.com/1.1.1.1/ip-addresses/) and [Google Public DNS configuration](https://developers.google.com/speed/public-dns/docs/using): verify the direct DNS defaults `1.1.1.1:53` and `8.8.8.8:53`. They do not establish reachability or optimal performance for any user.
+- [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035.html), [RFC 7766](https://www.rfc-editor.org/rfc/rfc7766.html), and [RFC 5452](https://www.rfc-editor.org/rfc/rfc5452.html): DNS message framing, UDP limits without EDNS, TCP fallback, and matching questions/IDs/source endpoints. The client is a bounded measurement tool, not a recursive resolver.
+- [Hickory DNS releases](https://github.com/hickory-dns/hickory-dns/releases/tag/v0.26.3) and [the pinned codec manifest](https://github.com/hickory-dns/hickory-dns/blob/v0.26.3/crates/proto/Cargo.toml): the direct DNS probe uses `hickory-proto` 0.26.3 with `std` and no optional DNSSEC/transport runtime features. AD reporting does not enable cryptographic validation.
+
 - [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/): MSVC development tools and WebView2 are required. The launcher checks them before starting compilation.
 - [Tauri Windows installer](https://v2.tauri.app/distribute/windows-installer/): NSIS supports Windows distribution. The configured build is per-user and does not elevate the development launcher.
 - [NSIS command-line usage](https://nsis.sourceforge.io/Docs/Chapter3.html): `/D=` and `_?=` must be last and unquoted even for paths with spaces. The installer smoke test uses `_?=` so waiting for the uninstaller covers its full lifecycle rather than only its temporary-copy bootstrap.

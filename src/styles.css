@@ -476,6 +476,7 @@ button.primary {
 .result-list span {
   font-size: 11px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 .result-list strong {
   font-size: 12px;

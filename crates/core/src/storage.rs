@@ -18,7 +18,7 @@ pub fn openDatabase(path: &Path) -> AppResult<Connection> {
 
 fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 3 {
+    if version > 4 {
         return Err("Database is newer than this application; refusing to downgrade it".into());
     }
     if version == 0 {
@@ -38,6 +38,9 @@ fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     }
     if version < 3 {
         connection.execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 3; COMMIT;")?;
+    }
+    if version < 4 {
+        connection.execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 4; COMMIT;")?;
     }
     Ok(())
 }
@@ -172,7 +175,7 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            3
+            4
         );
     }
 
@@ -186,11 +189,13 @@ mod tests {
                     id: "a".into(),
                     address: "127.0.0.1:1".into(),
                     protocol: ProbeProtocol::TcpConnect,
+                    dnsQuery: None,
                 },
                 Endpoint {
                     id: "b".into(),
                     address: "127.0.0.1:2".into(),
                     protocol: ProbeProtocol::TcpConnect,
+                    dnsQuery: None,
                 },
             ],
             &AtomicBool::new(true),

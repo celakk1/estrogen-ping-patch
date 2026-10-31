@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { failurePercent, formatProbeMs, sampleLatency } from './measurement';
 import { reportHtml } from './report';
-import type { BenchmarkRun, Sample, Summary } from './types';
+import type { BenchmarkRun, DnsOutcome, Sample, Summary } from './types';
 
 describe('protocol-specific measurements', () => {
   const summary: Summary = {
@@ -98,5 +98,79 @@ describe('protocol-specific measurements', () => {
     expect(html).toContain('Unavailable');
     expect(html).not.toContain('TCP connection establishment');
     expect(html).not.toContain('Connection failures');
+  });
+
+  it('keeps negative DNS response time out of successful lookup charts and reports', () => {
+    const dns: DnsOutcome = {
+      query: { name: 'example.test.', recordType: 'A' },
+      cacheMode: 'directResolverCacheUnknown',
+      status: 'nxDomain',
+      transport: 'udp',
+      lookupMs: null,
+      responseMs: 0.5,
+      responseCode: 3,
+      authenticatedDataReported: false,
+      recursionAvailable: true,
+      answers: [],
+      aliases: [],
+      rejectedResponses: 0,
+      requestBytes: 30,
+      responseBytes: 30,
+      error: null,
+    };
+    const sample: Sample = {
+      endpointId: 'resolver',
+      address: '127.0.0.1:53',
+      timestamp: '',
+      connectMs: null,
+      error: 'NXDOMAIN',
+      dns,
+    };
+    expect(sampleLatency(sample)).toBeNull();
+    expect(failurePercent({ ...summary, dnsFailurePercent: 100 }, 'dnsLookup')).toBe('100.0%');
+    expect(failurePercent({ ...summary, connectionFailurePercent: 0 }, 'dnsLookup')).toBe(
+      'Unavailable',
+    );
+    const run: BenchmarkRun = {
+      id: 1,
+      startedAt: '',
+      finishedAt: '',
+      status: 'completed',
+      protocol: 'dnsLookup',
+      appVersion: '0.1.0',
+      config: {} as BenchmarkRun['config'],
+      samples: [sample],
+      results: [
+        {
+          endpoint: {
+            id: 'resolver',
+            address: '127.0.0.1:53',
+            protocol: 'dnsLookup',
+            dnsQuery: dns.query,
+          },
+          summary: { ...summary, medianMs: null, p95Ms: null, dnsFailurePercent: 100 },
+          dnsCounts: {
+            resolved: 0,
+            noData: 0,
+            nxDomain: 1,
+            dnsErrors: 0,
+            timeouts: 0,
+            invalidResponses: 0,
+            osErrors: 0,
+            tcpFallbacks: 0,
+            addressSetChanges: 0,
+          },
+        },
+      ],
+    };
+    const html = reportHtml(run);
+    expect(html).toContain('DNS resolution');
+    expect(html).toContain('NXDOMAIN 1');
+    expect(html).toContain('example.test. A; nxDomain');
+    expect(html).toContain('Resolver cache state is unknown');
+    expect(html).toContain('AD flag is resolver-reported');
+    expect(html).not.toContain('0.50 ms');
+    expect(html).not.toContain('Connection failures');
+    expect(html).not.toContain('ICMP echo timeouts');
   });
 });

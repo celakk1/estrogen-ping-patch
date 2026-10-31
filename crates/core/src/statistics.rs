@@ -9,6 +9,8 @@ pub struct Summary {
     pub connectionFailurePercent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub echoTimeoutPercent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnsFailurePercent: Option<f64>,
     pub medianMs: Option<f64>,
     pub p95Ms: Option<f64>,
     pub p99Ms: Option<f64>,
@@ -54,6 +56,7 @@ pub fn summarize(samples: &[Option<f64>]) -> Summary {
             (samples.len() - sorted.len()) as f64 * 100.0 / samples.len() as f64
         }),
         echoTimeoutPercent: None,
+        dnsFailurePercent: None,
         medianMs: quantile(&sorted, 0.5),
         p95Ms: quantile(&sorted, 0.95),
         p99Ms: quantile(&sorted, 0.99),

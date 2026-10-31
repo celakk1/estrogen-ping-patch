@@ -4,6 +4,7 @@ pub mod backups;
 pub mod benchmark;
 pub mod config;
 pub mod discovery;
+pub mod dns;
 pub mod icmp;
 pub mod mcp;
 mod native_dns;

@@ -1,5 +1,45 @@
 export type Profile = 'latency' | 'balanced' | 'download';
-export type ProbeProtocol = 'tcpConnect' | 'icmpEcho';
+export type ProbeProtocol = 'tcpConnect' | 'icmpEcho' | 'dnsLookup';
+export interface DnsQuery {
+  name: string;
+  recordType: 'A' | 'AAAA';
+}
+export interface DnsOutcome {
+  query: DnsQuery;
+  cacheMode: 'directResolverCacheUnknown';
+  status:
+    | 'resolved'
+    | 'noData'
+    | 'nxDomain'
+    | 'dnsError'
+    | 'timedOut'
+    | 'invalidResponse'
+    | 'osError'
+    | 'cancelled';
+  transport: 'udp' | 'tcpFallback';
+  lookupMs: number | null;
+  responseMs: number | null;
+  responseCode: number | null;
+  authenticatedDataReported: boolean | null;
+  recursionAvailable: boolean | null;
+  answers: { owner: string; address: string; ttlSeconds: number }[];
+  aliases: { name: string; target: string; ttlSeconds: number }[];
+  rejectedResponses: number;
+  requestBytes: number;
+  responseBytes: number;
+  error: string | null;
+}
+export interface DnsCounts {
+  resolved: number;
+  noData: number;
+  nxDomain: number;
+  dnsErrors: number;
+  timeouts: number;
+  invalidResponses: number;
+  osErrors: number;
+  tcpFallbacks: number;
+  addressSetChanges: number;
+}
 export interface Config {
   schemaVersion: number;
   profile: Profile;
@@ -45,6 +85,7 @@ export interface Summary {
   successful: number;
   connectionFailurePercent?: number;
   echoTimeoutPercent?: number;
+  dnsFailurePercent?: number;
   medianMs: number | null;
   p95Ms: number | null;
   p99Ms: number | null;
@@ -55,6 +96,7 @@ export interface Endpoint {
   id: string;
   address: string;
   protocol?: ProbeProtocol;
+  dnsQuery?: DnsQuery;
 }
 export interface EchoOutcome {
   status:
@@ -81,6 +123,7 @@ export interface Sample {
   connectMs: number | null;
   error: string | null;
   echo?: EchoOutcome;
+  dns?: DnsOutcome;
 }
 export interface BenchmarkRun {
   id: number;
@@ -90,7 +133,12 @@ export interface BenchmarkRun {
   protocol: ProbeProtocol;
   appVersion: string;
   config: Config;
-  results: { endpoint: Endpoint; summary: Summary; echoCounts?: EchoCounts }[];
+  results: {
+    endpoint: Endpoint;
+    summary: Summary;
+    echoCounts?: EchoCounts;
+    dnsCounts?: DnsCounts;
+  }[];
   samples: Sample[];
 }
 export interface Progress {

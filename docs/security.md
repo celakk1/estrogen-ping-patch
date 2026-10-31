@@ -24,6 +24,8 @@ The fixed Windows discovery command is application-owned and accepts no external
 
 No telemetry and no cloud inference are configured. Inventory is local and contains interface identifiers and network addresses needed for diagnosis. It does not collect browser data, unrelated documents, passwords, cookies, or application contents. Exports may contain local endpoint addresses and must be reviewed before sharing.
 
+Direct DNS queries disclose the explicitly selected name to the explicitly selected resolvers. The form warns against sending private names to public resolvers. There are no automatic private-name probes, cache flushes, resolver replacements, or Windows DNS writes. UDP responses require the connected source endpoint and matching randomized ID, question, type, class, and flags. Decoding, CNAME traversal, response counts, allocations, and the total UDP/TCP deadline are bounded. This transport is unauthenticated; resolver-reported AD does not prove independent DNSSEC validation. Answer changes are not treated as malicious or automatically optimized away.
+
 Future API keys must use Windows Credential Manager or equivalent protected storage, never JSON, `.env` files in Git, or logs. Future external inference must receive an explicitly authorized, redacted summary and enforce a zero-capable monetary budget.
 
 ## Development controls
