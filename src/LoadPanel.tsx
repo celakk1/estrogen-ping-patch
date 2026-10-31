@@ -132,7 +132,9 @@ export default function LoadPanel({
           <div className="panel-heading">
             <div>
               <h2>Check your speed</h2>
-              <p>Download and upload test data while checking response times.</p>
+              <p>
+                See how fast data moves and whether your connection slows down during transfers.
+              </p>
             </div>
           </div>
           <div className="form-body">
@@ -169,7 +171,7 @@ export default function LoadPanel({
                 </strong>
               </div>
               <div>
-                <span>Test data limit</span>
+                <span>Maximum test data</span>
                 <strong>{dataAmount(downloadBytes + uploadBytes)}</strong>
               </div>
               <div>
@@ -234,10 +236,10 @@ export default function LoadPanel({
                     disabled={disabled}
                     onChange={(event) => setCloudflare(event.target.checked)}
                   />
-                  Use Cloudflare transfer endpoints
+                  Use Cloudflare for the speed test
                 </label>
                 <label>
-                  User-owned benchmark origin (optional)
+                  Your own test server URL (optional)
                   <input
                     disabled={disabled}
                     value={origin}
@@ -246,14 +248,14 @@ export default function LoadPanel({
                   />
                 </label>
                 <p className="form-note">
-                  Cloudflare selects a server through its network. A custom server must implement
-                  the EPP transfer protocol. Public servers require HTTPS; plain HTTP is supported
-                  only for numeric loopback test addresses. One provider alone does not measure
-                  performance across independent providers.
+                  Leave this blank to use Cloudflare. To use your own server, it must support the
+                  app's transfer protocol; an ordinary website or game server will not work here.
+                  Use HTTPS, except for local test servers. Results from one provider do not
+                  describe every route.
                 </p>
                 <div className="input-grid">
                   <label>
-                    Download payload per provider (MiB)
+                    Download amount per server (MiB)
                     <input
                       disabled={disabled}
                       type="number"
@@ -265,7 +267,7 @@ export default function LoadPanel({
                     />
                   </label>
                   <label>
-                    Upload payload per provider (MiB)
+                    Upload amount per server (MiB)
                     <input
                       disabled={disabled}
                       type="number"
@@ -278,12 +280,12 @@ export default function LoadPanel({
                   </label>
                 </div>
                 <p className="field-help">
-                  MiB is a precise data unit: 1 MiB = 1,048,576 bytes. With the selected providers,
-                  this plan allows {dataAmount(downloadBytes)} down and {dataAmount(uploadBytes)}{' '}
-                  up.
+                  MiB is a data-size unit, slightly larger than MB. These settings allow up to{' '}
+                  {dataAmount(downloadBytes)} downloaded and {dataAmount(uploadBytes)} uploaded
+                  across your selected servers.
                 </p>
                 <label>
-                  Parallel transfer streams
+                  Transfers at the same time
                   <select
                     disabled={disabled}
                     value={streams}
@@ -301,7 +303,7 @@ export default function LoadPanel({
                   </span>
                 </label>
                 <label>
-                  Concurrent latency protocol
+                  How to check response time
                   <select
                     disabled={disabled}
                     value={latencyProtocol}
@@ -315,13 +317,13 @@ export default function LoadPanel({
                       );
                     }}
                   >
-                    <option value="icmpEcho">Response time (ICMP echo)</option>
-                    <option value="tcpConnect">Connection setup (TCP)</option>
+                    <option value="icmpEcho">Ping (ICMP)</option>
+                    <option value="tcpConnect">Opening a connection (TCP)</option>
                   </select>
                 </label>
                 {addresses.map((address, index) => (
                   <label key={index}>
-                    Load latency destination {index + 1} (
+                    Response test server {index + 1} (
                     {latencyProtocol === 'icmpEcho' ? 'IP' : 'IP:port'})
                     <input
                       disabled={disabled}
@@ -337,8 +339,9 @@ export default function LoadPanel({
                   </label>
                 ))}
                 <p className="form-note">
-                  Default response checks contact Cloudflare and Google. ICMP can be filtered or
-                  rate-limited; its timeouts are not a direct measure of game packet loss.
+                  Response checks contact Cloudflare and Google by default, separately from the
+                  speed test server. Some networks limit or block ping replies. Missing replies do
+                  not directly measure lost game traffic.
                 </p>
               </div>
             </details>
@@ -366,7 +369,7 @@ export default function LoadPanel({
                     : 'Preparing the test...'}
                 </h3>
                 <p>
-                  Each phase checks response times to the same servers. Short transfers may finish
+                  Each stage checks response times to the same servers. Short transfers may finish
                   before enough replies arrive.
                 </p>
                 {progress?.sample && (
@@ -378,11 +381,11 @@ export default function LoadPanel({
                   </p>
                 )}
                 <details className="result-details">
-                  <summary>Live transfer details</summary>
+                  <summary>Technical details</summary>
                   <p>Download data received: {dataAmount(progress?.downloadBytesRead ?? 0)}</p>
                   <p>
-                    Upload data prepared: {dataAmount(progress?.uploadBodyBytesProvided ?? 0)}. This
-                    is not the amount acknowledged by the server.
+                    Upload data prepared: {dataAmount(progress?.uploadBodyBytesProvided ?? 0)}. The
+                    server may not have received all of it yet.
                   </p>
                 </details>
               </>
@@ -402,12 +405,13 @@ export default function LoadPanel({
                 </p>
                 <dl>
                   <dt>Download / upload</dt>
-                  <dd>How quickly this test transfers data, shown in Mbps.</dd>
+                  <dd>How quickly this test moves data. Higher Mbps means faster transfers.</dd>
                   <dt>Response time</dt>
                   <dd>How quickly a test server replies, shown in milliseconds.</dd>
                   <dt>Before and after</dt>
                   <dd>
-                    Compare phases to see whether response times return toward the starting point.
+                    Compare replies before and after transfers to see whether the delay settles back
+                    down.
                   </dd>
                 </dl>
               </div>
@@ -421,7 +425,8 @@ export default function LoadPanel({
             <div>
               <h2>Response times before, during, and after</h2>
               <p>
-                Compare each server across the four phases. Smaller numbers mean faster replies.
+                Compare each row from left to right. Higher times during a transfer mean slower
+                replies while data is moving.
               </p>
             </div>
           </div>
@@ -446,7 +451,7 @@ export default function LoadPanel({
                 <tr>
                   <th>Started</th>
                   <th>Result</th>
-                  <th>Providers</th>
+                  <th>Test servers</th>
                   <th>Report</th>
                 </tr>
               </thead>

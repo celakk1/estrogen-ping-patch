@@ -23,8 +23,8 @@ try {
     );
   }
   await page.reload();
-  await page.getByRole('button', { name: 'Configuration backups', exact: true }).click();
-  await page.getByRole('button', { name: 'Capture backup', exact: true }).click();
+  await page.getByRole('button', { name: 'Saved settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Save settings copy', exact: true }).click();
   await page.getByRole('heading', { name: /^Backup #/ }).waitFor({ timeout: 100_000 });
   assert.equal(await page.getByRole('alert').count(), 0);
   const record = await page.evaluate(async () => {
@@ -120,7 +120,7 @@ try {
     eventsEnabled: true,
   });
   const downloaded = page.waitForEvent('download', { timeout: 15_000 });
-  await page.getByRole('button', { name: 'Export backup', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Download settings copy', exact: true }).first().click();
   const download = await downloaded;
   assert.equal(await download.failure(), null);
   assert.match(download.suggestedFilename(), /^epp-network-backup-\d+-[a-f0-9]{64}\.json$/);
@@ -130,15 +130,15 @@ try {
     record.summary.sha256,
   );
   await page.reload();
-  await page.getByRole('button', { name: 'Configuration backups', exact: true }).click();
+  await page.getByRole('button', { name: 'Saved settings', exact: true }).click();
   await page.getByRole('button', { name: 'View details', exact: true }).first().waitFor();
   const previousCount = await page.evaluate(
     async () => (await window.__TAURI_INTERNALS__.invoke('getBackups')).length,
   );
-  await page.getByRole('button', { name: 'Capture backup', exact: true }).click();
-  await page.getByRole('button', { name: 'Cancel capture', exact: true }).click();
+  await page.getByRole('button', { name: 'Save settings copy', exact: true }).click();
+  await page.getByRole('button', { name: 'Cancel copy', exact: true }).click();
   await page.getByRole('status').waitFor({ timeout: 15_000 });
-  assert.match(await page.getByRole('status').innerText(), /Capture cancelled/);
+  assert.match(await page.getByRole('status').innerText(), /Copy cancelled/);
   const currentCount = await page.evaluate(
     async () => (await window.__TAURI_INTERNALS__.invoke('getBackups')).length,
   );

@@ -24,6 +24,10 @@ describe('transfer reports', () => {
     expect(html).toContain('&lt;failed&gt;');
     expect(html).toContain('Saturation is not guaranteed');
     expect(html).toContain('outside the payload budget');
+    expect(html).toContain('<h1>Speed test report</h1>');
+    expect(html).toContain('This test did not finish');
+    expect(html).toContain('Higher Mbps means faster transfers');
+    expect(html).toContain('Technical details');
     expect(html).not.toContain('0.00 Mbps');
     expect(html).not.toContain('Connection failures');
   });

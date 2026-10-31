@@ -27,8 +27,8 @@ export default function LoadResults({ run }: { run: LoadRun }) {
         </h3>
         <p>
           {run.status === 'completed'
-            ? 'Compare response times before, during, and after the transfers below. A short run is a snapshot, not proof of a lasting improvement.'
-            : 'Some measurements may be missing or partial. Check the transfer details before comparing this run.'}
+            ? 'Compare replies before, during, and after downloading or uploading. Repeat the test to see whether the results are consistent.'
+            : 'Some results may be missing. Open Technical details to see which transfers did not finish.'}
         </p>
       </div>
       <p className="measurement-key">
@@ -42,7 +42,7 @@ export default function LoadResults({ run }: { run: LoadRun }) {
               <h3>{phase === 'download' ? 'Download' : 'Upload'}</h3>
               <span className="result-timing">{formatMbps(result?.applicationGoodputMbps)}</span>
             </div>
-            <p>{result?.provider.origin ?? `Test provider ${providerIndex + 1}`}</p>
+            <p>{result?.provider.origin ?? `Test server ${providerIndex + 1}`}</p>
             <span>
               {result?.status === 'completed'
                 ? `${dataAmount(result.acceptedPayloadBytes)} transferred`
@@ -55,8 +55,8 @@ export default function LoadResults({ run }: { run: LoadRun }) {
         ))}
       </div>
       <p className="form-note">
-        Measured speed includes connection and server overhead. Short transfers may finish before
-        enough response checks arrive, and may not fill your connection.
+        The speed includes time spent connecting and waiting for the server. A short test may end
+        before your connection reaches full speed or enough response checks finish.
       </p>
       <div className="button-row report-actions">
         <button onClick={() => downloadLoadReport(run, 'html')}>Save report</button>
@@ -100,13 +100,13 @@ export function LoadLatencyComparison({ run }: { run: LoadRun }) {
         <section key={providerIndex} className="phase-results">
           <h3>{provider.kind === 'cloudflare' ? 'Cloudflare test' : 'Your test server'}</h3>
           <p className="form-note">
-            Response times by phase. Each value is the middle result (median) of successful checks
-            to that server.
+            Each number is the typical response time for that stage: the middle result of the
+            successful checks. Compare the same row across all four stages.
           </p>
           <div className="table-scroll">
             <table
               className="phase-table"
-              aria-label={`Response times by phase for provider ${providerIndex + 1}`}
+              aria-label={`Response times by stage for test server ${providerIndex + 1}`}
             >
               <thead>
                 <tr>

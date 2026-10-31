@@ -7,13 +7,13 @@ export const testGuide: Record<
   icmpEcho: {
     title: 'Ping (response time)',
     measures:
-      'Sends small test messages to two servers and times their replies. Lower times mean faster replies.',
+      'Sends small messages to two servers and times their replies. Lower ping means less waiting for a reply.',
     typical: 'Typical response time',
   },
   tcpConnect: {
     title: 'Opening a connection',
     measures:
-      'Times how long it takes to open a new connection to each server. This measures connection setup, which differs from ping.',
+      'Checks how long it takes to start a connection to each server. This is the wait before data can start moving, separate from ping.',
     typical: 'Typical connection time',
   },
   dnsLookup: {
@@ -48,22 +48,22 @@ export function runExplanation(run: BenchmarkRun): { title: string; detail: stri
     };
   if (attempted === 0 || successful === 0)
     return {
-      title: 'No usable timing results',
+      title: 'No response times measured',
       detail:
         run.protocol === 'icmpEcho'
-          ? 'Some networks or servers block ping requests. Choose Opening a connection under What to check, or check the server addresses under Advanced settings.'
+          ? 'Some networks or servers block ping requests. Try Opening a connection in the What to check menu. You can also check the server addresses in Advanced settings.'
           : 'Check your connection and the server addresses under Advanced settings, then try again. Technical details show the recorded errors.',
     };
   if (successful !== attempted)
     return {
-      title: 'Some checks were unsuccessful',
+      title: 'Some checks did not succeed',
       detail:
         run.protocol === 'icmpEcho'
-          ? 'Missing echo replies can reflect filtering, rate limits, or a connection problem. They do not directly measure packet loss in games.'
-          : 'Review the results for each server. A failed connection or lookup does not by itself identify the cause.',
+          ? 'A server may block or limit ping replies, or your connection may have a problem. Missing replies do not directly measure packet loss in games.'
+          : 'Review each server below. A failed connection or website lookup alone cannot tell us what went wrong.',
     };
   return {
-    title: 'Every check returned a result',
+    title: 'All checks succeeded',
     detail:
       'This is a snapshot of these servers at this time. Repeat the same test later to see whether the results are consistent.',
   };

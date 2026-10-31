@@ -99,7 +99,7 @@ export default function App() {
       setSelectedBackup(await invoke<BackupExport>('exportBackup', { id: summary.id }));
     } catch (error) {
       if (String(error).includes('cancelled'))
-        setBackupNotice('Capture cancelled. Existing backups were preserved.');
+        setBackupNotice('Copy cancelled. Your earlier copies are still saved.');
       else setError(String(error));
     } finally {
       setCapturingBackup(false);
@@ -219,15 +219,15 @@ export default function App() {
             estrogen<span>ping patch</span>
           </div>
         </div>
-        <div className="workspace-label">NETWORK WORKSPACE</div>
+        <div className="workspace-label">YOUR CONNECTION</div>
         <nav>
           {(
             [
-              ['overview', 'Benchmarks'],
-              ['inventory', 'System inventory'],
-              ['history', 'Benchmark history'],
-              ['backups', 'Configuration backups'],
-              ['policy', 'Safety & policy'],
+              ['overview', 'Network tests'],
+              ['inventory', 'Your network'],
+              ['history', 'Test history'],
+              ['backups', 'Saved settings'],
+              ['policy', 'Safety & privacy'],
             ] as const
           ).map(([key, title]) => (
             <button
@@ -242,7 +242,7 @@ export default function App() {
         </nav>
         <div className="sidebar-bottom">
           <div className="status-dot" />
-          Local by default<p>AI disabled. No cloud spend.</p>
+          Saved on this PC<p>AI is off. No AI charges.</p>
           <button className="text-button" onClick={() => setLight(!light)}>
             Switch to {light ? 'dark' : 'light'} theme
           </button>
@@ -252,16 +252,16 @@ export default function App() {
       <main>
         <header>
           <div className="breadcrumb">
-            Workspace <span>/</span>{' '}
+            Network tools <span>/</span>{' '}
             {showingBenchmarks
-              ? 'Benchmarks'
+              ? 'Network tests'
               : view === 'inventory'
-                ? 'System inventory'
+                ? 'Your network'
                 : view === 'history'
-                  ? 'Benchmark history'
+                  ? 'Test history'
                   : view === 'backups'
-                    ? 'Configuration backups'
-                    : 'Safety & policy'}
+                    ? 'Saved settings'
+                    : 'Safety & privacy'}
           </div>
           <div className="pill">
             <i /> {appStatus ? 'Desktop ready' : 'Connecting to desktop'}
@@ -270,7 +270,7 @@ export default function App() {
         <div className="content">
           {error && (
             <div role="alert" className="error">
-              <strong>Action failed</strong>
+              <strong>Could not complete this step</strong>
               <p>{error}</p>
               <button onClick={() => setError('')}>Dismiss</button>
             </div>
@@ -280,25 +280,25 @@ export default function App() {
               <div className="eyebrow">NETWORK TOOLS</div>
               <h1>
                 {showingBenchmarks
-                  ? 'Benchmarks'
+                  ? 'Network tests'
                   : view === 'inventory'
-                    ? 'System inventory'
+                    ? 'Your network'
                     : view === 'history'
-                      ? 'Your measurement history'
+                      ? 'Test history'
                       : view === 'backups'
-                        ? 'Preserve your starting point.'
-                        : 'Safety comes first.'}
+                        ? 'Saved settings'
+                        : 'Safety & privacy'}
               </h1>
               <p>
                 {showingBenchmarks
                   ? 'Measure your connection. These tests do not change your network settings.'
                   : view === 'inventory'
-                    ? 'Read-only Windows discovery, captured locally.'
+                    ? 'See the network connections and settings reported by Windows.'
                     : view === 'history'
-                      ? 'Raw samples and reports stay on this computer.'
+                      ? 'Reopen your connection test results. Speed tests have their own history on the Speed test screen.'
                       : view === 'backups'
-                        ? 'Read-only settings snapshots, stored locally and checked before export.'
-                        : 'Bounded operations, explicit authorization, and reversible changes.'}
+                        ? 'Save a copy of your current settings to view or download later.'
+                        : 'See what this version can do and where it saves your data.'}
               </p>
             </div>
             <span className="badge">
@@ -306,14 +306,14 @@ export default function App() {
             </span>
           </section>
           {showingBenchmarks && (
-            <div className="benchmark-tabs" role="group" aria-label="Benchmark tests">
+            <div className="benchmark-tabs" role="group" aria-label="Network tests">
               <button aria-pressed={view === 'overview'} onClick={() => setView('overview')}>
                 <strong>Connection test</strong>
-                <span>Check ping, connections, and website lookups.</span>
+                <span>Check how quickly servers reply. Start here.</span>
               </button>
               <button aria-pressed={view === 'load'} onClick={() => setView('load')}>
                 <strong>Speed test</strong>
-                <span>Check download/upload speed and delay during traffic.</span>
+                <span>Check speed and delay while downloading or uploading.</span>
               </button>
             </div>
           )}
@@ -348,24 +348,24 @@ export default function App() {
             <section className="panel">
               <div className="panel-heading">
                 <div>
-                  <h2>Windows network discovery</h2>
+                  <h2>Your network connections</h2>
                   <p>
                     {inventory
                       ? `Windows ${inventory.os.version}, build ${inventory.os.build} | ${inventory.os.architecture}`
-                      : 'Waiting for Windows inventory'}
+                      : 'Reading network details from Windows...'}
                   </p>
                 </div>
                 <button disabled={loadingInventory} onClick={refreshInventory}>
-                  {loadingInventory ? 'Refreshing...' : 'Refresh inventory'}
+                  {loadingInventory ? 'Refreshing...' : 'Refresh details'}
                 </button>
               </div>
               <div className="table-scroll">
                 <table>
                   <thead>
                     <tr>
-                      <th>Interface</th>
-                      <th>State</th>
-                      <th>Media</th>
+                      <th>Network adapter</th>
+                      <th>Status</th>
+                      <th>Connection type</th>
                       <th>Link speed</th>
                       <th>Driver</th>
                     </tr>
@@ -388,14 +388,23 @@ export default function App() {
                 </table>
               </div>
               <div className="form-body">
-                <h3>Default routes</h3>
+                <p className="form-note">
+                  Link speed is the connection to your router or network, not your measured internet
+                  speed. Use Speed test to measure transfers.
+                </p>
+                <h3>Internet gateways</h3>
+                <p className="form-note">
+                  Where Windows sends traffic to reach other networks. These are the default routes
+                  reported by Windows.
+                </p>
                 {inventory?.routes.map((route, index) => (
                   <p key={index}>
                     Interface {route.interfaceIndex} / {route.destination} / gateway {route.nextHop}{' '}
                     / route metric {route.routeMetric}
                   </p>
                 ))}
-                <h3>Configured DNS resolvers</h3>
+                <h3>DNS servers</h3>
+                <p className="form-note">These servers find the addresses for website names.</p>
                 {inventory?.dns.map((dns, index) => (
                   <p key={index}>
                     Interface {dns.interfaceIndex}: {dns.servers.join(', ')}
@@ -413,20 +422,20 @@ export default function App() {
             <section className="panel">
               <div className="panel-heading">
                 <div>
-                  <h2>Saved baseline runs</h2>
-                  <p>Most recent 30 runs. No fabricated improvements or confidence scores.</p>
+                  <h2>Previous connection tests</h2>
+                  <p>Your 30 most recent tests. Open a result or save a readable report.</p>
                 </div>
               </div>
               {history.length === 0 ? (
                 <div className="form-body">
-                  <p>No baseline runs saved yet.</p>
+                  <p>No connection tests saved yet. Start one from Network tests.</p>
                 </div>
               ) : (
                 <div className="table-scroll">
                   <table>
                     <thead>
                       <tr>
-                        <th>Run</th>
+                        <th>Test number</th>
                         <th>Started</th>
                         <th>Test</th>
                         <th>Checks</th>
@@ -456,10 +465,12 @@ export default function App() {
                                 setView('overview');
                               }}
                             >
-                              View
+                              View results
                             </button>
-                            <button onClick={() => downloadReport(run, 'json')}>JSON</button>
-                            <button onClick={() => downloadReport(run, 'html')}>HTML</button>
+                            <button onClick={() => downloadReport(run, 'json')}>
+                              Export raw data (JSON)
+                            </button>
+                            <button onClick={() => downloadReport(run, 'html')}>Save report</button>
                           </td>
                         </tr>
                       ))}
@@ -474,8 +485,8 @@ export default function App() {
               <section className="panel">
                 <div className="panel-heading">
                   <div>
-                    <h2>Network settings snapshots</h2>
-                    <p>Capture before experimentation. Existing backups are never overwritten.</p>
+                    <h2>Copy your current settings</h2>
+                    <p>Each copy is saved separately on this PC. Earlier copies are kept.</p>
                   </div>
                   <div className="button-row">
                     <button
@@ -483,7 +494,7 @@ export default function App() {
                       disabled={running || loadRunning || capturingBackup}
                       onClick={captureBackup}
                     >
-                      {capturingBackup ? 'Capturing settings...' : 'Capture backup'}
+                      {capturingBackup ? 'Copying settings...' : 'Save settings copy'}
                     </button>
                     {capturingBackup && (
                       <button
@@ -491,22 +502,22 @@ export default function App() {
                           invoke('cancelBaseline').catch((error) => setError(String(error)))
                         }
                       >
-                        Cancel capture
+                        Cancel copy
                       </button>
                     )}
                   </div>
                 </div>
                 <div className="form-body">
                   <div className="notice">
-                    Automatic restoration is not available in this preview. These snapshots preserve
-                    readable settings and explicitly record unsupported sections. They are not a
-                    verified full-system restore point.
+                    This version can save and show settings, but cannot restore them. A saved copy
+                    does not guarantee you can undo a network change. Missing settings are listed in
+                    the details.
                   </div>
                 </div>
                 {backupNotice && <p role="status">{backupNotice}</p>}
                 {backups.length === 0 ? (
                   <div className="form-body">
-                    <p>No configuration snapshots saved yet.</p>
+                    <p>No settings copies saved yet.</p>
                   </div>
                 ) : (
                   <div className="table-scroll">
@@ -514,9 +525,9 @@ export default function App() {
                       <thead>
                         <tr>
                           <th>Backup</th>
-                          <th>Captured</th>
-                          <th>Captured sections</th>
-                          <th>Unavailable</th>
+                          <th>Saved</th>
+                          <th>Sections saved</th>
+                          <th>Sections missing</th>
                           <th>Actions</th>
                         </tr>
                       </thead>
@@ -530,7 +541,7 @@ export default function App() {
                             <td>
                               <button onClick={() => openBackup(backup.id)}>View details</button>
                               <button onClick={() => openBackup(backup.id, true)}>
-                                Export backup
+                                Download settings copy
                               </button>
                             </td>
                           </tr>
@@ -545,15 +556,15 @@ export default function App() {
                   <div className="panel-heading">
                     <div>
                       <h2>Backup #{selectedBackup.summary.id}</h2>
-                      <p>SHA-256 integrity verified against the saved document</p>
+                      <p>File check passed: this copy matches the settings originally saved.</p>
                     </div>
                   </div>
                   <div className="form-body">
-                    <label>Export SHA-256</label>
+                    <label>File fingerprint (SHA-256)</label>
                     <code>{selectedBackup.summary.sha256}</code>
                     <p className="form-note">
-                      The exported file contains the exact bytes covered by this checksum. It
-                      includes local network configuration; review it before sharing.
+                      This fingerprint helps check that the file has not changed. The file includes
+                      your network settings; review it before sharing.
                     </p>
                     {backupPayload.limitations.map((limitation) => (
                       <p className="form-note" key={limitation}>
@@ -566,9 +577,9 @@ export default function App() {
                       <thead>
                         <tr>
                           <th>Settings</th>
-                          <th>Adapter GUID</th>
+                          <th>Adapter ID</th>
                           <th>Records</th>
-                          <th>Capture status</th>
+                          <th>Saved successfully?</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -580,7 +591,7 @@ export default function App() {
                             </td>
                             <td>{section.adapterId || 'System / interface indexes'}</td>
                             <td>{section.values.length}</td>
-                            <td>{section.status}</td>
+                            <td>{section.status === 'captured' ? 'Saved' : 'Not available'}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -594,40 +605,50 @@ export default function App() {
             <div className="two-columns">
               <section className="panel">
                 <div className="panel-heading">
-                  <h2>Current safety boundary</h2>
+                  <h2>What this version can do</h2>
                 </div>
                 <div className="form-body">
                   <dl>
                     <dt>System changes</dt>
                     <dd>Disabled in this build</dd>
-                    <dt>Dedicated Windows service</dt>
-                    <dd>{serviceReport?.state ?? 'Checking status'}</dd>
+                    <dt>Optional background service</dt>
+                    <dd>
+                      {serviceReport
+                        ? ((
+                            {
+                              ready: 'Running',
+                              notInstalled: 'Not installed',
+                              stopped: 'Stopped',
+                              recoveryRequired: 'Recovery needs attention',
+                              unavailable: 'Could not check status',
+                              unsupported: 'Not supported on this system',
+                            } as Record<string, string>
+                          )[serviceReport.state] ?? 'Not ready')
+                        : 'Checking status...'}
+                    </dd>
                     {serviceReport?.response && (
                       <>
-                        <dt>Recovery journal verified</dt>
+                        <dt>Recovery records last checked</dt>
                         <dd>
                           {new Date(
                             serviceReport.response.checkpointStore.verifiedAtUnixMs,
                           ).toLocaleString()}
                           {' at service startup'}
                         </dd>
-                        <dt>Unresolved checkpoints</dt>
+                        <dt>Recovery records needing attention</dt>
                         <dd>{serviceReport.response.checkpointStore.pendingRecoveryCount}</dd>
                       </>
                     )}
                     <dt>AI mode</dt>
                     <dd>Disabled</dd>
-                    <dt>Cloud budget</dt>
-                    <dd>0</dd>
-                    <dt>MCP</dt>
-                    <dd>Local stdio, read-only allowlist</dd>
-                    <dt>Telemetry</dt>
-                    <dd>None</dd>
+                    <dt>AI spending limit</dt>
+                    <dd>0 (AI is off)</dd>
+                    <dt>AI tool access (MCP)</dt>
+                    <dd>Local connection only. Can read approved data; cannot change settings.</dd>
+                    <dt>Usage tracking</dt>
+                    <dd>Off</dd>
                   </dl>
-                  <p>
-                    The desktop application runs as your normal user. No startup operation requires
-                    administrator privileges.
-                  </p>
+                  <p>Opening the app and running tests do not require administrator access.</p>
                   <p>{serviceReport?.detail}</p>
                   <div className="actions">
                     <button
@@ -676,41 +697,39 @@ export default function App() {
                       )}
                   </div>
                   <p>
-                    Service management requests a separate Windows administrator approval. The
-                    service currently runs as LocalService and cannot change network settings.
-                    Backups and measurements remain available without installing it.
+                    Installing, removing, starting, or stopping the service asks for Windows
+                    administrator approval. It cannot change network settings in this version. You
+                    can run tests and save settings copies without it.
                   </p>
                   {managingService && (
                     <p role="status">
-                      Waiting for dedicated service management. Respond to the Windows approval
-                      prompt if shown.
+                      Waiting for Windows. Respond to the administrator approval prompt if shown.
                     </p>
                   )}
                 </div>
               </section>
               <section className="panel">
                 <div className="panel-heading">
-                  <h2>Local data</h2>
+                  <h2>Where your data is saved</h2>
                 </div>
                 <div className="form-body">
-                  <p>Configuration, events, and raw measurements remain local.</p>
+                  <p>Settings and test results are saved on this PC:</p>
                   <code>{appStatus?.dataDirectory ?? 'Available in the desktop application'}</code>
                   <p>
-                    Reports can include network endpoint information. Review exports before sharing
-                    them.
+                    Reports can include server addresses and network details. Review them before
+                    sharing.
                   </p>
                   <p>
-                    Network discovery does not upload inventory to an AI provider or any telemetry
-                    service.
+                    Your network details are not sent to an AI provider or usage-tracking service.
                   </p>
                 </div>
               </section>
             </div>
           )}
           <footer>
-            <span>Original settings preserved</span>
+            <span>Network settings unchanged</span>
             <span>No paid services required</span>
-            <span>Local evidence. Honest conclusions.</span>
+            <span>Results saved on this PC</span>
           </footer>
         </div>
       </main>

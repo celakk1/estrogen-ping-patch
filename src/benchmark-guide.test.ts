@@ -48,22 +48,22 @@ describe('beginner benchmark explanations', () => {
   });
   it('does not describe a stopped or empty test as a successful connection', () => {
     expect(runExplanation(run(3, 3, 'cancelled')).title).toBe('This test did not finish');
-    expect(runExplanation(run(0, 0)).title).toBe('No usable timing results');
+    expect(runExplanation(run(0, 0)).title).toBe('No response times measured');
     expect(runExplanation(run(0, 3)).detail).toContain('block ping');
   });
   it('keeps failures specific to the measurement instead of diagnosing game packet loss', () => {
     const partial = run(2, 3);
-    expect(runExplanation(partial).title).toBe('Some checks were unsuccessful');
+    expect(runExplanation(partial).title).toBe('Some checks did not succeed');
     expect(runExplanation(partial).detail).toContain(
       'do not directly measure packet loss in games',
     );
     expect(runExplanation({ ...partial, protocol: 'dnsLookup' }).detail).toContain(
-      'does not by itself identify the cause',
+      'alone cannot tell us what went wrong',
     );
   });
   it('describes complete replies as a snapshot rather than a universal health score', () => {
     const result = runExplanation(run(3, 3));
-    expect(result.title).toBe('Every check returned a result');
+    expect(result.title).toBe('All checks succeeded');
     expect(result.detail).toContain('these servers at this time');
     expect(result.detail).toContain('Repeat the same test');
   });

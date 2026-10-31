@@ -2,7 +2,7 @@
 
 ## Current snapshot workflow
 
-Open **Configuration backups**, select **Capture backup**, and review the captured and unavailable sections. The application reads configuration, commits a new local snapshot, verifies its SHA-256 when opening/exporting it, and preserves earlier snapshots. **Export backup** downloads the exact saved JSON bytes; its filename includes the SHA-256 shown in the GUI.
+Open **Saved settings**, select **Save settings copy**, and review the captured and unavailable sections. The application reads configuration, commits a new local snapshot, verifies its SHA-256 when opening/exporting it, and preserves earlier snapshots. **Download settings copy** downloads the exact saved JSON bytes; its filename includes the SHA-256 shown in the GUI.
 
 Snapshots contain OS/build context, adapter GUIDs and driver versions, interface indexes, addresses and prefix origins, DHCP/IP interface settings, routes, DNS servers and client settings, TCP templates, and supported driver advanced properties/RSS/RSC/power settings. Driver properties preserve registry keywords and native values where exposed. Missing or unsupported sections retain their error instead of being reported as successfully captured.
 

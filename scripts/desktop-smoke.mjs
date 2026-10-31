@@ -55,7 +55,7 @@ try {
     ),
   );
   assert.equal(await page.getByLabel('What to check').inputValue(), 'icmpEcho');
-  assert.equal(await page.getByRole('button', { name: 'Benchmarks', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Network tests', exact: true }).count(), 1);
   assert.equal(await page.getByRole('button', { name: 'Overview', exact: true }).count(), 0);
   assert.equal(
     await page.getByRole('button', { name: 'Throughput & load', exact: true }).count(),
@@ -96,14 +96,14 @@ try {
   await page.getByRole('button', { name: 'Switch to light theme', exact: true }).click();
   await page.screenshot({ path: 'artifacts/desktop-beginner-light.png', animations: 'disabled' });
   await page.getByRole('button', { name: 'Switch to dark theme', exact: true }).click();
-  await page.getByRole('button', { name: 'System inventory', exact: true }).click();
-  await page.getByRole('columnheader', { name: 'Interface', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Your network', exact: true }).click();
+  await page.getByRole('columnheader', { name: 'Network adapter', exact: true }).waitFor();
   await page.waitForFunction(() => /Windows \d/.test(document.body.innerText), undefined, {
     timeout: 35_000,
   });
   const rows = page.locator('tbody tr');
   assert.ok((await rows.count()) > 0, 'Expected real Windows network adapters');
-  await page.getByRole('button', { name: 'Benchmarks', exact: true }).click();
+  await page.getByRole('button', { name: 'Network tests', exact: true }).click();
   await page.getByLabel('What to check').selectOption('tcpConnect');
   await page.locator('details.advanced-settings > summary').first().click();
   await page.getByLabel('Checks per server').fill('3');
@@ -177,9 +177,9 @@ try {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: 'artifacts/desktop-echo-baseline.png', fullPage: true });
   await page.reload();
-  await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
+  await page.getByRole('button', { name: 'Test history', exact: true }).click();
   await page.getByRole('cell', { name: 'Ping (response time)', exact: true }).waitFor();
-  await page.getByRole('button', { name: 'View', exact: true }).first().click();
+  await page.getByRole('button', { name: 'View results', exact: true }).first().click();
   assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
   await page.getByLabel('What to check').selectOption('dnsLookup');
   await page.locator('details.advanced-settings > summary').first().click();
@@ -259,13 +259,13 @@ try {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: 'artifacts/desktop-dns-baseline.png', fullPage: true });
   await page.reload();
-  await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
+  await page.getByRole('button', { name: 'Test history', exact: true }).click();
   await page.getByRole('cell', { name: 'Finding a website (DNS)', exact: true }).first().waitFor();
-  await page.getByRole('button', { name: 'View', exact: true }).first().click();
+  await page.getByRole('button', { name: 'View results', exact: true }).first().click();
   assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
-  await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
+  await page.getByRole('button', { name: 'Test history', exact: true }).click();
   assert.ok((await page.getByRole('cell', { name: 'Finished', exact: true }).count()) > 0);
-  await page.getByRole('button', { name: 'Safety & policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Safety & privacy', exact: true }).click();
   assert.ok((await page.getByText('Disabled in this build', { exact: true }).count()) > 0);
   const service = await page.evaluate(() =>
     window.__TAURI_INTERNALS__.invoke('getPrivilegedService'),

@@ -8,7 +8,7 @@ Microsoft documents `SetIpInterfaceEntry` as requiring administrative privileges
 
 ## Management
 
-Build or launch the development checkout first. In **Safety & policy**, install the optional service, refresh its actual status, start/stop it, or uninstall it. The root `install-service.bat` and `uninstall-service.bat` provide the same installation/removal workflow. The packaged installer includes these helpers and the service executable. A normal development launch never requests elevation or installs a system service automatically.
+Build or launch the development checkout first. In **Safety & privacy**, install the optional service, refresh its actual status, start/stop it, or uninstall it. The root `install-service.bat` and `uninstall-service.bat` provide the same installation/removal workflow. The packaged installer includes these helpers and the service executable. A normal development launch never requests elevation or installs a system service automatically.
 
 The checkout helper selects the most recently built debug/release service executable. A packaged helper always uses its adjacent bundled executable, keeping those resources together. Rebuild before installation after changing service source.
 

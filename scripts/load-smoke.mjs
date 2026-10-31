@@ -25,9 +25,9 @@ try {
   }
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.getByRole('button', { name: 'Benchmarks', exact: true }).click();
+  await page.getByRole('button', { name: 'Network tests', exact: true }).click();
   await page.getByRole('button', { name: /^Speed test\b/ }).click();
-  assert.equal(await page.getByLabel('Use Cloudflare transfer endpoints').isVisible(), false);
+  assert.equal(await page.getByLabel('Use Cloudflare for the speed test').isVisible(), false);
   await page.evaluate(() => window.scrollTo(0, 0));
   mkdirSync('artifacts', { recursive: true });
   await page.screenshot({ path: 'artifacts/desktop-beginner-load.png', fullPage: true });
@@ -48,20 +48,20 @@ try {
   await page.setViewportSize(viewport);
   async function configure() {
     const advanced = page
-      .getByLabel('Use Cloudflare transfer endpoints')
+      .getByLabel('Use Cloudflare for the speed test')
       .locator('..')
       .locator('..')
       .locator('..');
     if ((await advanced.getAttribute('open')) == null) {
       await advanced.locator(':scope > summary').click();
     }
-    await page.getByLabel('Use Cloudflare transfer endpoints').uncheck();
-    await page.getByLabel('User-owned benchmark origin (optional)').fill(fixture.origin);
-    await page.getByLabel('Download payload per provider (MiB)').fill('2');
-    await page.getByLabel('Upload payload per provider (MiB)').fill('2');
-    await page.getByLabel('Parallel transfer streams').selectOption('2');
-    await page.getByLabel('Load latency destination 1 (IP)').fill('127.0.0.1');
-    await page.getByLabel('Load latency destination 2 (IP)').fill('::1');
+    await page.getByLabel('Use Cloudflare for the speed test').uncheck();
+    await page.getByLabel('Your own test server URL (optional)').fill(fixture.origin);
+    await page.getByLabel('Download amount per server (MiB)').fill('2');
+    await page.getByLabel('Upload amount per server (MiB)').fill('2');
+    await page.getByLabel('Transfers at the same time').selectOption('2');
+    await page.getByLabel('Response test server 1 (IP)').fill('127.0.0.1');
+    await page.getByLabel('Response test server 2 (IP)').fill('::1');
     await advanced.locator(':scope > summary').click();
   }
   await configure();
@@ -126,15 +126,17 @@ try {
     const content = readFileSync(path.resolve('artifacts', download.suggestedFilename()), 'utf8');
     if (format === 'JSON') assert.deepEqual(JSON.parse(content), run);
     else {
-      assert.match(content, /Payload goodput/);
+      assert.match(content, /Measured speed/);
       assert.match(content, /Saturation is not guaranteed/);
-      assert.match(content, /Recovery/);
+      assert.match(content, /After traffic/);
     }
   }
   await session.send('Browser.setDownloadBehavior', { behavior: 'default' });
   await page.evaluate(() => window.scrollTo(0, 0));
   assert.ok(
-    await page.getByRole('table', { name: 'Response times by phase for provider 1' }).isVisible(),
+    await page
+      .getByRole('table', { name: 'Response times by stage for test server 1' })
+      .isVisible(),
   );
   await page.screenshot({ path: 'artifacts/desktop-load-session.png', fullPage: true });
   await page.reload();

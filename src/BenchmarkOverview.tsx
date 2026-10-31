@@ -136,7 +136,7 @@ export default function BenchmarkOverview(props: Props) {
           <div className="panel-heading">
             <div>
               <h2>Check your connection</h2>
-              <p>Start with ping. No server setup is needed.</p>
+              <p>Start with ping to see how quickly a server replies.</p>
             </div>
           </div>
           <div className="form-body">
@@ -221,7 +221,7 @@ export default function BenchmarkOverview(props: Props) {
             )}
             {blocked && (
               <p role="status" className="form-note">
-                Wait for the current load test or backup to finish before starting another test.
+                Wait for the speed test or settings copy to finish before starting another test.
               </p>
             )}
             <details className="advanced-settings">
@@ -259,7 +259,7 @@ export default function BenchmarkOverview(props: Props) {
                       }
                     />
                     <span className="field-help">
-                      A safety limit, not the intended test duration.
+                      The test stops earlier when all checks are done.
                     </span>
                   </label>
                 </div>
@@ -311,7 +311,7 @@ export default function BenchmarkOverview(props: Props) {
                   </label>
                 )}
                 <label>
-                  Report preference
+                  Label for the saved report
                   <select
                     disabled={running}
                     value={config?.profile ?? 'balanced'}
@@ -323,9 +323,9 @@ export default function BenchmarkOverview(props: Props) {
                       })
                     }
                   >
-                    <option value="latency">Latency</option>
+                    <option value="latency">Response time</option>
                     <option value="balanced">Balanced</option>
-                    <option value="download">Download</option>
+                    <option value="download">Download speed</option>
                   </select>
                   <span className="field-help">
                     This label is saved with the report. It does not change the test.
@@ -414,16 +414,17 @@ export default function BenchmarkOverview(props: Props) {
                           <dd>{failurePercent(summary, shownProtocol)}</dd>
                           <dt>Slower responses (p95)</dt>
                           <dd>{formatProbeMs(summary.p95Ms, shownProtocol)}</dd>
-                          <dt>p99</dt>
+                          <dt>Slowest responses (p99)</dt>
                           <dd>{formatProbeMs(summary.p99Ms, shownProtocol)}</dd>
                           <dt>Variation between checks</dt>
                           <dd>{formatProbeMs(summary.successiveVariationMs, shownProtocol)}</dd>
                         </dl>
                         <p className="form-note">
                           Typical time is the median: half of the successful checks were faster,
-                          half were slower. p95 is the 95th percentile of successful timings.
-                          Variation shows how much consecutive successful timings differ. A short
-                          test has limited samples.
+                          half were slower. p95 and p99 describe the slower end of the results;
+                          about 95% or 99% of successful checks were at or below those times.
+                          Variation shows how much the time changes between replies. Short tests
+                          give less information about rare slow replies.
                         </p>
                         {echoCounts && (
                           <p className="form-note">
@@ -491,7 +492,7 @@ export default function BenchmarkOverview(props: Props) {
         <section className="panel timeline-panel">
           <div className="panel-heading">
             <div>
-              <h2>Timings during the test</h2>
+              <h2>Response times during the test</h2>
               <p>Lower points mean faster responses. Gaps mark checks without a usable timing.</p>
             </div>
             <span className="pill">{running ? 'Measuring' : testGuide[shownProtocol].title}</span>
