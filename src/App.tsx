@@ -10,102 +10,17 @@ import type {
   Config,
   DnsQuery,
   Inventory,
-  Profile,
   ProbeProtocol,
   Progress,
   Sample,
   ServiceReport,
 } from './types';
 import { downloadBackup, downloadReport } from './report';
+import BenchmarkOverview from './BenchmarkOverview';
 import LoadPanel from './LoadPanel';
-import {
-  dnsAnswerText,
-  dnsCountsText,
-  failureNames,
-  failurePercent,
-  formatProbeMs,
-  protocolNames,
-  protocolNotes,
-  sampleLatency,
-} from './measurement';
+import { protocolNames } from './measurement';
 
 type View = 'overview' | 'load' | 'inventory' | 'history' | 'backups' | 'policy';
-const profiles: Profile[] = ['latency', 'balanced', 'download'];
-
-function LatencyChart({ samples, protocol }: { samples: Sample[]; protocol: ProbeProtocol }) {
-  const valid = samples.map(sampleLatency).filter((value): value is number => value != null);
-  const maximum = Math.max(10, ...valid);
-  const endpoints = [...new Set(samples.map((sample) => sample.endpointId))];
-  return (
-    <div className="chart">
-      <div className="chart-axis">
-        <span>{maximum.toFixed(0)} ms</span>
-        <span>0 ms</span>
-      </div>
-      <svg
-        viewBox="0 0 900 180"
-        role="img"
-        aria-label={
-          protocol === 'dnsLookup'
-            ? 'Measured successful DNS lookup times'
-            : protocol === 'icmpEcho'
-              ? 'Measured ICMP echo round-trip times'
-              : 'Measured TCP connection establishment times'
-        }
-      >
-        {[30, 90, 150].map((y) => (
-          <line key={y} x1="0" x2="900" y1={y} y2={y} stroke="currentColor" opacity="0.15" />
-        ))}
-        {endpoints.map((endpoint, index) => {
-          const matching = samples.filter((sample) => sample.endpointId === endpoint);
-          const points = matching.map((sample, point) => {
-            const value = sampleLatency(sample);
-            return value == null
-              ? null
-              : `${20 + (point * 860) / Math.max(matching.length - 1, 1)},${165 - (value / maximum) * 150}`;
-          });
-          const segments: string[][] = [[]];
-          points.forEach((point) => {
-            if (point == null) segments.push([]);
-            else segments[segments.length - 1].push(point);
-          });
-          return (
-            <g
-              key={endpoint}
-              stroke={index === 0 ? '#db8bb6' : '#91b9e7'}
-              fill="none"
-              strokeWidth="2.5"
-            >
-              {segments
-                .filter((segment) => segment.length > 1)
-                .map((segment, segmentIndex) => (
-                  <polyline key={segmentIndex} points={segment.join(' ')} />
-                ))}
-              {points
-                .filter((point): point is string => point != null)
-                .map((point, pointIndex) => {
-                  const [x, y] = point.split(',');
-                  return <circle key={pointIndex} cx={x} cy={y} r="3" />;
-                })}
-            </g>
-          );
-        })}
-      </svg>
-      {samples.length === 0 && (
-        <div className="chart-empty">
-          Your measurements will appear here after a baseline starts.
-        </div>
-      )}
-      <div className="legend">
-        {endpoints.map((endpoint, index) => (
-          <span key={endpoint} className={index === 0 ? 'pink' : 'blue'}>
-            {endpoint}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export default function App() {
   const [view, setView] = useState<View>('overview');
@@ -126,7 +41,7 @@ export default function App() {
   const [loadRunning, setLoadRunning] = useState(false);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [error, setError] = useState('');
-  const [protocol, setProtocol] = useState<ProbeProtocol>('tcpConnect');
+  const [protocol, setProtocol] = useState<ProbeProtocol>('icmpEcho');
   const [targets, setTargets] = useState<Record<ProbeProtocol, [string, string]>>({
     tcpConnect: ['1.1.1.1:53', '8.8.8.8:53'],
     icmpEcho: ['1.1.1.1', '8.8.8.8'],
@@ -289,14 +204,6 @@ export default function App() {
     }
   }
 
-  const activeAdapters = inventory?.adapters.filter((adapter) => adapter.status === 'Up') ?? [];
-  const primary = selected?.results[0]?.summary;
-  const shownSamples = selected?.samples ?? samples;
-  const shownProtocol = selected?.protocol ?? protocol;
-  const showingEcho = shownProtocol === 'icmpEcho';
-  const showingDns = shownProtocol === 'dnsLookup';
-  const completed = progress?.completed ?? 0;
-  const percent = progress ? Math.round((completed / progress.total) * 100) : 0;
   const backupPayload = useMemo<BackupPayload | null>(
     () => (selectedBackup ? JSON.parse(selectedBackup.payloadJson) : null),
     [selectedBackup],
@@ -315,8 +222,8 @@ export default function App() {
         <nav>
           {(
             [
-              ['overview', 'Overview'],
-              ['load', 'Throughput & load'],
+              ['overview', 'Connection test'],
+              ['load', 'Speed & load'],
               ['inventory', 'System inventory'],
               ['history', 'Benchmark history'],
               ['backups', 'Configuration backups'],
@@ -343,9 +250,9 @@ export default function App() {
           <div className="breadcrumb">
             Workspace <span>/</span>{' '}
             {view === 'load'
-              ? 'Throughput & load'
+              ? 'Speed & load'
               : view === 'overview'
-                ? 'Overview'
+                ? 'Connection test'
                 : view === 'inventory'
                   ? 'System inventory'
                   : view === 'history'
@@ -371,9 +278,9 @@ export default function App() {
               <div className="eyebrow">MEASURE. EXPERIMENT. VALIDATE.</div>
               <h1>
                 {view === 'load'
-                  ? 'Responsiveness under load.'
+                  ? 'Test speed and responsiveness.'
                   : view === 'overview'
-                    ? 'Know your connection.'
+                    ? 'Test your connection.'
                     : view === 'inventory'
                       ? 'System inventory'
                       : view === 'history'
@@ -384,9 +291,9 @@ export default function App() {
               </h1>
               <p>
                 {view === 'load'
-                  ? 'Bounded transfers with concurrent latency across selected endpoints.'
+                  ? 'See what happens to response times while test data is downloaded and uploaded.'
                   : view === 'overview'
-                    ? 'Build an honest baseline before changing anything.'
+                    ? 'Choose what to measure. The defaults are ready to use, and results are explained below.'
                     : view === 'inventory'
                       ? 'Read-only Windows discovery, captured locally.'
                       : view === 'history'
@@ -396,336 +303,27 @@ export default function App() {
                           : 'Bounded operations, explicit authorization, and reversible changes.'}
               </p>
             </div>
-            <span className="badge">READ-ONLY PREVIEW</span>
+            <span className="badge">TESTING PREVIEW</span>
           </section>
           {view === 'overview' && (
-            <>
-              <div className="metrics">
-                <article>
-                  <label>ACTIVE ADAPTERS</label>
-                  <strong>{inventory ? activeAdapters.length : '--'}</strong>
-                  <span>
-                    {activeAdapters[0]?.name ??
-                      (loadingInventory ? 'Discovering interfaces' : 'No active adapter found')}
-                  </span>
-                </article>
-                <article>
-                  <label>
-                    {showingDns
-                      ? 'DNS LOOKUP MEDIAN'
-                      : showingEcho
-                        ? 'ICMP ECHO RTT MEDIAN'
-                        : 'TCP CONNECT MEDIAN'}
-                  </label>
-                  <strong>{formatProbeMs(primary?.medianMs, shownProtocol)}</strong>
-                  <span>{selected?.results[0]?.endpoint.id ?? 'Run a baseline to measure'}</span>
-                </article>
-                <article>
-                  <label>{failureNames[shownProtocol].toUpperCase()}</label>
-                  <strong>{primary ? failurePercent(primary, shownProtocol) : '--'}</strong>
-                  <span>
-                    {showingDns
-                      ? 'Negative answers and errors included; not packet loss'
-                      : showingEcho
-                        ? 'Echo attempts; errors reported separately'
-                        : 'TCP attempts, protocol specific'}
-                  </span>
-                </article>
-                <article>
-                  <label>RETAINED CHANGES</label>
-                  <strong>0</strong>
-                  <span>Original configuration preserved</span>
-                </article>
-              </div>
-              <section className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <h2>
-                      {showingDns
-                        ? 'DNS lookup timeline'
-                        : showingEcho
-                          ? 'Echo RTT timeline'
-                          : 'Connection timeline'}
-                    </h2>
-                    <p>
-                      {showingDns
-                        ? 'Validated successful name resolution across selected resolvers'
-                        : showingEcho
-                          ? 'Direct ICMP echo RTT across the selected network endpoints'
-                          : 'TCP establishment time across independent destinations'}
-                    </p>
-                  </div>
-                  <span className="pill">
-                    {running ? 'Measuring' : (selected?.status ?? 'Awaiting baseline')}
-                  </span>
-                </div>
-                <LatencyChart samples={shownSamples} protocol={shownProtocol} />
-                <div className="chart-note">{protocolNotes[shownProtocol]}</div>
-              </section>
-              <div className="two-columns">
-                <section className="panel">
-                  <div className="panel-heading">
-                    <div>
-                      <h2>Baseline controls</h2>
-                      <p>Small, bounded probes. No configuration changes.</p>
-                    </div>
-                  </div>
-                  <div className="form-body">
-                    <label>
-                      Network benchmark
-                      <select
-                        disabled={running}
-                        value={protocol}
-                        onChange={(event) => setProtocol(event.target.value as ProbeProtocol)}
-                      >
-                        <option value="tcpConnect">TCP connection establishment</option>
-                        <option value="icmpEcho">ICMP echo RTT (IPv4 / IPv6)</option>
-                        <option value="dnsLookup">DNS resolution (direct resolver)</option>
-                      </select>
-                    </label>
-                    <label>Optimization profile</label>
-                    <div className="segmented">
-                      {profiles.map((profile) => (
-                        <button
-                          disabled={running}
-                          className={config?.profile === profile ? 'chosen' : ''}
-                          key={profile}
-                          onClick={() => config && setConfig({ ...config, profile })}
-                        >
-                          {profile}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="form-note">
-                      Profile is recorded for future comparisons. A baseline does not rank or change
-                      settings.
-                    </p>
-                    <div className="input-grid">
-                      <label>
-                        Samples per endpoint
-                        <input
-                          type="number"
-                          min="3"
-                          max="120"
-                          disabled={running}
-                          value={config?.sampleCount ?? 12}
-                          onChange={(event) =>
-                            config &&
-                            setConfig({ ...config, sampleCount: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label>
-                        Time budget (minutes)
-                        <input
-                          type="number"
-                          min="1"
-                          max="1440"
-                          disabled={running}
-                          value={config?.sessionMinutes ?? 15}
-                          onChange={(event) =>
-                            config &&
-                            setConfig({ ...config, sessionMinutes: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                    </div>
-                    <label>
-                      {protocol === 'icmpEcho'
-                        ? 'First destination (IP or IPv6%scopeId)'
-                        : 'First destination (IP:port)'}
-                      <input
-                        disabled={running}
-                        value={firstAddress}
-                        onChange={(event) => setAddress(0, event.target.value)}
-                      />
-                    </label>
-                    <label>
-                      {protocol === 'icmpEcho'
-                        ? 'Second destination (IP or IPv6%scopeId)'
-                        : 'Second destination (IP:port)'}
-                      <input
-                        disabled={running}
-                        value={secondAddress}
-                        onChange={(event) => setAddress(1, event.target.value)}
-                      />
-                    </label>
-                    {protocol === 'dnsLookup' && (
-                      <>
-                        <label>
-                          DNS query name
-                          <input
-                            disabled={running}
-                            value={dnsQuery.name}
-                            maxLength={254}
-                            onChange={(event) =>
-                              setDnsQuery({ ...dnsQuery, name: event.target.value })
-                            }
-                          />
-                        </label>
-                        <label>
-                          DNS record type
-                          <select
-                            disabled={running}
-                            value={dnsQuery.recordType}
-                            onChange={(event) =>
-                              setDnsQuery({
-                                ...dnsQuery,
-                                recordType: event.target.value as DnsQuery['recordType'],
-                              })
-                            }
-                          >
-                            <option value="A">A (IPv4 addresses)</option>
-                            <option value="AAAA">AAAA (IPv6 addresses)</option>
-                          </select>
-                        </label>
-                      </>
-                    )}
-                    <p className="form-note">
-                      {protocol === 'dnsLookup'
-                        ? 'Starting sends the query name to both selected resolvers over UDP, with TCP fallback if truncated. Windows DNS settings stay unchanged. Choose a public name for public resolvers; private names may expose internal information or produce different split-DNS results. Resolver cache state is unknown.'
-                        : `Starting sends ${protocol === 'icmpEcho' ? 'ICMP echo requests' : 'TCP probes'} to these addresses. Public resolver controls do not represent every internet route or measure DNS lookup time. ICMP link-local IPv6 requires a numeric interface scope ID.`}{' '}
-                      Use endpoints you are permitted to test.
-                    </p>
-                    <div className="button-row">
-                      <button
-                        className="primary"
-                        disabled={!config || running || loadRunning || capturingBackup}
-                        onClick={startBaseline}
-                      >
-                        Start baseline
-                      </button>
-                      {running && (
-                        <button
-                          onClick={() =>
-                            invoke('cancelBaseline').catch((error) => setError(String(error)))
-                          }
-                        >
-                          Cancel measurement
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </section>
-                <section className="panel">
-                  <div className="panel-heading">
-                    <div>
-                      <h2>
-                        {running
-                          ? 'Baseline in progress'
-                          : selected
-                            ? 'Measurement report'
-                            : 'A measured starting point'}
-                      </h2>
-                      <p>
-                        {running
-                          ? `${completed} of ${progress?.total ?? '--'} attempts`
-                          : 'Evidence before recommendations'}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="form-body">
-                    {running ? (
-                      <>
-                        <div className="progress-bar">
-                          <div style={{ width: `${percent}%` }} />
-                        </div>
-                        <p>
-                          Estimated remaining:{' '}
-                          {progress
-                            ? `${progress.remainingLowSeconds}-${progress.remainingHighSeconds} seconds`
-                            : 'estimating after first sample'}
-                        </p>
-                        <p className="form-note">
-                          The range adapts to observed durations and connection timeouts.
-                        </p>
-                      </>
-                    ) : selected ? (
-                      <>
-                        <div className="result-list">
-                          {selected.results.map(({ endpoint, summary, echoCounts, dnsCounts }) => (
-                            <div key={endpoint.id}>
-                              <strong>{endpoint.id}</strong>
-                              <span>
-                                Median {formatProbeMs(summary.medianMs, selected.protocol)}
-                              </span>
-                              <span>
-                                p95 {formatProbeMs(summary.p95Ms, selected.protocol)} / p99{' '}
-                                {formatProbeMs(summary.p99Ms, selected.protocol)}
-                              </span>
-                              <span>
-                                Successive variation{' '}
-                                {formatProbeMs(summary.successiveVariationMs, selected.protocol)}
-                              </span>
-                              <span>
-                                {summary.successful}/{summary.attempted}{' '}
-                                {selected.protocol === 'dnsLookup'
-                                  ? 'resolved lookups'
-                                  : selected.protocol === 'icmpEcho'
-                                    ? 'echo replies'
-                                    : 'successful connections'}
-                              </span>
-                              {echoCounts && (
-                                <span>
-                                  Timeouts {echoCounts.timeouts}; IP errors {echoCounts.ipErrors};
-                                  system errors {echoCounts.osErrors}; invalid replies{' '}
-                                  {echoCounts.invalidReplies}; unsupported {echoCounts.unsupported}
-                                </span>
-                              )}
-                              {dnsCounts && (
-                                <>
-                                  <span>{dnsCountsText(dnsCounts)}</span>
-                                  <span>
-                                    {(() => {
-                                      const last = selected.samples
-                                        .filter(
-                                          (sample) =>
-                                            sample.endpointId === endpoint.id && sample.dns,
-                                        )
-                                        .at(-1)?.dns;
-                                      return last
-                                        ? `Last response: ${dnsAnswerText(last)}`
-                                        : 'No DNS response recorded';
-                                    })()}
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                        <div className="button-row">
-                          <button onClick={() => downloadReport(selected, 'json')}>
-                            Export JSON
-                          </button>
-                          <button onClick={() => downloadReport(selected, 'html')}>
-                            Export HTML
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="empty-visual">
-                          <span />
-                          <span />
-                          <span />
-                          <span />
-                          <span />
-                        </div>
-                        <h3>Your network, measured.</h3>
-                        <p>
-                          Collect a baseline, inspect failures, and keep the raw evidence. A single
-                          run cannot establish an optimization benefit.
-                        </p>
-                        <div className="notice">
-                          Setting changes are unavailable in this preview while the service and
-                          recovery safeguards are developed.
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </section>
-              </div>
-            </>
+            <BenchmarkOverview
+              config={config}
+              onConfigChange={setConfig}
+              protocol={protocol}
+              onProtocolChange={setProtocol}
+              firstAddress={firstAddress}
+              secondAddress={secondAddress}
+              onAddressChange={setAddress}
+              dnsQuery={dnsQuery}
+              onDnsQueryChange={setDnsQuery}
+              running={running}
+              blocked={loadRunning || capturingBackup || managingService}
+              selected={selected}
+              samples={samples}
+              progress={progress}
+              onStart={startBaseline}
+              onCancel={() => invoke('cancelBaseline').catch((error) => setError(String(error)))}
+            />
           )}
           <div hidden={view !== 'load'}>
             <LoadPanel

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Config, ProbeProtocol } from './types';
 import type { LoadPlan, LoadProgress, LoadRun, TransferProvider } from './load-types';
-import { downloadLoadReport, formatMbps, loadNotes, phaseNames } from './load-report';
+import LoadResults, { dataAmount, loadStages, LoadLatencyComparison } from './LoadResults';
 import { formatProbeMs, sampleLatency } from './measurement';
 
 const mib = 1024 * 1024;
@@ -89,265 +89,390 @@ export default function LoadPanel({
 
   const providerCount = Number(cloudflare) + Number(Boolean(origin.trim()));
   const disabled = running || blocked;
+  const downloadBytes = Math.round(downloadMib * mib) * providerCount;
+  const uploadBytes = Math.round(uploadMib * mib) * providerCount;
+  const validSize = [downloadMib, uploadMib].every(
+    (value) => Number.isFinite(value) && value >= 0.001 && value <= 512,
+  );
+  const overBudget = Boolean(
+    config && (downloadBytes > config.maxDownloadBytes || uploadBytes > config.maxUploadBytes),
+  );
+  const preset =
+    downloadMib === 16 && uploadMib === 4
+      ? 'quick'
+      : downloadMib === 64 && uploadMib === 16
+        ? 'longer'
+        : 'custom';
   return (
     <>
       {error && (
         <div role="alert" className="error">
-          <strong>Load session failed</strong>
+          <strong>Test could not finish</strong>
           <p>{error}</p>
           <button onClick={() => setError('')}>Dismiss</button>
         </div>
       )}
-      <div className="two-columns">
+      <div className="load-stages" aria-label="Test stages">
+        {loadStages.map((stage, index) => (
+          <div
+            key={stage.phase}
+            className={running && progress?.phase === stage.phase ? 'active' : ''}
+            aria-current={running && progress?.phase === stage.phase ? 'step' : undefined}
+          >
+            <span className="stage-number">{index + 1}</span>
+            <div>
+              <strong>{stage.title}</strong>
+              <p>{stage.description}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="two-columns benchmark-layout">
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>Transfer controls</h2>
-              <p>Idle baseline, download, upload, then recovery.</p>
+              <h2>Run a speed & load test</h2>
+              <p>Download and upload test data while checking response times.</p>
             </div>
           </div>
           <div className="form-body">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={cloudflare}
-                disabled={disabled}
-                onChange={(event) => setCloudflare(event.target.checked)}
-              />{' '}
-              Use Cloudflare transfer endpoints
-            </label>
             <label>
-              User-owned benchmark origin (optional)
-              <input
-                disabled={disabled}
-                value={origin}
-                placeholder="https://your-benchmark-server.example/"
-                onChange={(event) => setOrigin(event.target.value)}
-              />
-            </label>
-            <p className="form-note">
-              The owned server must implement the EPP transfer protocol. Public origins require
-              HTTPS; plain HTTP is available for literal loopback test servers. Cloudflare uses an
-              anycast-selected edge. Selected providers receive your IP address and synthetic test
-              traffic.
-            </p>
-            <div className="input-grid">
-              <label>
-                Download payload per provider (MiB)
-                <input
-                  disabled={disabled}
-                  type="number"
-                  min="0.001"
-                  max="512"
-                  step="any"
-                  value={downloadMib}
-                  onChange={(event) => setDownloadMib(Number(event.target.value))}
-                />
-              </label>
-              <label>
-                Upload payload per provider (MiB)
-                <input
-                  disabled={disabled}
-                  type="number"
-                  min="0.001"
-                  max="512"
-                  step="any"
-                  value={uploadMib}
-                  onChange={(event) => setUploadMib(Number(event.target.value))}
-                />
-              </label>
-            </div>
-            <label>
-              Parallel transfer streams
+              Test size
               <select
                 disabled={disabled}
-                value={streams}
-                onChange={(event) => setStreams(Number(event.target.value))}
-              >
-                {[1, 2, 3, 4].map((count) => (
-                  <option key={count} value={count}>
-                    {count}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Concurrent latency protocol
-              <select
-                disabled={disabled}
-                value={latencyProtocol}
+                value={preset}
                 onChange={(event) => {
-                  const protocol = event.target.value as Exclude<ProbeProtocol, 'dnsLookup'>;
-                  setLatencyProtocol(protocol);
-                  setAddresses(
-                    protocol === 'icmpEcho' ? ['1.1.1.1', '8.8.8.8'] : ['1.1.1.1:53', '8.8.8.8:53'],
-                  );
+                  if (event.target.value === 'quick') {
+                    setDownloadMib(16);
+                    setUploadMib(4);
+                  } else if (event.target.value === 'longer') {
+                    setDownloadMib(64);
+                    setUploadMib(16);
+                  }
                 }}
               >
-                <option value="icmpEcho">ICMP echo RTT</option>
-                <option value="tcpConnect">TCP connection establishment</option>
+                <option value="quick">Quick (about 21 MB per provider)</option>
+                <option value="longer">More data (about 84 MB per provider)</option>
+                <option value="custom" disabled>
+                  Custom size (set in Advanced settings)
+                </option>
               </select>
             </label>
-            {addresses.map((address, index) => (
-              <label key={index}>
-                Load latency destination {index + 1} (
-                {latencyProtocol === 'icmpEcho' ? 'IP' : 'IP:port'})
-                <input
-                  disabled={disabled}
-                  value={address}
-                  onChange={(event) =>
-                    setAddresses((previous) =>
-                      previous.map((value, position) =>
-                        position === index ? event.target.value : value,
-                      ),
-                    )
-                  }
-                />
-              </label>
-            ))}
+            <div className="test-facts">
+              <div>
+                <span>Transfer server{providerCount === 1 ? '' : 's'}</span>
+                <strong>
+                  {cloudflare ? 'Cloudflare' : ''}
+                  {cloudflare && origin.trim() ? ', ' : ''}
+                  {origin.trim() ? 'Your server' : ''}
+                  {providerCount === 0 ? 'None selected' : ''}
+                </strong>
+              </div>
+              <div>
+                <span>Test data limit</span>
+                <strong>{dataAmount(downloadBytes + uploadBytes)}</strong>
+              </div>
+              <div>
+                <span>Time limit</span>
+                <strong>30 seconds per transfer</strong>
+              </div>
+            </div>
             <p className="form-note">
-              Starting can temporarily compete with other traffic. Payload limit:{' '}
-              {(downloadMib * providerCount).toFixed(2)} MiB down,{' '}
-              {(uploadMib * providerCount).toFixed(2)} MiB up; each direction has a 30-second
-              timeout. The total must fit your configured budgets.{' '}
-              {providerCount === 1
-                ? 'One provider is a baseline only; it is insufficient for provider diversity.'
-                : ''}{' '}
-              No background tests or settings changes run.
+              This test can temporarily slow other downloads, calls, or games.
             </p>
+            {!validSize && (
+              <p role="status" className="transfer-error">
+                Enter valid download and upload sizes in Advanced settings.
+              </p>
+            )}
+            {overBudget && (
+              <p role="status" className="transfer-error">
+                This size exceeds your data limits ({dataAmount(config?.maxDownloadBytes ?? 0)}{' '}
+                download and {dataAmount(config?.maxUploadBytes ?? 0)} upload). Choose a smaller
+                test or reduce the sizes in Advanced settings.
+              </p>
+            )}
+            {providerCount === 0 && (
+              <p role="status" className="transfer-error">
+                Choose at least one test server in Advanced settings.
+              </p>
+            )}
+            {blocked && (
+              <p role="status" className="form-note">
+                Wait for the current connection test, backup, or service action to finish.
+              </p>
+            )}
             <div className="button-row">
               <button
                 className="primary"
-                disabled={!config || disabled || providerCount === 0}
+                disabled={!config || disabled || providerCount === 0 || !validSize || overBudget}
                 onClick={start}
               >
-                Start load session
+                {running ? 'Test running...' : 'Start load test'}
               </button>
               {running && (
                 <button
                   onClick={() => invoke('cancelBaseline').catch((error) => setError(String(error)))}
                 >
-                  Cancel load session
+                  Stop load test
                 </button>
               )}
             </div>
+            <p className="field-help">
+              Selected servers receive your IP address. The data limit covers test payload; protocol
+              overhead adds some traffic.
+            </p>
+            <details className="advanced-settings">
+              <summary>
+                Advanced settings<span>Test servers, data limits, and response checks</span>
+              </summary>
+              <div className="advanced-body">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={cloudflare}
+                    disabled={disabled}
+                    onChange={(event) => setCloudflare(event.target.checked)}
+                  />
+                  Use Cloudflare transfer endpoints
+                </label>
+                <label>
+                  User-owned benchmark origin (optional)
+                  <input
+                    disabled={disabled}
+                    value={origin}
+                    placeholder="https://your-benchmark-server.example/"
+                    onChange={(event) => setOrigin(event.target.value)}
+                  />
+                </label>
+                <p className="form-note">
+                  Cloudflare selects a server through its network. A custom server must implement
+                  the EPP transfer protocol. Public servers require HTTPS; plain HTTP is supported
+                  only for numeric loopback test addresses. One provider alone does not measure
+                  performance across independent providers.
+                </p>
+                <div className="input-grid">
+                  <label>
+                    Download payload per provider (MiB)
+                    <input
+                      disabled={disabled}
+                      type="number"
+                      min="0.001"
+                      max="512"
+                      step="any"
+                      value={downloadMib}
+                      onChange={(event) => setDownloadMib(Number(event.target.value))}
+                    />
+                  </label>
+                  <label>
+                    Upload payload per provider (MiB)
+                    <input
+                      disabled={disabled}
+                      type="number"
+                      min="0.001"
+                      max="512"
+                      step="any"
+                      value={uploadMib}
+                      onChange={(event) => setUploadMib(Number(event.target.value))}
+                    />
+                  </label>
+                </div>
+                <p className="field-help">
+                  MiB is a precise data unit: 1 MiB = 1,048,576 bytes. With the selected providers,
+                  this plan allows {dataAmount(downloadBytes)} down and {dataAmount(uploadBytes)}{' '}
+                  up.
+                </p>
+                <label>
+                  Parallel transfer streams
+                  <select
+                    disabled={disabled}
+                    value={streams}
+                    onChange={(event) => setStreams(Number(event.target.value))}
+                  >
+                    {[1, 2, 3, 4].map((count) => (
+                      <option key={count} value={count}>
+                        {count}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="field-help">
+                    How many transfers run at the same time. More streams do not guarantee a better
+                    connection.
+                  </span>
+                </label>
+                <label>
+                  Concurrent latency protocol
+                  <select
+                    disabled={disabled}
+                    value={latencyProtocol}
+                    onChange={(event) => {
+                      const protocol = event.target.value as Exclude<ProbeProtocol, 'dnsLookup'>;
+                      setLatencyProtocol(protocol);
+                      setAddresses(
+                        protocol === 'icmpEcho'
+                          ? ['1.1.1.1', '8.8.8.8']
+                          : ['1.1.1.1:53', '8.8.8.8:53'],
+                      );
+                    }}
+                  >
+                    <option value="icmpEcho">Response time (ICMP echo)</option>
+                    <option value="tcpConnect">Connection setup (TCP)</option>
+                  </select>
+                </label>
+                {addresses.map((address, index) => (
+                  <label key={index}>
+                    Load latency destination {index + 1} (
+                    {latencyProtocol === 'icmpEcho' ? 'IP' : 'IP:port'})
+                    <input
+                      disabled={disabled}
+                      value={address}
+                      onChange={(event) =>
+                        setAddresses((previous) =>
+                          previous.map((value, position) =>
+                            position === index ? event.target.value : value,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                ))}
+                <p className="form-note">
+                  Default response checks contact Cloudflare and Google. ICMP can be filtered or
+                  rate-limited; its timeouts are not a direct measure of game packet loss.
+                </p>
+              </div>
+            </details>
           </div>
         </section>
-        <section className="panel">
+        <section className="panel" aria-live="polite">
           <div className="panel-heading">
             <div>
-              <h2>{running ? 'Load session in progress' : 'Transfer report'}</h2>
+              <h2>{running ? 'Your load test is running' : 'Your load test results'}</h2>
               <p>
                 {running && progress
-                  ? `Provider ${progress.providerIndex + 1}/${progress.providerCount}: ${phaseNames[progress.phase]}`
-                  : (selected?.status ?? 'Awaiting measurements')}
+                  ? `Provider ${progress.providerIndex + 1} of ${progress.providerCount}: ${loadStages.find((stage) => stage.phase === progress.phase)?.title}`
+                  : selected
+                    ? new Date(selected.startedAt).toLocaleString()
+                    : 'Transfer speeds and response times appear here.'}
               </p>
             </div>
           </div>
           <div className="form-body">
-            {running && progress && (
+            {running ? (
               <>
-                <p>Download payload read: {progress.downloadBytesRead.toLocaleString()} bytes</p>
+                <h3>
+                  {progress
+                    ? loadStages.find((stage) => stage.phase === progress.phase)?.title
+                    : 'Preparing the test...'}
+                </h3>
                 <p>
-                  Upload payload queued: {progress.uploadBodyBytesProvided.toLocaleString()} bytes
+                  Each phase checks response times to the same servers. Short transfers may finish
+                  before enough replies arrive.
                 </p>
-                {progress.sample && (
-                  <p>
-                    {progress.sample.sample.endpointId}:{' '}
-                    {formatProbeMs(sampleLatency(progress.sample.sample), latencyProtocol)}
+                {progress?.sample && (
+                  <p className="live-reading">
+                    Latest response:{' '}
+                    <strong>
+                      {formatProbeMs(sampleLatency(progress.sample.sample), latencyProtocol)}
+                    </strong>
                   </p>
                 )}
+                <details className="result-details">
+                  <summary>Live transfer details</summary>
+                  <p>Download data received: {dataAmount(progress?.downloadBytesRead ?? 0)}</p>
+                  <p>
+                    Upload data prepared: {dataAmount(progress?.uploadBodyBytesProvided ?? 0)}. This
+                    is not the amount acknowledged by the server.
+                  </p>
+                </details>
               </>
-            )}
-            <p className="form-note">{loadNotes}</p>
-            {selected && (
-              <>
-                <div className="result-list">
-                  {selected.transfers.map(({ providerIndex, phase, result, error }, index) => (
-                    <div key={index}>
-                      <strong>
-                        Provider {providerIndex + 1}: {phaseNames[phase]}
-                      </strong>
-                      <span>{result?.provider.origin}</span>
-                      <span>{result?.status ?? error}</span>
-                      <span>Payload goodput {formatMbps(result?.applicationGoodputMbps)}</span>
-                      <span>
-                        {result?.acceptedPayloadBytes.toLocaleString() ?? 0} accepted bytes
-                      </span>
-                      {result?.streams
-                        .filter((stream) => stream.error)
-                        .map((stream) => (
-                          <span key={stream.ordinal}>
-                            Stream {stream.ordinal + 1}: {stream.error}
-                            {stream.retryAfter ? `; retry-after ${stream.retryAfter}` : ''}
-                          </span>
-                        ))}
-                    </div>
-                  ))}
+            ) : selected ? (
+              <LoadResults run={selected} />
+            ) : (
+              <div className="results-empty">
+                <div className="empty-result-mark" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
                 </div>
-                <div className="button-row">
-                  <button onClick={() => downloadLoadReport(selected, 'json')}>
-                    Export load JSON
-                  </button>
-                  <button onClick={() => downloadLoadReport(selected, 'html')}>
-                    Export load HTML
-                  </button>
-                </div>
-                <div className="result-list">
-                  {selected.latencySummaries.map(({ providerIndex, phase, results }) => (
-                    <div key={`${providerIndex}-${phase}`}>
-                      <strong>
-                        Provider {providerIndex + 1}: {phaseNames[phase]} latency
-                      </strong>
-                      {results.map(({ endpoint, summary }) => (
-                        <span key={endpoint.id}>
-                          {endpoint.id}: median{' '}
-                          {formatProbeMs(summary.medianMs, endpoint.protocol ?? 'tcpConnect')}; p95{' '}
-                          {formatProbeMs(summary.p95Ms, endpoint.protocol ?? 'tcpConnect')};{' '}
-                          {summary.successful}/{summary.attempted} probes succeeded
-                        </span>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </>
+                <h3>See what changes when traffic starts</h3>
+                <p>
+                  Select <strong>Start load test</strong>. We check response times before the
+                  transfers, during download and upload, and afterward.
+                </p>
+                <dl>
+                  <dt>Download / upload</dt>
+                  <dd>How quickly this test transfers data, shown in Mbps.</dd>
+                  <dt>Response time</dt>
+                  <dd>How quickly a test server replies, shown in milliseconds.</dd>
+                  <dt>Before and after</dt>
+                  <dd>
+                    Compare phases to see whether response times return toward the starting point.
+                  </dd>
+                </dl>
+              </div>
             )}
           </div>
         </section>
       </div>
-      <section className="panel">
+      {selected && !running && (
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Response times around the transfers</h2>
+              <p>
+                Compare each server across the four phases. Smaller numbers mean faster replies.
+              </p>
+            </div>
+          </div>
+          <LoadLatencyComparison run={selected} />
+        </section>
+      )}
+      <section className="panel load-history">
         <div className="panel-heading">
           <div>
-            <h2>Saved load sessions</h2>
-            <p>Separate from unloaded protocol baselines.</p>
+            <h2>Previous load tests</h2>
+            <p>Open a saved report to review its speeds and response times.</p>
           </div>
         </div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Started</th>
-                <th>Status</th>
-                <th>Providers</th>
-                <th>Report</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((run) => (
-                <tr key={run.id}>
-                  <td>{new Date(run.startedAt).toLocaleString()}</td>
-                  <td>{run.status}</td>
-                  <td>{run.plan.providers.length}</td>
-                  <td>
-                    <button disabled={running} onClick={() => setSelected(run)}>
-                      View load report
-                    </button>
-                  </td>
+        {history.length === 0 ? (
+          <div className="form-body">
+            <p>No load tests saved yet. Finished or stopped tests will appear here.</p>
+          </div>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Started</th>
+                  <th>Result</th>
+                  <th>Providers</th>
+                  <th>Report</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {history.map((run) => (
+                  <tr key={run.id}>
+                    <td>{new Date(run.startedAt).toLocaleString()}</td>
+                    <td>
+                      {run.status === 'completed'
+                        ? 'Finished'
+                        : run.status === 'cancelled'
+                          ? 'Stopped'
+                          : 'Incomplete'}
+                    </td>
+                    <td>{run.plan.providers.length}</td>
+                    <td>
+                      <button disabled={running} onClick={() => setSelected(run)}>
+                        View load report
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </>
   );

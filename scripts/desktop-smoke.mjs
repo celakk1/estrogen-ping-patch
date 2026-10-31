@@ -48,7 +48,50 @@ try {
     if (message.type() === 'error') console.error(message.text());
   });
   await page.reload();
-  await page.getByRole('button', { name: 'Start baseline', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Start test', exact: true }).waitFor();
+  await page.waitForFunction(() =>
+    Array.from(document.querySelectorAll('button')).some(
+      (button) => button.textContent === 'Start test' && !button.disabled,
+    ),
+  );
+  assert.equal(
+    await page
+      .getByRole('button', { name: 'Response time (ping)', exact: true })
+      .getAttribute('aria-pressed'),
+    'true',
+  );
+  assert.equal(await page.getByLabel('Samples per endpoint').isVisible(), false);
+  assert.equal(await page.getByLabel('First destination (IP or IPv6%scopeId)').isVisible(), false);
+  assert.equal(
+    await page
+      .getByRole('img', { name: 'Measured ICMP echo round-trip times', exact: true })
+      .count(),
+    0,
+  );
+  assert.ok(await page.getByRole('button', { name: 'Connection setup', exact: true }).isVisible());
+  assert.ok(
+    await page.getByRole('button', { name: 'Website lookup (DNS)', exact: true }).isVisible(),
+  );
+  mkdirSync('artifacts', { recursive: true });
+  await page.screenshot({ path: 'artifacts/desktop-beginner-start.png', fullPage: true });
+  const viewport = await page.evaluate(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const startBounds = await page
+    .getByRole('button', { name: 'Start test', exact: true })
+    .boundingBox();
+  assert.ok(
+    startBounds && startBounds.y + startBounds.height <= 768,
+    'Start test must be visible without scrolling at 1024 by 768',
+  );
+  assert.ok(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    'Narrow layout must not overflow horizontally',
+  );
+  await page.screenshot({ path: 'artifacts/desktop-beginner-narrow.png', fullPage: true });
+  await page.setViewportSize(viewport);
   await page.getByRole('button', { name: 'System inventory', exact: true }).click();
   await page.getByRole('columnheader', { name: 'Interface', exact: true }).waitFor();
   await page.waitForFunction(() => /Windows \d/.test(document.body.innerText), undefined, {
@@ -56,26 +99,31 @@ try {
   });
   const rows = page.locator('tbody tr');
   assert.ok((await rows.count()) > 0, 'Expected real Windows network adapters');
-  await page.getByRole('button', { name: 'Overview', exact: true }).click();
+  await page.getByRole('button', { name: 'Connection test', exact: true }).click();
+  await page.getByRole('button', { name: 'Connection setup', exact: true }).click();
+  await page.locator('details.advanced-settings > summary').first().click();
   await page.getByLabel('Samples per endpoint').fill('3');
   await page.getByLabel('First destination (IP:port)').fill(first.address);
   await page.getByLabel('Second destination (IP:port)').fill(second.address);
-  await page.getByRole('button', { name: 'Start baseline', exact: true }).click();
+  await page.getByRole('button', { name: 'Start test', exact: true }).click();
   await page.getByRole('button', { name: 'Export JSON', exact: true }).waitFor({ timeout: 30_000 });
-  assert.equal(await page.getByText('3/3 successful connections', { exact: true }).count(), 2);
+  assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
   assert.equal(await page.getByRole('alert').count(), 0);
   mkdirSync('artifacts', { recursive: true });
   await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator('details.advanced-settings > summary').first().click();
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: 'artifacts/desktop-baseline.png', fullPage: true });
+  await page.locator('details.advanced-settings > summary').first().click();
   await page.getByLabel('Network benchmark').selectOption('icmpEcho');
   await page.getByLabel('First destination (IP or IPv6%scopeId)').fill('127.0.0.1');
   await page.getByLabel('Second destination (IP or IPv6%scopeId)').fill('::1');
-  await page.getByRole('button', { name: 'Start baseline', exact: true }).click();
+  await page.getByRole('button', { name: 'Start test', exact: true }).click();
   await page
     .getByRole('img', { name: 'Measured ICMP echo round-trip times', exact: true })
     .waitFor();
   await page.getByRole('button', { name: 'Export JSON', exact: true }).waitFor({ timeout: 30_000 });
-  assert.equal(await page.getByText('3/3 echo replies', { exact: true }).count(), 2);
+  assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
   const echoRun = await page.evaluate(
     async () => (await window.__TAURI_INTERNALS__.invoke('getHistory'))[0],
   );
@@ -100,7 +148,9 @@ try {
   });
   for (const format of ['JSON', 'HTML']) {
     const downloaded = page.waitForEvent('download', { timeout: 15_000 });
-    await page.getByRole('button', { name: `Export ${format}`, exact: true }).click();
+    await page
+      .getByRole('button', { name: format === 'HTML' ? 'Save report' : 'Export JSON', exact: true })
+      .click();
     const download = await downloaded;
     assert.equal(await download.failure(), null);
     const content = readFileSync(path.resolve('artifacts', download.suggestedFilename()), 'utf8');
@@ -112,25 +162,28 @@ try {
     }
   }
   await session.send('Browser.setDownloadBehavior', { behavior: 'default' });
+  await page.locator('details.advanced-settings > summary').first().click();
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: 'artifacts/desktop-echo-baseline.png', fullPage: true });
   await page.reload();
   await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
   await page.getByRole('cell', { name: 'ICMP echo', exact: true }).waitFor();
   await page.getByRole('button', { name: 'View', exact: true }).first().click();
-  assert.equal(await page.getByText('3/3 echo replies', { exact: true }).count(), 2);
-  await page.getByLabel('Network benchmark').selectOption('dnsLookup');
+  assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
+  await page.getByRole('button', { name: 'Website lookup (DNS)', exact: true }).click();
+  await page.locator('details.advanced-settings > summary').first().click();
   await page.getByLabel('Samples per endpoint').fill('3');
   await page.getByLabel('First destination (IP:port)').fill(firstDns.address);
   await page.getByLabel('Second destination (IP:port)').fill(secondDns.address);
-  await page.getByLabel('DNS query name').fill('example.test');
+  await page.getByLabel('Website name to look up').fill('example.test');
   let dnsRun;
   for (const recordType of ['A', 'AAAA']) {
     await page.getByLabel('DNS record type').selectOption(recordType);
-    await page.getByRole('button', { name: 'Start baseline', exact: true }).click();
+    await page.getByRole('button', { name: 'Start test', exact: true }).click();
     await page
       .getByRole('button', { name: 'Export JSON', exact: true })
       .waitFor({ timeout: 30_000 });
-    assert.equal(await page.getByText('3/3 resolved lookups', { exact: true }).count(), 2);
+    assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
     dnsRun = await page.evaluate(
       async () => (await window.__TAURI_INTERNALS__.invoke('getHistory'))[0],
     );
@@ -172,7 +225,9 @@ try {
   });
   for (const format of ['JSON', 'HTML']) {
     const downloaded = page.waitForEvent('download', { timeout: 15_000 });
-    await page.getByRole('button', { name: `Export ${format}`, exact: true }).click();
+    await page
+      .getByRole('button', { name: format === 'HTML' ? 'Save report' : 'Export JSON', exact: true })
+      .click();
     const download = await downloaded;
     assert.equal(await download.failure(), null);
     const content = readFileSync(path.resolve('artifacts', download.suggestedFilename()), 'utf8');
@@ -186,12 +241,14 @@ try {
     }
   }
   await session.send('Browser.setDownloadBehavior', { behavior: 'default' });
+  await page.locator('details.advanced-settings > summary').first().click();
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: 'artifacts/desktop-dns-baseline.png', fullPage: true });
   await page.reload();
   await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
   await page.getByRole('cell', { name: 'DNS resolution', exact: true }).first().waitFor();
   await page.getByRole('button', { name: 'View', exact: true }).first().click();
-  assert.equal(await page.getByText('3/3 resolved lookups', { exact: true }).count(), 2);
+  assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
   await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
   assert.ok((await page.getByRole('cell', { name: 'completed', exact: true }).count()) > 0);
   await page.getByRole('button', { name: 'Safety & policy', exact: true }).click();

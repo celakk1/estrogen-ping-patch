@@ -25,8 +25,20 @@ try {
   }
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.getByRole('button', { name: 'Throughput & load', exact: true }).click();
+  await page.getByRole('button', { name: 'Speed & load', exact: true }).click();
+  assert.equal(await page.getByLabel('Use Cloudflare transfer endpoints').isVisible(), false);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  mkdirSync('artifacts', { recursive: true });
+  await page.screenshot({ path: 'artifacts/desktop-beginner-load.png', fullPage: true });
   async function configure() {
+    const advanced = page
+      .getByLabel('Use Cloudflare transfer endpoints')
+      .locator('..')
+      .locator('..')
+      .locator('..');
+    if ((await advanced.getAttribute('open')) == null) {
+      await advanced.locator(':scope > summary').click();
+    }
     await page.getByLabel('Use Cloudflare transfer endpoints').uncheck();
     await page.getByLabel('User-owned benchmark origin (optional)').fill(fixture.origin);
     await page.getByLabel('Download payload per provider (MiB)').fill('2');
@@ -34,9 +46,10 @@ try {
     await page.getByLabel('Parallel transfer streams').selectOption('2');
     await page.getByLabel('Load latency destination 1 (IP)').fill('127.0.0.1');
     await page.getByLabel('Load latency destination 2 (IP)').fill('::1');
+    await advanced.locator(':scope > summary').click();
   }
   await configure();
-  await page.getByRole('button', { name: 'Start load session', exact: true }).click();
+  await page.getByRole('button', { name: 'Start load test', exact: true }).click();
   await page
     .getByRole('button', { name: 'Export load JSON', exact: true })
     .waitFor({ timeout: 30_000 });
@@ -86,7 +99,12 @@ try {
   });
   for (const format of ['JSON', 'HTML']) {
     const downloaded = page.waitForEvent('download', { timeout: 15_000 });
-    await page.getByRole('button', { name: `Export load ${format}`, exact: true }).click();
+    await page
+      .getByRole('button', {
+        name: format === 'HTML' ? 'Save load report' : 'Export load JSON',
+        exact: true,
+      })
+      .click();
     const download = await downloaded;
     assert.equal(await download.failure(), null);
     const content = readFileSync(path.resolve('artifacts', download.suggestedFilename()), 'utf8');
@@ -98,14 +116,18 @@ try {
     }
   }
   await session.send('Browser.setDownloadBehavior', { behavior: 'default' });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  assert.ok(
+    await page.getByRole('table', { name: 'Response times by phase for provider 1' }).isVisible(),
+  );
   await page.screenshot({ path: 'artifacts/desktop-load-session.png', fullPage: true });
   await page.reload();
-  await page.getByRole('button', { name: 'Throughput & load', exact: true }).click();
+  await page.getByRole('button', { name: 'Speed & load', exact: true }).click();
   await page.getByRole('button', { name: 'View load report', exact: true }).first().click();
   await page.getByRole('button', { name: 'Export load JSON', exact: true }).waitFor();
   await configure();
-  await page.getByRole('button', { name: 'Start load session', exact: true }).click();
-  await page.getByRole('button', { name: 'Cancel load session', exact: true }).click();
+  await page.getByRole('button', { name: 'Start load test', exact: true }).click();
+  await page.getByRole('button', { name: 'Stop load test', exact: true }).click();
   await page
     .getByRole('button', { name: 'Export load JSON', exact: true })
     .waitFor({ timeout: 10_000 });

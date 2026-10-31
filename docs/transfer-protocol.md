@@ -12,7 +12,7 @@ Client plans cap each direction's total payload across one to four streams, with
 
 ## Local reference server
 
-With the development toolchain installed, run `node scripts/benchmark-server.mjs` to start the loopback-only reference server at `http://127.0.0.1:8088/`. An optional `--port PORT` changes its port. In **Throughput & load**, turn off Cloudflare, enter that origin, and use loopback latency targets to keep the entire test local. Stop the server with Ctrl+C.
+With the development toolchain installed, run `node scripts/benchmark-server.mjs` to start the loopback-only reference server at `http://127.0.0.1:8088/`. An optional `--port PORT` changes its port. In **Speed & load**, open **Advanced settings**, turn off Cloudflare, enter that origin, and use loopback latency targets to keep the entire test local. Stop the server with Ctrl+C.
 
 The reference implementation accepts only fixed protocol paths, synthetic data, four active requests, a 512 MiB request limit, a two GiB process payload quota, bounded headers/connections, and timeouts. Quota reservations are not refunded after failures. It binds only literal loopback addresses and serves no user files. A remote deployment needs an independently configured HTTPS reverse proxy, access control, rate limits, and the owner's permission; this development server does not install or configure those components.
 

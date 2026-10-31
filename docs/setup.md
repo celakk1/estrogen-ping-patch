@@ -20,6 +20,12 @@ Use `test.bat` before committing. Use `build.bat` for an optimized executable an
 
 `clean.bat` removes only `target`, `dist`, `coverage`, `.cache`, and `src-tauri/gen`. It rejects reparse points and paths outside the checkout. It leaves `node_modules`, private configuration, and benchmark history intact. Stop active development/build processes before cleaning.
 
+## Your first tests
+
+For your first measurement, open **Connection test**, keep **Response time (ping)** selected, and press **Start test**. The defaults already contain two test servers. Results explain response times and successful checks; **Save report** downloads a readable report. Server addresses, sample counts, and technical options are under **Advanced settings**.
+
+For a separate test during traffic, open **Speed & load**, review the test size and data limit, then press **Start load test**. This can temporarily slow other network activity. Compare the response-time table across before, download, upload, and after phases. These tests measure your connection; automatic settings optimization remains unavailable.
+
 ## Failure recovery
 
 | Error | Action |
