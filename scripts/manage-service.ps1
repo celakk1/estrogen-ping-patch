@@ -29,7 +29,8 @@ function getRegisteredService {
             throw 'An existing service with this name has an unexpected configuration. Inspect Windows Services; it will not be overwritten.'
         }
     }
-    return $service
+    if ($service) { return [ServiceProcess.ServiceController]::new($serviceName) }
+    return $null
 }
 
 function quoteArgument([string]$value) {
@@ -88,8 +89,10 @@ try {
             if ((Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash -ne $sourceHash) { throw 'Copied service executable checksum mismatch.' }
             $binaryPath = '"' + $installedExe + '" --service --owner-sid ' + $ownerSid
             $credential = [Management.Automation.PSCredential]::new('NT AUTHORITY\LocalService', [Security.SecureString]::new())
-            $service = New-Service -Name $serviceName -DisplayName 'estrogen ping patch service' -Description 'Authenticated local read-only service. Network changes and automatic restoration are disabled.' -BinaryPathName $binaryPath -StartupType Automatic -Credential $credential
+            New-Service -Name $serviceName -DisplayName 'estrogen ping patch service' -Description 'Authenticated local read-only service. Network changes and automatic restoration are disabled.' -BinaryPathName $binaryPath -StartupType Automatic -Credential $credential | Out-Null
             $registeredService = $true
+            # windows powershell disposes the controller emitted by new-service.
+            $service = [ServiceProcess.ServiceController]::new($serviceName)
             $service.Start()
             $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(20))
             Write-Host "Service installed as LocalService for Windows user $ownerSid. Network changes remain disabled."

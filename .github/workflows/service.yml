@@ -1,0 +1,45 @@
+name: Service lifecycle verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/service/**'
+      - 'scripts/manage-service.ps1'
+      - 'scripts/service-smoke.ps1'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/service.yml'
+  pull_request:
+    paths:
+      - 'crates/service/**'
+      - 'scripts/manage-service.ps1'
+      - 'scripts/service-smoke.ps1'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/service.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  service:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      EPP_NO_PAUSE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build standalone service
+        run: cargo build --release --locked -p epp-service
+      - name: Service tests
+        run: cargo test --locked -p epp-service
+      - name: SCM install, identity, restart, and removal
+        shell: powershell
+        run: ./scripts/service-smoke.ps1 -allowServiceInstallation
