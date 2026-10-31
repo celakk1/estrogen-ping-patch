@@ -4,6 +4,8 @@
 
 The target architecture has four trust domains: the unelevated Tauri desktop, a bounded benchmark/experiment worker, a dedicated privileged Windows service, and an unprivileged MCP/inference component. SQLite records raw evidence separately from decisions. The GUI and inference component cannot execute arbitrary commands or mutate system settings.
 
+The product optimizes the machine's shared networking configuration. Its main workflow is inspect, measure, experiment, verify, then retain or restore. Gaming responsiveness, stability, and reasonable throughput are constraints throughout; users must not select a game to activate optimization. Do not build a game-selection or game-boosting flow. Optional application/server measurements supplement the system-wide evidence without defining a game-specific optimizer or claiming that generic TCP/ICMP probes measure actual gameplay traffic. User-selected validation targets must remain stable across matched experiments.
+
 The current implementation includes the desktop, a local read-only application service owned by Tauri, a cancellable worker, a standalone MCP stdio mode, and an optional dedicated Windows service with authenticated status requests. The Windows service runs as LocalService and currently exposes no settings writes. Network modifications remain unavailable until scoped operation authorization, durable checkpoints, verified setters, watchdog, and recovery tests exist.
 
 ## Runtime paths

@@ -2,6 +2,8 @@
 
 The complete product scope is [the supplied master specification](specification.md), plus the Windows execution and private-repository requirements described in the README. A working baseline preview is a milestone, not completion of the optimizer.
 
+The owner's clarified product direction is system-wide networking optimization with gaming responsiveness as a core constraint. There must be no required game selector or "boost this game" workflow. User-controlled validation targets and optional application measurements support the same shared-network experiment engine. Improvements must be demonstrated across the selected workload cohort, with regressions checked before retention; no universal improvement across every game may be assumed.
+
 ## Milestones
 
 | Stage | Deliverables | State |
