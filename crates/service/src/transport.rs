@@ -1,6 +1,6 @@
 use crate::{
     ServiceResult,
-    protocol::{self, Request, ServiceStatus},
+    protocol::{self, CheckpointStoreStatus, Request, ServiceStatus},
     security,
 };
 use std::{
@@ -70,11 +70,19 @@ pub(crate) fn createServer(
     Ok(pipe)
 }
 
-async fn serveClient(pipe: &mut NamedPipeServer, ownerSid: &str) -> ServiceResult<()> {
+async fn serveClient(
+    pipe: &mut NamedPipeServer,
+    ownerSid: &str,
+    checkpointStore: &CheckpointStoreStatus,
+) -> ServiceResult<()> {
     let frame = readFrame(pipe).await?;
     security::authenticateClient(pipe.as_raw_handle(), ownerSid)?;
     let request = protocol::decodeRequest(&frame, nowUnixMs()?)?;
-    writeFrame(pipe, &serde_json::to_vec(&protocol::response(&request))?).await
+    writeFrame(
+        pipe,
+        &serde_json::to_vec(&protocol::response(&request, checkpointStore))?,
+    )
+    .await
 }
 
 pub(crate) async fn serve(
@@ -83,6 +91,7 @@ pub(crate) async fn serve(
     ownerSid: String,
     serverSid: String,
     mut stop: watch::Receiver<bool>,
+    checkpointStore: CheckpointStoreStatus,
 ) -> ServiceResult<()> {
     loop {
         if *stop.borrow() {
@@ -96,7 +105,7 @@ pub(crate) async fn serve(
         let next = createServer(&pipeName, &ownerSid, &serverSid, false)?;
         let mut connected = std::mem::replace(&mut pipe, next);
         tokio::select! {
-            _ = tokio::time::timeout(Duration::from_millis(protocol::MAX_REQUEST_LIFETIME_MS), serveClient(&mut connected, &ownerSid)) => {},
+            _ = tokio::time::timeout(Duration::from_millis(protocol::MAX_REQUEST_LIFETIME_MS), serveClient(&mut connected, &ownerSid, &checkpointStore)) => {},
             _ = stop.changed() => return Ok(()),
         }
     }
@@ -160,7 +169,7 @@ pub(crate) async fn query(
             }
             let now = nowUnixMs()?;
             let request = Request {
-                schemaVersion: 1,
+                schemaVersion: protocol::SCHEMA_VERSION,
                 requestId: format!("{}-{now}", std::process::id()),
                 issuedAtUnixMs: now,
                 expiresAtUnixMs: now.saturating_add(protocol::MAX_REQUEST_LIFETIME_MS),
@@ -174,6 +183,10 @@ pub(crate) async fn query(
                 || response.mode != "readOnly"
                 || response.modificationsPermitted
                 || response.rollbackAvailable
+                || response.checkpointStore.schemaVersion != 1
+                || response.checkpointStore.verifiedAtUnixMs == 0
+                || response.checkpointStore.verifiedAtUnixMs > i64::MAX as u64
+                || response.checkpointStore.pendingRecoveryCount > 2000
             {
                 return Err("Service response failed protocol or safety validation".into());
             }
@@ -206,6 +219,14 @@ mod tests {
             .unwrap()
     }
 
+    fn checkpointStore() -> CheckpointStoreStatus {
+        CheckpointStoreStatus {
+            schemaVersion: 1,
+            verifiedAtUnixMs: nowUnixMs().unwrap() + 86_400_000,
+            pendingRecoveryCount: 0,
+        }
+    }
+
     #[test]
     fn realPipeAuthenticatesCallerBoundsFramesAndRejectsServerImpersonation() {
         runtime().block_on(async {
@@ -214,7 +235,14 @@ mod tests {
             let pipe = createServer(&name, &owner, &owner, true).unwrap();
             assert!(createServer(&name, &owner, &owner, true).is_err());
             let (stop, receiver) = watch::channel(false);
-            let server = serve(pipe, name.clone(), owner.clone(), owner, receiver);
+            let server = serve(
+                pipe,
+                name.clone(),
+                owner.clone(),
+                owner,
+                receiver,
+                checkpointStore(),
+            );
             let client = async {
                 let probe = openClient(&name).unwrap();
                 let (pid, session) = serverIdentity(&probe).unwrap();
@@ -237,7 +265,14 @@ mod tests {
             let owner = security::currentSid().unwrap();
             let pipe = createServer(&name, &owner, &owner, true).unwrap();
             let (stop, receiver) = watch::channel(false);
-            let server = serve(pipe, name.clone(), owner.clone(), owner.clone(), receiver);
+            let server = serve(
+                pipe,
+                name.clone(),
+                owner.clone(),
+                owner.clone(),
+                receiver,
+                checkpointStore(),
+            );
             let client = async {
                 let mut client = openClient(&name).unwrap();
                 client
@@ -265,7 +300,14 @@ mod tests {
             let owner = security::currentSid().unwrap();
             let pipe = createServer(&name, &owner, &owner, true).unwrap();
             let (stop, receiver) = watch::channel(false);
-            let server = serve(pipe, name.clone(), "S-1-5-19".into(), owner, receiver);
+            let server = serve(
+                pipe,
+                name.clone(),
+                "S-1-5-19".into(),
+                owner,
+                receiver,
+                checkpointStore(),
+            );
             let client = async {
                 let probe = openClient(&name).unwrap();
                 let (pid, session) = serverIdentity(&probe).unwrap();
@@ -307,7 +349,14 @@ mod tests {
             let owner = security::currentSid().unwrap();
             let pipe = createServer(&name, &owner, &owner, true).unwrap();
             let (stop, receiver) = watch::channel(false);
-            let server = serve(pipe, name.clone(), owner.clone(), owner, receiver);
+            let server = serve(
+                pipe,
+                name.clone(),
+                owner.clone(),
+                owner,
+                receiver,
+                checkpointStore(),
+            );
             let client = async {
                 let mut client = openClient(&name).unwrap();
                 let (pid, session) = serverIdentity(&client).unwrap();
@@ -334,7 +383,14 @@ mod tests {
             let owner = security::currentSid().unwrap();
             let pipe = createServer(&name, &owner, &owner, true).unwrap();
             let (stop, receiver) = watch::channel(false);
-            let server = serve(pipe, name.clone(), owner.clone(), owner, receiver);
+            let server = serve(
+                pipe,
+                name.clone(),
+                owner.clone(),
+                owner,
+                receiver,
+                checkpointStore(),
+            );
             let client = async {
                 let mut client = openClient(&name).unwrap();
                 client.write_u32(4096).await.unwrap();

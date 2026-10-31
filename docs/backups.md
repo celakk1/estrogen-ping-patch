@@ -20,6 +20,18 @@ These are diagnostic settings snapshots. Automatic restoration is not implemente
 
 The application currently changes no Windows settings. Capturing a snapshot does not grant authorization to make changes and does not indicate that a proposed experiment is safe.
 
+## Service checkpoint journal
+
+The service now has a separate SQLite recovery journal library with immutable, checksummed MTU checkpoint documents and a chained event history. Each document records the exact original and proposed MTU, adapter GUID, address family, OS/driver context, authorized-user SID, creation time, and bounded lease. A SID written into a document is evidence, not an authenticated authorization grant. Only the future policy layer may authorize preparation; the current IPC protocol exposes no checkpoint writes.
+
+Preparation commits the document and initial event in one IMMEDIATE transaction using WAL and FULL synchronization, then reads them back. An apply intent requires a matching fresh original-value observation and a verified committed checkpoint. Readback gates applied, retained, and restored states. A changed GUID, OS, driver, address family, or unexpected third-party value blocks the transition. Expired leases permit cancellation/recovery only. Event sequence supplies ordering even after a backward wall-clock correction. Unresolved work blocks another experiment, stale writers cannot advance state, and terminal history cannot be reopened.
+
+Startup validates SQLite identity/schema, integrity, foreign keys, each saved document, and every event hash/transition. The journal retains up to 2000 documents and 128 events per document; capacity or persistence failure blocks advancement and preserves evidence. SHA-256 detects corruption, not administrator tampering. The [service storage ACLs](service.md#recovery-journal-storage) establish the local ownership boundary.
+
+Local tests use independent connections, reopen interrupted transactions, inject failed commits and corruption, reject changed adapter context, and terminate real subprocesses after committed apply/restore intents. The subprocess test changes a simulated MTU text file; it never touches a Windows adapter. This demonstrates journal persistence under process termination, not physical power-loss durability or native restoration.
+
+No Windows setter, rollback watchdog, effective-value/native restoration backend, persistent-versus-active MTU semantics, DNS/addressing recovery, authorization-grant lifecycle, or reboot recovery is implemented. The service only initializes this store and reports unresolved checkpoint counts; it does not claim `rollbackAvailable`. No diagnostic snapshot can substitute for these operation-specific recovery gates.
+
 ## Mandatory gate for future setting changes
 
 Before any setter is enabled, the privileged service must perform all of these steps:

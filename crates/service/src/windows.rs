@@ -1,5 +1,6 @@
 use crate::{
-    PIPE_NAME, SERVICE_ACCOUNT_SID, SERVICE_NAME, ServiceReport, ServiceResult, security, transport,
+    PIPE_NAME, SERVICE_ACCOUNT_SID, SERVICE_NAME, ServiceReport, ServiceResult, security, storage,
+    transport,
 };
 use std::{ffi::OsString, time::Duration};
 use tokio::sync::watch;
@@ -87,18 +88,21 @@ fn serviceLoop() -> ServiceResult<()> {
             .get()
             .ok_or("Missing authorized user SID")?
             .clone();
+        let serviceSid = security::serviceSid()?;
+        let journal = storage::open(&serviceSid)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let pipe = transport::createServer(PIPE_NAME, &ownerSid, SERVICE_ACCOUNT_SID, true)?;
+            let pipe = transport::createServer(PIPE_NAME, &ownerSid, &serviceSid, true)?;
             setState(handle, ServiceState::Running, false)?;
             let result = transport::serve(
                 pipe,
                 PIPE_NAME.into(),
                 ownerSid,
-                SERVICE_ACCOUNT_SID.into(),
+                serviceSid,
                 receiver,
+                journal.status.clone(),
             )
             .await;
             setState(handle, ServiceState::StopPending, result.is_err())?;
@@ -162,12 +166,29 @@ pub async fn inspect() -> ServiceResult<ServiceReport> {
         .process_id
         .filter(|pid| *pid != 0)
         .ok_or("Running service has no process identifier")?;
-    let response = transport::query(PIPE_NAME, pid, 0).await?;
+    let response = transport::query(PIPE_NAME, pid, 0).await.map_err(|error| {
+        format!("The registered service did not answer the current protocol: {error}. If updating an older preview, use uninstall-service.bat and then install-service.bat to update it.")
+    })?;
     let confirmed = service.query_status()?;
     if confirmed.current_state != ServiceState::Running || confirmed.process_id != Some(pid) {
         return Err("Service identity changed during the request; retry status".into());
     }
-    Ok(ServiceReport {state:"ready".into(),detail:"Authenticated LocalService process; read-only protocol. Network changes and restoration remain disabled.".into(),response:Some(response)})
+    let pending = response.checkpointStore.pendingRecoveryCount;
+    let (state, detail) = if pending > 0 {
+        (
+            "recoveryRequired",
+            format!(
+                "Authenticated read-only service found {pending} unresolved checkpoint(s). Preserve the recovery journal for investigation. Automatic restoration and network changes remain disabled."
+            ),
+        )
+    } else {
+        ("ready", "Authenticated LocalService process; recovery journal verified at service startup. Network changes and restoration remain disabled.".into())
+    };
+    Ok(ServiceReport {
+        state: state.into(),
+        detail,
+        response: Some(response),
+    })
 }
 
 pub fn identity() -> ServiceResult<String> {

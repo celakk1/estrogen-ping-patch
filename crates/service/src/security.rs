@@ -6,11 +6,15 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{HANDLE, LocalFree},
     Security::{
+        ACCESS_ALLOWED_ACE, ACE_HEADER,
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            ConvertStringSidToSidW,
+            ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
         },
-        GetTokenInformation, RevertToSelf, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        CheckTokenMembership, DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, GetTokenInformation,
+        LookupAccountNameW, OWNER_SECURITY_INFORMATION, RevertToSelf, SE_DACL_PROTECTED,
+        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     System::{
         Pipes::ImpersonateNamedPipeClient,
@@ -37,6 +41,10 @@ impl Descriptor {
         // client opens also require read-attributes; generic write would grant create-pipe-instance.
         let sddl =
             format!("D:P(A;;GA;;;SY)(A;;GA;;;{serverSid})(A;;0x{CLIENT_ACCESS:08x};;;{ownerSid})");
+        Self::fromSddl(&sddl)
+    }
+
+    fn fromSddl(sddl: &str) -> ServiceResult<Self> {
         let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut descriptor = std::ptr::null_mut();
         if unsafe {
@@ -130,6 +138,154 @@ pub(crate) fn currentSid() -> ServiceResult<String> {
     tokenSid(token.as_raw_handle())
 }
 
+pub(crate) fn serviceSid() -> ServiceResult<String> {
+    let name: Vec<u16> = format!(r"NT SERVICE\{}", crate::SERVICE_NAME)
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut sid = [0u64; 32];
+    let mut sidSize = size_of_val(&sid) as u32;
+    let mut domain = [0u16; 256];
+    let mut domainSize = domain.len() as u32;
+    let mut useType = 0;
+    if unsafe {
+        LookupAccountNameW(
+            std::ptr::null(),
+            name.as_ptr(),
+            sid.as_mut_ptr().cast(),
+            &mut sidSize,
+            domain.as_mut_ptr(),
+            &mut domainSize,
+            &mut useType,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let value = sidText(sid.as_mut_ptr().cast())?;
+    if !value.starts_with("S-1-5-80-") {
+        return Err("Windows returned an unexpected service identity".into());
+    }
+    Ok(value)
+}
+
+pub(crate) fn requireServiceMembership(serviceSid: &str) -> ServiceResult<()> {
+    let text: Vec<u16> = serviceSid.encode_utf16().chain(Some(0)).collect();
+    let mut sid = std::ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut sid) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let _allocation = LocalAllocation(sid);
+    let mut member = 0;
+    if unsafe { CheckTokenMembership(std::ptr::null_mut(), sid, &mut member) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if member == 0 {
+        return Err(
+            "The service-specific SID is absent from the process token; reinstall the service"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn verifyStorageHandle(
+    handle: HANDLE,
+    serviceSid: &str,
+    directory: bool,
+) -> ServiceResult<()> {
+    let mut descriptor = std::ptr::null_mut();
+    let error = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if error != 0 {
+        return Err(std::io::Error::from_raw_os_error(error as i32).into());
+    }
+    let _allocation = LocalAllocation(descriptor);
+    verifyStorageDescriptor(descriptor, serviceSid, directory)
+}
+
+fn verifyStorageDescriptor(
+    descriptor: *mut c_void,
+    serviceSid: &str,
+    directory: bool,
+) -> ServiceResult<()> {
+    let mut owner = std::ptr::null_mut();
+    let mut defaulted = 0;
+    if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0
+        || owner.is_null()
+    {
+        return Err("Recovery storage has no verifiable owner".into());
+    }
+    let owner = sidText(owner)?;
+    let validOwner = if directory {
+        owner == "S-1-5-32-544"
+    } else {
+        [
+            "S-1-5-32-544",
+            "S-1-5-18",
+            crate::SERVICE_ACCOUNT_SID,
+            serviceSid,
+        ]
+        .contains(&owner.as_str())
+    };
+    if !validOwner {
+        return Err("Recovery storage has an unexpected owner".into());
+    }
+    let mut control = 0;
+    let mut revision = 0;
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
+        || (directory && control & SE_DACL_PROTECTED == 0)
+    {
+        return Err("Recovery directory must have a protected access-control list".into());
+    }
+    let mut present = 0;
+    let mut acl = std::ptr::null_mut();
+    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl, &mut defaulted) } == 0
+        || present == 0
+        || acl.is_null()
+        || unsafe { (*acl).AceCount } != 4
+    {
+        return Err("Recovery storage must have exactly the expected access rules".into());
+    }
+    let mut expected = vec![
+        ("S-1-5-18".to_string(), 0x1f01ff),
+        ("S-1-5-32-544".to_string(), 0x1f01ff),
+        (serviceSid.to_string(), 0x1301bf),
+        ("S-1-3-4".to_string(), 0x20000),
+    ];
+    for index in 0..4 {
+        let mut ace = std::ptr::null_mut();
+        if unsafe { GetAce(acl, index, &mut ace) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        let flags = if directory { 3 } else { 16 };
+        if header.AceType != 0 || header.AceFlags != flags || header.AceSize < 16 {
+            return Err("Recovery storage has an unsupported access rule or inheritance".into());
+        }
+        let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let sid = sidText((&ace.SidStart as *const u32).cast_mut().cast())?;
+        let Some(index) = expected
+            .iter()
+            .position(|entry| entry.0 == sid && entry.1 == ace.Mask)
+        else {
+            return Err("Recovery storage grants unexpected permissions".into());
+        };
+        expected.swap_remove(index);
+    }
+    Ok(())
+}
+
 struct Impersonation;
 
 impl Drop for Impersonation {
@@ -217,5 +373,36 @@ mod tests {
             sidText((&ace.SidStart as *const u32).cast_mut().cast()).unwrap(),
             owner
         );
+    }
+
+    #[test]
+    fn recoveryAclRequiresTheServiceSidAndBoundsSharedOwnerRights() {
+        let service = "S-1-5-80-1-2-3-4-5".to_string();
+        assert!(requireServiceMembership(&service).is_err());
+        let directory = format!(
+            "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;{service})(A;OICI;RC;;;OW)"
+        );
+        let descriptor = Descriptor::fromSddl(&directory).unwrap();
+        verifyStorageDescriptor(descriptor.0.0, &service, true).unwrap();
+        for invalid in [
+            directory.replace("O:BA", "O:LS"),
+            directory.replace("D:P", "D:"),
+            directory.replace("RC;;;OW", "WD;;;OW"),
+            directory.replace("RC;;;OW", "RC;;;LS"),
+            directory.replace("0x1301bf", "FA"),
+            directory.replace("OICI", "CI"),
+        ] {
+            let descriptor = Descriptor::fromSddl(&invalid).unwrap();
+            assert!(
+                verifyStorageDescriptor(descriptor.0.0, &service, true).is_err(),
+                "Accepted: {invalid}"
+            );
+        }
+        let file =
+            format!("O:LSD:(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;0x1301bf;;;{service})(A;ID;RC;;;OW)");
+        let descriptor = Descriptor::fromSddl(&file).unwrap();
+        verifyStorageDescriptor(descriptor.0.0, &service, false).unwrap();
+        let descriptor = Descriptor::fromSddl(&file.replace("RC;;;OW", "RC;;;WD")).unwrap();
+        assert!(verifyStorageDescriptor(descriptor.0.0, &service, false).is_err());
     }
 }

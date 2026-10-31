@@ -9,15 +9,40 @@ $env:PSModulePath = "$PSHOME\Modules;$env:ProgramFiles\WindowsPowerShell\Modules
 $serviceName = 'EstrogenPingPatch'
 $installRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'estrogen ping patch service'
 $installedExe = Join-Path $installRoot 'epp-network-service.exe'
+$dataParent = [Environment]::GetFolderPath('CommonApplicationData')
+$dataRoot = Join-Path $dataParent 'estrogen-ping-patch-service'
 $createdDirectory = $false
 $registeredService = $false
 
 function assertSafeInstallPath {
-    foreach ($path in @([Environment]::GetFolderPath('ProgramFiles'), $installRoot, $installedExe)) {
+    param([switch]$includeRecovery)
+    $paths = @([Environment]::GetFolderPath('ProgramFiles'), $installRoot, $installedExe)
+    if ($includeRecovery) { $paths += @($dataParent, $dataRoot, (Join-Path $dataRoot 'recovery.sqlite3'), (Join-Path $dataRoot 'recovery.sqlite3-wal'), (Join-Path $dataRoot 'recovery.sqlite3-shm')) }
+    foreach ($path in $paths) {
         if (Test-Path -LiteralPath $path) {
             if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing a reparse point in the service installation path: $path" }
         }
     }
+}
+
+function initializeRecoveryDirectory {
+    & (Join-Path ([Environment]::SystemDirectory) 'sc.exe') sidtype $serviceName unrestricted
+    if ($LASTEXITCODE -ne 0) { throw 'Could not enable the service-specific SID. The service was not started.' }
+    $serviceSid = ([Security.Principal.NTAccount]::new('NT SERVICE', $serviceName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    # owner-rights prevents other localservice processes from gaining implicit write-dacl on sqlite files.
+    $acl.SetSecurityDescriptorSddlForm("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;$serviceSid)(A;OICI;RC;;;OW)")
+    if (Test-Path -LiteralPath $dataRoot) {
+        $existingAcl = Get-Acl -LiteralPath $dataRoot
+        $expectedRules = ($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { "$($_.IdentityReference.Value)|$([int]$_.FileSystemRights)|$($_.InheritanceFlags)|$($_.PropagationFlags)|$($_.AccessControlType)|$($_.IsInherited)" } | Sort-Object) -join ';'
+        $actualRules = ($existingAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { "$($_.IdentityReference.Value)|$([int]$_.FileSystemRights)|$($_.InheritanceFlags)|$($_.PropagationFlags)|$($_.AccessControlType)|$($_.IsInherited)" } | Sort-Object) -join ';'
+        if (-not $existingAcl.AreAccessRulesProtected -or $existingAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544' -or $actualRules -cne $expectedRules) {
+            throw "Recovery directory permissions are unexpected. Preserve its contents and inspect it before reinstalling: $dataRoot"
+        }
+    } else {
+        [IO.Directory]::CreateDirectory($dataRoot, $acl) | Out-Null
+    }
+    assertSafeInstallPath -includeRecovery
 }
 
 function getRegisteredService {
@@ -41,8 +66,11 @@ function quoteArgument([string]$value) {
 try {
     assertSafeInstallPath
     $sourceExe = Join-Path $PSScriptRoot 'epp-network-service.exe'
-    if (-not (Test-Path -LiteralPath $sourceExe)) { $sourceExe = Join-Path $PSScriptRoot '..\target\release\epp-network-service.exe' }
-    if (-not (Test-Path -LiteralPath $sourceExe)) { $sourceExe = Join-Path $PSScriptRoot '..\target\debug\epp-network-service.exe' }
+    if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+        $buildPaths = @((Join-Path $PSScriptRoot '..\target\release\epp-network-service.exe'), (Join-Path $PSScriptRoot '..\target\debug\epp-network-service.exe'))
+        $latestBuild = Get-Item -LiteralPath $buildPaths -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        if ($latestBuild) { $sourceExe = $latestBuild.FullName }
+    }
     if ($action -eq 'status') {
         if (-not (Test-Path -LiteralPath $sourceExe)) { throw 'Build the service with build.bat, or run this helper from the installed application.' }
         & $sourceExe --status
@@ -59,6 +87,7 @@ try {
         $child = Start-Process -FilePath $systemPowerShell -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru
         exit $child.ExitCode
     }
+    if ($action -in @('install', 'start')) { assertSafeInstallPath -includeRecovery }
     $service = getRegisteredService
     switch ($action) {
         'install' {
@@ -91,6 +120,7 @@ try {
             $credential = [Management.Automation.PSCredential]::new('NT AUTHORITY\LocalService', [Security.SecureString]::new())
             New-Service -Name $serviceName -DisplayName 'estrogen ping patch service' -Description 'Authenticated local read-only service. Network changes and automatic restoration are disabled.' -BinaryPathName $binaryPath -StartupType Automatic -Credential $credential | Out-Null
             $registeredService = $true
+            initializeRecoveryDirectory
             # windows powershell disposes the controller emitted by new-service.
             $service = [ServiceProcess.ServiceController]::new($serviceName)
             $service.Start()

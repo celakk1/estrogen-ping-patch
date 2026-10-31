@@ -6,6 +6,7 @@ on:
     paths:
       - 'crates/service/**'
       - 'scripts/manage-service.ps1'
+      - 'scripts/service-manager.test.mjs'
       - 'scripts/service-smoke.ps1'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -14,6 +15,7 @@ on:
     paths:
       - 'crates/service/**'
       - 'scripts/manage-service.ps1'
+      - 'scripts/service-manager.test.mjs'
       - 'scripts/service-smoke.ps1'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -40,6 +42,8 @@ jobs:
         run: cargo build --release --locked -p epp-service
       - name: Service tests
         run: cargo test --locked -p epp-service
+      - name: Service build selection
+        run: node --test scripts/service-manager.test.mjs
       - name: SCM install, identity, restart, and removal
         shell: powershell
         run: ./scripts/service-smoke.ps1 -allowServiceInstallation

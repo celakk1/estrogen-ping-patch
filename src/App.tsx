@@ -823,6 +823,19 @@ export default function App() {
                     <dd>Disabled in this build</dd>
                     <dt>Dedicated Windows service</dt>
                     <dd>{serviceReport?.state ?? 'Checking status'}</dd>
+                    {serviceReport?.response && (
+                      <>
+                        <dt>Recovery journal verified</dt>
+                        <dd>
+                          {new Date(
+                            serviceReport.response.checkpointStore.verifiedAtUnixMs,
+                          ).toLocaleString()}
+                          {' at service startup'}
+                        </dd>
+                        <dt>Unresolved checkpoints</dt>
+                        <dd>{serviceReport.response.checkpointStore.pendingRecoveryCount}</dd>
+                      </>
+                    )}
                     <dt>AI mode</dt>
                     <dd>Disabled</dd>
                     <dt>Cloud budget</dt>
@@ -862,11 +875,15 @@ export default function App() {
                         Start service
                       </button>
                     )}
-                    {serviceReport?.state === 'ready' && (
-                      <button disabled={managingService} onClick={() => void changeService('stop')}>
-                        Stop service
-                      </button>
-                    )}
+                    {serviceReport &&
+                      ['ready', 'recoveryRequired'].includes(serviceReport.state) && (
+                        <button
+                          disabled={managingService}
+                          onClick={() => void changeService('stop')}
+                        >
+                          Stop service
+                        </button>
+                      )}
                     {serviceReport &&
                       !['notInstalled', 'unsupported', 'unavailable'].includes(
                         serviceReport.state,

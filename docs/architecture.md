@@ -14,6 +14,8 @@ On desktop startup, the local service validates configuration, opens the SQLite 
 
 The manual backup workflow captures inventory and supported settings, commits an immutable document and SHA-256 transactionally, and verifies the exact document bytes before export. Settings capture has a 60-second deadline, bounded output, and cancellation. Database schema version two adds snapshots without altering existing benchmark history. These snapshots expose unavailable sections and do not enable restoration. See [backup gates and limitations](backups.md).
 
+The dedicated service independently opens `%ProgramData%\estrogen-ping-patch-service\recovery.sqlite3` before reporting Running. Its service-specific token SID, protected directory, exact file ACLs, and journal integrity must validate first. Status exposes startup verification time and pending checkpoint count; no checkpoint mutation or network operation is available through IPC. The separate journal library persists original MTU plans and verified transition history for future recovery. Native operation semantics, authorization grants, and an independent restore/watchdog backend remain required before any setter can be enabled.
+
 `estrogen-ping-patch.exe --mcp` runs JSON-RPC over stdio without opening the GUI. The MCP client owns that subprocess and its lifecycle. No TCP listener or privileged access is granted to it. The desktop and preflight initialize the same MCP handler; inference remains disabled.
 
 ## Component choices

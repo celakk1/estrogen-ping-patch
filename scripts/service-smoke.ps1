@@ -7,12 +7,15 @@ $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.Wind
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'The service smoke check requires an already elevated disposable test account; it will not request elevation automatically.' }
 $serviceName = 'EstrogenPingPatch'
 $installRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'estrogen ping patch service'
-if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $installRoot)) { throw 'An existing service installation was found; preserve it and use a clean Windows lab.' }
+$dataRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'estrogen-ping-patch-service'
+$journalPath = Join-Path $dataRoot 'recovery.sqlite3'
+if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $installRoot) -or (Test-Path -LiteralPath $dataRoot)) { throw 'An existing service installation or recovery directory was found; preserve it and use a clean Windows lab.' }
 $manager = Join-Path $PSScriptRoot 'manage-service.ps1'
 $installedExe = Join-Path $installRoot 'epp-network-service.exe'
 $systemPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
 $previousPause = $env:EPP_NO_PAUSE
 $env:EPP_NO_PAUSE = '1'
+$startedAt = Get-Date
 
 function manage([string]$action) {
     & $systemPowerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $manager -action $action
@@ -23,6 +26,18 @@ function readStatus {
     $json = & $installedExe --status
     if ($LASTEXITCODE -ne 0) { throw 'Service status client failed.' }
     return ($json -join "`n") | ConvertFrom-Json
+}
+
+function seedCheckpoint([string]$phase) {
+    $env:EPP_JOURNAL_LAB_ACK = 'disposable-lab-no-network-setter'
+    $env:EPP_JOURNAL_LAB_PATH = $journalPath
+    $env:EPP_JOURNAL_LAB_PHASE = $phase
+    try {
+        & cargo test --locked -p epp-service journal::tests::serviceLabPreparedCheckpoint -- --exact --ignored
+        if ($LASTEXITCODE -ne 0) { throw "Service lab checkpoint phase '$phase' failed." }
+    } finally {
+        Remove-Item Env:EPP_JOURNAL_LAB_ACK, Env:EPP_JOURNAL_LAB_PATH, Env:EPP_JOURNAL_LAB_PHASE -ErrorAction SilentlyContinue
+    }
 }
 
 try {
@@ -39,13 +54,55 @@ try {
     }
     1..5 | ForEach-Object {
         $status = readStatus
-        if ($status.state -ne 'ready' -or $status.response.servicePid -ne $configuration.ProcessId -or $status.response.mode -ne 'readOnly' -or $status.response.modificationsPermitted -ne $false -or $status.response.rollbackAvailable -ne $false) { throw 'Service identity or safety response was unexpected.' }
+        if ($status.state -ne 'ready' -or $status.response.schemaVersion -ne 2 -or $status.response.servicePid -ne $configuration.ProcessId -or $status.response.mode -ne 'readOnly' -or $status.response.modificationsPermitted -ne $false -or $status.response.rollbackAvailable -ne $false -or $status.response.checkpointStore.pendingRecoveryCount -ne 0 -or $status.response.checkpointStore.verifiedAtUnixMs -le 0) { throw 'Service identity, storage, or safety response was unexpected.' }
+    }
+    if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) { throw 'The service did not initialize its recovery journal.' }
+    $serviceSid = ([Security.Principal.NTAccount]::new('NT SERVICE', $serviceName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $directoryAcl = Get-Acl -LiteralPath $dataRoot
+    if (-not $directoryAcl.AreAccessRulesProtected -or $directoryAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544') { throw 'Recovery directory ownership/protection was unexpected.' }
+    foreach ($path in @($dataRoot, $journalPath)) {
+        $rules = (Get-Acl -LiteralPath $path).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+        if ($rules.Count -ne 4) { throw 'Recovery storage has unexpected access rules.' }
+        foreach ($rule in $rules) {
+            $sid = $rule.IdentityReference.Value
+            if ($sid -notin @('S-1-5-18', 'S-1-5-32-544', $serviceSid, 'S-1-3-4')) { throw 'Recovery storage grants access to an unexpected identity.' }
+            if ($sid -eq 'S-1-3-4' -and [int]$rule.FileSystemRights -ne 0x20000) { throw 'Shared file-owner access can change recovery permissions.' }
+            if ($sid -eq $serviceSid -and [int]$rule.FileSystemRights -ne 0x1301bf) { throw 'The service SID has unexpected data rights.' }
+        }
     }
     manage 'stop'
     if ((readStatus).state -ne 'stopped') { throw 'Stopped service was not reported accurately.' }
+    seedCheckpoint 'prepare'
+    manage 'start'
+    $pending = readStatus
+    if ($pending.state -ne 'recoveryRequired' -or $pending.response.checkpointStore.pendingRecoveryCount -ne 1 -or $pending.response.rollbackAvailable -ne $false) { throw 'An unresolved checkpoint was hidden or mistaken for available restoration.' }
+    manage 'stop'
+    seedCheckpoint 'cancel'
+    $originalBytes = [IO.File]::ReadAllBytes($journalPath)
+    try {
+        $corruptedBytes = [byte[]]$originalBytes.Clone()
+        $corruptedBytes[0] = 0
+        [IO.File]::WriteAllBytes($journalPath, $corruptedBytes)
+        & $systemPowerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $manager -action start
+        if ($LASTEXITCODE -eq 0) { throw 'Corrupted recovery storage did not prevent service startup.' }
+        if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'Service remained running with corrupted recovery storage.' }
+    } finally {
+        if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { manage 'stop' }
+        [IO.File]::WriteAllBytes($journalPath, $originalBytes)
+    }
     manage 'start'
     if ((readStatus).state -ne 'ready') { throw 'Service did not recover after restart.' }
-    Write-Host 'Service smoke passed: protected binary, LocalService account, automatic startup, authenticated status, repeated connections, stop and restart. No network setter was exercised.'
+    manage 'stop'
+    $journalHash = (Get-FileHash -LiteralPath $journalPath -Algorithm SHA256).Hash
+    manage 'uninstall'
+    if ((Get-FileHash -LiteralPath $journalPath -Algorithm SHA256).Hash -ne $journalHash) { throw 'Service removal changed the recovery journal.' }
+    manage 'install'
+    if ((readStatus).state -ne 'ready') { throw 'Reinstallation did not reopen the preserved journal.' }
+    Write-Host 'Service smoke passed: protected binary and journal, service SID, authenticated status, repeated connections, pending checkpoint detection, corruption refusal, restart, preserved uninstall, and reinstall. No network setter or native restoration was exercised.'
+} catch {
+    $failure = $_
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $serviceName; StartTime = $startedAt } -MaxEvents 3 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Message | Format-List | Out-Host
+    throw $failure
 } finally {
     try {
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) { manage 'uninstall' }

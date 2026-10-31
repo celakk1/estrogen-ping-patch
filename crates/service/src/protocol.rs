@@ -1,7 +1,7 @@
 use crate::ServiceResult;
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const MAX_FRAME_BYTES: usize = 4096;
 pub const MAX_REQUEST_LIFETIME_MS: u64 = 5000;
 
@@ -31,6 +31,15 @@ pub struct ServiceStatus {
     pub mode: String,
     pub modificationsPermitted: bool,
     pub rollbackAvailable: bool,
+    pub checkpointStore: CheckpointStoreStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckpointStoreStatus {
+    pub schemaVersion: u32,
+    pub verifiedAtUnixMs: u64,
+    pub pendingRecoveryCount: u32,
 }
 
 impl Request {
@@ -66,7 +75,7 @@ pub fn decodeRequest(frame: &[u8], nowUnixMs: u64) -> ServiceResult<Request> {
     Ok(request)
 }
 
-pub fn response(request: &Request) -> ServiceStatus {
+pub fn response(request: &Request, checkpointStore: &CheckpointStoreStatus) -> ServiceStatus {
     ServiceStatus {
         schemaVersion: SCHEMA_VERSION,
         requestId: request.requestId.clone(),
@@ -75,6 +84,7 @@ pub fn response(request: &Request) -> ServiceStatus {
         mode: "readOnly".into(),
         modificationsPermitted: false,
         rollbackAvailable: false,
+        checkpointStore: checkpointStore.clone(),
     }
 }
 
@@ -85,7 +95,7 @@ mod tests {
 
     #[test]
     fn strictAllowlistRejectsCommandsUnknownFieldsAndOversizedFrames() {
-        let valid = json!({"schemaVersion":1,"requestId":"12345678","issuedAtUnixMs":1000,"expiresAtUnixMs":2000,"operation":"getStatus"});
+        let valid = json!({"schemaVersion":SCHEMA_VERSION,"requestId":"12345678","issuedAtUnixMs":1000,"expiresAtUnixMs":2000,"operation":"getStatus"});
         assert!(decodeRequest(&serde_json::to_vec(&valid).unwrap(), 1500).is_ok());
         let mut command = valid.clone();
         command["operation"] = json!("runCommand");
@@ -94,13 +104,13 @@ mod tests {
         unknown["command"] = json!("anything");
         assert!(decodeRequest(&serde_json::to_vec(&unknown).unwrap(), 1500).is_err());
         assert!(decodeRequest(&vec![b' '; MAX_FRAME_BYTES + 1], 1500).is_err());
-        assert!(decodeRequest(br#"{"schemaVersion":1,"schemaVersion":1,"requestId":"12345678","issuedAtUnixMs":1000,"expiresAtUnixMs":2000,"operation":"getStatus"}"#, 1500).is_err());
+        assert!(decodeRequest(br#"{"schemaVersion":2,"schemaVersion":2,"requestId":"12345678","issuedAtUnixMs":1000,"expiresAtUnixMs":2000,"operation":"getStatus"}"#, 1500).is_err());
     }
 
     #[test]
     fn deadlinesAndIdentifiersAreBoundedBeforeDispatch() {
         let mut request = Request {
-            schemaVersion: 1,
+            schemaVersion: SCHEMA_VERSION,
             requestId: "12345678".into(),
             issuedAtUnixMs: 1000,
             expiresAtUnixMs: 2000,
@@ -114,23 +124,31 @@ mod tests {
         request.requestId = "line\nbreak".into();
         assert!(request.validate(1500).is_err());
         request.requestId = "12345678".into();
-        request.schemaVersion = 2;
+        request.schemaVersion = 1;
         assert!(request.validate(1500).is_err());
     }
 
     #[test]
     fn statusNeverGrantsMutationOrClaimsRollback() {
         let request = Request {
-            schemaVersion: 1,
+            schemaVersion: SCHEMA_VERSION,
             requestId: "12345678".into(),
             issuedAtUnixMs: 1000,
             expiresAtUnixMs: 2000,
             operation: Operation::GetStatus,
         };
-        let status = response(&request);
+        let status = response(
+            &request,
+            &CheckpointStoreStatus {
+                schemaVersion: 1,
+                verifiedAtUnixMs: 1000,
+                pendingRecoveryCount: 1,
+            },
+        );
         assert_eq!(status.requestId, request.requestId);
         assert_eq!(status.mode, "readOnly");
         assert!(!status.modificationsPermitted);
         assert!(!status.rollbackAvailable);
+        assert_eq!(status.checkpointStore.pendingRecoveryCount, 1);
     }
 }

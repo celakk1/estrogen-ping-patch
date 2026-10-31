@@ -1,8 +1,11 @@
 #![allow(non_snake_case)]
 
+pub mod journal;
 pub mod protocol;
 #[cfg(windows)]
 mod security;
+#[cfg(windows)]
+mod storage;
 #[cfg(windows)]
 mod transport;
 #[cfg(windows)]
@@ -10,7 +13,7 @@ pub mod windows;
 
 pub type ServiceResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub const SERVICE_NAME: &str = "EstrogenPingPatch";
-pub const PIPE_NAME: &str = r"\\.\pipe\estrogen-ping-patch-service-v1";
+pub const PIPE_NAME: &str = r"\\.\pipe\estrogen-ping-patch-service-v2";
 pub const SERVICE_ACCOUNT_SID: &str = "S-1-5-19";
 
 #[derive(Debug, serde::Serialize)]
