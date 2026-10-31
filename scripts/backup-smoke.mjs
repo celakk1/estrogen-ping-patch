@@ -65,6 +65,48 @@ try {
       assert.equal(typeof section.error, 'string');
     }
   }
+  const nativeMtu = snapshot.settings.sections.filter(
+    (section) => section.name === 'nativeIpInterface',
+  );
+  assert.equal(nativeMtu.length, snapshot.inventory.adapters.length * 2);
+  let nativeDrivers = 0;
+  for (const section of nativeMtu) {
+    assert.ok(['ipv4', 'ipv6'].includes(section.addressFamily));
+    if (section.status === 'captured') {
+      const value = section.values[0];
+      assert.equal(value.api, 'GetIpInterfaceEntry');
+      assert.equal(value.linkApi, 'GetIfEntry2');
+      assert.equal(value.schemaVersion, 1);
+      assert.equal(value.restorationVerified, false);
+      assert.match(value.interfaceLuid, /^[0-9]+$/);
+      assert.ok(value.os.build > 0 && value.os.major >= 10);
+      assert.ok(Number.isInteger(value.os.updateRevision));
+      assert.equal(value.settings.zoneIndices.length, 16);
+      assert.ok(Number.isInteger(value.settings.nlMtu));
+      assert.equal(typeof value.settings.useAutomaticMetric, 'boolean');
+      assert.equal(
+        value.adapterGuid.toLowerCase(),
+        section.adapterId.replaceAll(/[{}]/g, '').toLowerCase(),
+      );
+      const adapter = snapshot.inventory.adapters.find(
+        (adapter) => adapter.id === section.adapterId,
+      );
+      assert.equal(value.interfaceIndex, adapter.interfaceIndex);
+      if (value.driver.status === 'captured') {
+        nativeDrivers += 1;
+        assert.ok(value.driver.identity.version.length > 0);
+        assert.ok(value.driver.identity.deviceInstanceId.length > 0);
+      } else {
+        assert.equal(value.driver.status, 'unavailable');
+        assert.equal(typeof value.driver.error, 'string');
+        assert.ok(value.unavailableFields.includes('driverContext'));
+      }
+      assert.ok(value.unavailableFields.includes('persistentPolicyStore'));
+    } else {
+      assert.equal(section.status, 'unavailable');
+      assert.equal(typeof section.error, 'string');
+    }
+  }
   assert.ok(
     snapshot.settings.sections
       .filter((section) => section.adapterId)
@@ -102,7 +144,7 @@ try {
   );
   assert.equal(currentCount, previousCount, 'Cancelled capture must not persist a partial backup');
   console.log(
-    `Backup smoke passed: ${record.summary.capturedSections} captured sections, ${record.summary.unavailableSections} explicitly unavailable, ${nativeDns.filter((section) => section.status === 'captured').length}/${nativeDns.length} native DNS readers succeeded, persisted history, matching adapter GUIDs, downloaded JSON with verified SHA-256, and cancellation without a partial record. Automatic restore remains disabled.`,
+    `Backup smoke passed: ${record.summary.capturedSections} captured sections, ${record.summary.unavailableSections} explicitly unavailable, ${nativeDns.filter((section) => section.status === 'captured').length}/${nativeDns.length} native DNS readers and ${nativeMtu.filter((section) => section.status === 'captured').length}/${nativeMtu.length} native IP rows succeeded (${nativeDrivers} with driver context), persisted history, matching adapter GUIDs, downloaded JSON with verified SHA-256, and cancellation without a partial record. Automatic restore remains disabled.`,
   );
 } finally {
   if (session)

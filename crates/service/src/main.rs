@@ -27,7 +27,16 @@ fn execute() -> epp_service::ServiceResult<()> {
             );
             Ok(())
         }
-        _ => Err("Expected --status, --identity, or SCM-owned --service --owner-sid SID".into()),
+        [mode] if mode=="--mtu-inventory" => {
+            println!("{}",serde_json::to_string_pretty(&epp_service::mtu::inventory(&std::sync::atomic::AtomicBool::new(false))?)?);
+            Ok(())
+        }
+        [mode,guid,family] if mode=="--inspect-mtu" => {
+            let family=match family.as_str(){"ipv4"=>epp_service::journal::AddressFamily::Ipv4,"ipv6"=>epp_service::journal::AddressFamily::Ipv6,_=>return Err("MTU family must be ipv4 or ipv6".into())};
+            println!("{}",serde_json::to_string_pretty(&epp_service::mtu::capture(guid.parse()?,family,&std::sync::atomic::AtomicBool::new(false))?)?);
+            Ok(())
+        }
+        _ => Err("Expected --status, --identity, --mtu-inventory, --inspect-mtu GUID ipv4|ipv6, or SCM-owned --service --owner-sid SID".into()),
     }
 }
 

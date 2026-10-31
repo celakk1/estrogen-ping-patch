@@ -2,6 +2,10 @@
 
 The optional `EstrogenPingPatch` Windows service is a read-only foundation for the future optimization service. It runs as `NT AUTHORITY\LocalService`, not as an administrator or LocalSystem. Its only protocol operation is `getStatus`; it cannot apply settings, restore snapshots, run shell commands, open arbitrary files, or accept AI proposals. Installing it does not make the optimizer complete or authorize future changes.
 
+The service library now includes native read-only interface capture reused by desktop backups. `epp-network-service.exe --mtu-inventory` prints native interface snapshots; `--inspect-mtu GUID ipv4` or `ipv6` reads a specific interface without installing a service or requiring elevation. These commands use fixed Windows APIs and fixed driver/OS registry fields, not caller-supplied registry paths. Their diagnostic output can contain adapter/device identifiers and should stay private. They expose no setter.
+
+Microsoft documents `SetIpInterfaceEntry` as requiring administrative privileges. The current LocalService identity is therefore insufficient for that future setter. A privileged-service identity/design change, scoped authorization, durable native checkpoints, persistent-store semantics, and independent failure recovery must be validated together before enabling it. The development launcher and desktop must remain unelevated.
+
 ## Management
 
 Build or launch the development checkout first. In **Safety & policy**, install the optional service, refresh its actual status, start/stop it, or uninstall it. The root `install-service.bat` and `uninstall-service.bat` provide the same installation/removal workflow. The packaged installer includes these helpers and the service executable. A normal development launch never requests elevation or installs a system service automatically.

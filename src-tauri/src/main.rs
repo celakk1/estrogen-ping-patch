@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(non_snake_case)]
 
+mod backups;
+
 use epp_core::{
     backups::{BackupExport, BackupSummary},
     benchmark::{BenchmarkRun, Endpoint, Sample},
@@ -147,7 +149,11 @@ async fn captureBackup(service: State<'_, LocalService>) -> Result<BackupSummary
     let cancelled = service.cancelled.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
-        let payload = epp_core::backups::capture(&cancelled).map_err(|error| error.to_string())?;
+        let mut payload =
+            epp_core::backups::capture(&cancelled).map_err(|error| error.to_string())?;
+        backups::appendNativeMtu(&mut payload, &cancelled)?;
+        epp_core::backups::finalizeCapture(&mut payload, &cancelled)
+            .map_err(|error| error.to_string())?;
         if cancelled.load(Ordering::SeqCst) {
             return Err("Backup capture was cancelled".to_string());
         }

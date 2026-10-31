@@ -8,6 +8,8 @@ This is an early development build. It provides read-only network discovery, bou
 
 A separate Windows service provides authenticated local status reporting, with optional installation and management from **Safety & policy**. It runs as LocalService, accepts no network setters, and is not needed for diagnostics or backups. Protected service-owned recovery journal storage verifies checkpoint integrity and detects incomplete work at startup. Disposable Windows CI passed storage permissions, simulated pending-checkpoint detection, corrupted-storage refusal, restart, and journal preservation across service removal/reinstallation. Automatic network modifications, operation authorization, controlled optimization, native crash rollback, broader provider support, scheduling, and optional inference providers remain under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md).
 
+Backup exports additionally preserve native IPv4/IPv6 interface fields with GUID/LUID checks and OS/PnP-driver context. Missing context and persistent-store/restore limits remain explicit. These diagnostic snapshots do not enable automatic restoration or settings changes.
+
 ## Quick start
 
 Supported development platform: Windows 10/11 x64, Rust stable MSVC, Node.js 24 LTS with npm 11 or 12, Visual Studio 2022 C++ Build Tools with a Windows SDK, and Microsoft Edge WebView2 Runtime.

@@ -16,6 +16,10 @@ Backup history and export are local operations and remain available without inte
 
 ## Coverage limits
 
+The desktop also appends `nativeIpInterface` sections for each inventoried adapter and IPv4/IPv6 family. GUID-to-LUID mapping is checked in both directions; native link and IP rows must agree on identity. The capture preserves all configurable `MIB_IPINTERFACE_ROW` fields, including MTU, automatic metric, router/host flags, zone indices, and default-route policy, together with link MTU/type/status. LUIDs are decimal strings so JSON consumers cannot round native 64-bit identities. OS context includes native version/build, update revision, and architecture. Driver context is matched by GUID to a unique present PnP device and includes package version, INF metadata, and device instance ID. Missing/ambiguous driver context is explicitly unavailable rather than guessed.
+
+This native capture is part of the existing read-only snapshot and SHA-256 export flow. Cancellation or malformed extension data blocks finalization before storage. Collection is not atomic across OS calls; a service preparing a future experiment must capture and revalidate its own current state. `restorationVerified` remains false. Native rows do not prove persistent-policy-store origin, automatic/static DNS and addressing semantics, operation authorization, or a tested setter/restore path.
+
 These are diagnostic settings snapshots. Automatic restoration is not implemented or tested. DNS server addresses alone do not establish whether the resolver configuration came from DHCP, static settings, enterprise policy, or VPN configuration. The native version-one fields add configuration evidence, but do not prove complete policy/DoH/IPv4/IPv6 origin or restoration semantics. The getter is initialized with only its version, as required by Microsoft; it does not set an IPv6 input flag or infer automatic DNS from IP DHCP state. Some drivers do not expose RSC, power-management, or RSS data. Collection runs over an interval and is not an atomic operating-system snapshot. These limits appear in each exported document and in the interface.
 
 The application currently changes no Windows settings. Capturing a snapshot does not grant authorization to make changes and does not indicate that a proposed experiment is safe.
@@ -30,7 +34,7 @@ Startup validates SQLite identity/schema, integrity, foreign keys, each saved do
 
 Local tests use independent connections, reopen interrupted transactions, inject failed commits and corruption, reject changed adapter context, and terminate real subprocesses after committed apply/restore intents. The subprocess test changes a simulated MTU text file; it never touches a Windows adapter. This demonstrates journal persistence under process termination, not physical power-loss durability or native restoration.
 
-No Windows setter, rollback watchdog, effective-value/native restoration backend, persistent-versus-active MTU semantics, DNS/addressing recovery, authorization-grant lifecycle, or reboot recovery is implemented. The service only initializes this store and reports unresolved checkpoint counts; it does not claim `rollbackAvailable`. No diagnostic snapshot can substitute for these operation-specific recovery gates.
+Native MTU/interface/OS/driver readers are implemented. No Windows setter, rollback watchdog, native restoration backend, persistent-versus-active MTU semantics, DNS/addressing recovery, authorization-grant lifecycle, or reboot recovery is implemented. The service only initializes its journal and reports unresolved checkpoint counts; it does not claim `rollbackAvailable`. No diagnostic snapshot can substitute for these operation-specific recovery gates.
 
 ## Mandatory gate for future setting changes
 

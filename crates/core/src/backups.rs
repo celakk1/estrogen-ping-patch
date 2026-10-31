@@ -3,7 +3,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +38,7 @@ pub fn capture(cancelled: &AtomicBool) -> AppResult<Value> {
         .as_array_mut()
         .ok_or("Snapshot settings sections must be an array")?
         .extend(nativeSections);
-    let payload = json!({
+    let mut payload = json!({
         "schemaVersion": 1,
         "kind": "networkSettingsSnapshot",
         "appVersion": env!("CARGO_PKG_VERSION"),
@@ -54,8 +57,17 @@ pub fn capture(cancelled: &AtomicBool) -> AppResult<Value> {
             "Automatic restoration and pre-change rollback checkpoints require the privileged service and are not enabled."
         ]
     });
-    validatePayload(&payload)?;
+    finalizeCapture(&mut payload, cancelled)?;
     Ok(payload)
+}
+
+pub fn finalizeCapture(payload: &mut Value, cancelled: &AtomicBool) -> AppResult<()> {
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Backup capture was cancelled".into());
+    }
+    validatePayload(payload)?;
+    payload["capturedAt"] = json!(Utc::now().to_rfc3339());
+    Ok(())
 }
 
 pub fn validatePayload(payload: &Value) -> AppResult<(usize, usize)> {
@@ -144,6 +156,20 @@ mod tests {
     #[test]
     fn cancellationDoesNotStartConfigurationCapture() {
         assert!(capture(&AtomicBool::new(true)).is_err());
+    }
+
+    #[test]
+    fn cancelledOrMalformedExtensionsCannotFinalizeABackup() {
+        let mut value = fixture();
+        let timestamp = value["capturedAt"].clone();
+        assert!(finalizeCapture(&mut value, &AtomicBool::new(true)).is_err());
+        assert_eq!(value["capturedAt"], timestamp);
+        value["settings"]["sections"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"nativeIpInterface","adapterId":"","status":"captured"}));
+        assert!(finalizeCapture(&mut value, &AtomicBool::new(false)).is_err());
+        assert_eq!(value["capturedAt"], timestamp);
     }
 
     #[test]
