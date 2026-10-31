@@ -20,13 +20,15 @@ jobs:
     env:
       CI: 'true'
       EPP_NO_PAUSE: '1'
-      EPP_DATA_DIR: ${{ runner.temp }}\epp-ci-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
+      - name: Isolated application data
+        run: |
+          "EPP_DATA_DIR=$env:RUNNER_TEMP\epp-ci-data" >> $env:GITHUB_ENV
       - name: Rust components
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
