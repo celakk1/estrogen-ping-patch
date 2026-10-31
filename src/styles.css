@@ -413,6 +413,9 @@ button.primary {
   margin-top: 21px;
   flex-wrap: wrap;
 }
+.panel-heading .button-row {
+  margin-top: 0;
+}
 .empty-visual {
   height: 80px;
   display: flex;

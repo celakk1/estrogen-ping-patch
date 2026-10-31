@@ -2,6 +2,7 @@
 #![allow(non_snake_case)]
 
 use epp_core::{
+    backups::{BackupExport, BackupSummary},
     benchmark::{BenchmarkRun, Endpoint, Sample},
     config::Config,
 };
@@ -28,6 +29,15 @@ impl Drop for JobGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
+}
+
+fn beginJob(service: &LocalService) -> Result<JobGuard, String> {
+    service
+        .busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map_err(|_| "A network task is already running".to_string())?;
+    service.cancelled.store(false, Ordering::SeqCst);
+    Ok(JobGuard(service.busy.clone()))
 }
 
 #[derive(Clone, Serialize)]
@@ -71,6 +81,50 @@ async fn getHistory(service: State<'_, LocalService>) -> Result<Vec<BenchmarkRun
 }
 
 #[tauri::command]
+async fn getBackups(service: State<'_, LocalService>) -> Result<Vec<BackupSummary>, String> {
+    let directory = service.directory.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = epp_core::storage::openDatabase(&directory.join("experiments.sqlite3"))
+            .map_err(|error| error.to_string())?;
+        epp_core::storage::backupHistory(&connection).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn captureBackup(service: State<'_, LocalService>) -> Result<BackupSummary, String> {
+    let guard = beginJob(&service)?;
+    let directory = service.directory.clone();
+    let cancelled = service.cancelled.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        let payload = epp_core::backups::capture(&cancelled).map_err(|error| error.to_string())?;
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Backup capture was cancelled".to_string());
+        }
+        let mut connection =
+            epp_core::storage::openDatabase(&directory.join("experiments.sqlite3"))
+                .map_err(|error| error.to_string())?;
+        epp_core::storage::saveBackup(&mut connection, &payload).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn exportBackup(service: State<'_, LocalService>, id: i64) -> Result<BackupExport, String> {
+    let directory = service.directory.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let connection = epp_core::storage::openDatabase(&directory.join("experiments.sqlite3"))
+            .map_err(|error| error.to_string())?;
+        epp_core::storage::loadBackup(&connection, id).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn runBaseline(
     app: tauri::AppHandle,
     service: State<'_, LocalService>,
@@ -79,12 +133,7 @@ async fn runBaseline(
 ) -> Result<BenchmarkRun, String> {
     config.validate().map_err(|error| error.to_string())?;
     epp_core::benchmark::validateEndpoints(&endpoints).map_err(|error| error.to_string())?;
-    service
-        .busy
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .map_err(|_| "A benchmark is already running".to_string())?;
-    let guard = JobGuard(service.busy.clone());
-    service.cancelled.store(false, Ordering::SeqCst);
+    let guard = beginJob(&service)?;
     let cancelled = service.cancelled.clone();
     let directory = service.directory.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -173,7 +222,7 @@ fn main() {
             app.manage(LocalService { directory, busy: Arc::new(AtomicBool::new(false)), cancelled: Arc::new(AtomicBool::new(false)) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, getInventory, getHistory, runBaseline, cancelBaseline])
+        .invoke_handler(tauri::generate_handler![status, getInventory, getHistory, getBackups, captureBackup, exportBackup, runBaseline, cancelBaseline])
         .build(tauri::generate_context!());
     let app = match app {
         Ok(app) => app,

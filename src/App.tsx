@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type {
   AppStatus,
+  BackupExport,
+  BackupPayload,
+  BackupSummary,
   BenchmarkRun,
   Config,
   Inventory,
@@ -10,9 +13,9 @@ import type {
   Progress,
   Sample,
 } from './types';
-import { downloadReport, formatMs } from './report';
+import { downloadBackup, downloadReport, formatMs } from './report';
 
-type View = 'overview' | 'inventory' | 'history' | 'policy';
+type View = 'overview' | 'inventory' | 'history' | 'backups' | 'policy';
 const profiles: Profile[] = ['latency', 'balanced', 'download'];
 
 function LatencyChart({ samples }: { samples: Sample[] }) {
@@ -89,6 +92,10 @@ export default function App() {
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [history, setHistory] = useState<BenchmarkRun[]>([]);
+  const [backups, setBackups] = useState<BackupSummary[]>([]);
+  const [capturingBackup, setCapturingBackup] = useState(false);
+  const [backupNotice, setBackupNotice] = useState('');
+  const [selectedBackup, setSelectedBackup] = useState<BackupExport | null>(null);
   const [selected, setSelected] = useState<BenchmarkRun | null>(null);
   const [samples, setSamples] = useState<Sample[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -111,6 +118,34 @@ export default function App() {
     }
   }
 
+  async function captureBackup() {
+    if (running || capturingBackup) return;
+    setCapturingBackup(true);
+    setBackupNotice('');
+    setError('');
+    try {
+      const summary = await invoke<BackupSummary>('captureBackup');
+      setBackups(await invoke<BackupSummary[]>('getBackups'));
+      setSelectedBackup(await invoke<BackupExport>('exportBackup', { id: summary.id }));
+    } catch (error) {
+      if (String(error).includes('cancelled'))
+        setBackupNotice('Capture cancelled. Existing backups were preserved.');
+      else setError(String(error));
+    } finally {
+      setCapturingBackup(false);
+    }
+  }
+
+  async function openBackup(id: number, exportFile = false) {
+    try {
+      const backup = await invoke<BackupExport>('exportBackup', { id });
+      setSelectedBackup(backup);
+      if (exportFile) downloadBackup(backup);
+    } catch (error) {
+      setError(String(error));
+    }
+  }
+
   useEffect(() => {
     let active = true;
     invoke<AppStatus>('status')
@@ -130,6 +165,13 @@ export default function App() {
       .catch((error) => {
         if (active) setError(String(error));
       });
+    invoke<BackupSummary[]>('getBackups')
+      .then((backups) => {
+        if (active) setBackups(backups);
+      })
+      .catch((error) => {
+        if (active) setError(String(error));
+      });
     refreshInventory();
     const unlisten = listen<Progress>('benchmark-progress', (event) => {
       if (!active || !runRef.current) return;
@@ -143,7 +185,7 @@ export default function App() {
   }, []);
 
   async function startBaseline() {
-    if (!config || running) return;
+    if (!config || running || capturingBackup) return;
     setError('');
     setSamples([]);
     setProgress(null);
@@ -180,6 +222,10 @@ export default function App() {
   const shownSamples = selected?.samples ?? samples;
   const completed = progress?.completed ?? 0;
   const percent = progress ? Math.round((completed / progress.total) * 100) : 0;
+  const backupPayload = useMemo<BackupPayload | null>(
+    () => (selectedBackup ? JSON.parse(selectedBackup.payloadJson) : null),
+    [selectedBackup],
+  );
 
   return (
     <div className={`app ${light ? 'light' : ''}`}>
@@ -197,6 +243,7 @@ export default function App() {
               ['overview', 'Overview'],
               ['inventory', 'System inventory'],
               ['history', 'Benchmark history'],
+              ['backups', 'Configuration backups'],
               ['policy', 'Safety & policy'],
             ] as const
           ).map(([key, title]) => (
@@ -225,7 +272,9 @@ export default function App() {
                 ? 'System inventory'
                 : view === 'history'
                   ? 'Benchmark history'
-                  : 'Safety & policy'}
+                  : view === 'backups'
+                    ? 'Configuration backups'
+                    : 'Safety & policy'}
           </div>
           <div className="pill">
             <i /> {appStatus ? 'Local service ready' : 'Connecting to desktop'}
@@ -249,7 +298,9 @@ export default function App() {
                     ? 'System inventory'
                     : view === 'history'
                       ? 'Your measurement history'
-                      : 'Safety comes first.'}
+                      : view === 'backups'
+                        ? 'Preserve your starting point.'
+                        : 'Safety comes first.'}
               </h1>
               <p>
                 {view === 'overview'
@@ -258,7 +309,9 @@ export default function App() {
                     ? 'Read-only Windows discovery, captured locally.'
                     : view === 'history'
                       ? 'Raw samples and reports stay on this computer.'
-                      : 'Bounded operations, explicit authorization, and reversible changes.'}
+                      : view === 'backups'
+                        ? 'Read-only settings snapshots, stored locally and checked before export.'
+                        : 'Bounded operations, explicit authorization, and reversible changes.'}
               </p>
             </div>
             <span className="badge">READ-ONLY PREVIEW</span>
@@ -387,7 +440,7 @@ export default function App() {
                     <div className="button-row">
                       <button
                         className="primary"
-                        disabled={!config || running}
+                        disabled={!config || running || capturingBackup}
                         onClick={startBaseline}
                       >
                         Start baseline
@@ -608,6 +661,127 @@ export default function App() {
                 </div>
               )}
             </section>
+          )}
+          {view === 'backups' && (
+            <>
+              <section className="panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Network settings snapshots</h2>
+                    <p>Capture before experimentation. Existing backups are never overwritten.</p>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="primary"
+                      disabled={running || capturingBackup}
+                      onClick={captureBackup}
+                    >
+                      {capturingBackup ? 'Capturing settings...' : 'Capture backup'}
+                    </button>
+                    {capturingBackup && (
+                      <button
+                        onClick={() =>
+                          invoke('cancelBaseline').catch((error) => setError(String(error)))
+                        }
+                      >
+                        Cancel capture
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="form-body">
+                  <div className="notice">
+                    Automatic restoration is not available in this preview. These snapshots preserve
+                    readable settings and explicitly record unsupported sections. They are not a
+                    verified full-system restore point.
+                  </div>
+                </div>
+                {backupNotice && <p role="status">{backupNotice}</p>}
+                {backups.length === 0 ? (
+                  <div className="form-body">
+                    <p>No configuration snapshots saved yet.</p>
+                  </div>
+                ) : (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Backup</th>
+                          <th>Captured</th>
+                          <th>Captured sections</th>
+                          <th>Unavailable</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {backups.map((backup) => (
+                          <tr key={backup.id}>
+                            <td>#{backup.id}</td>
+                            <td>{new Date(backup.capturedAt).toLocaleString()}</td>
+                            <td>{backup.capturedSections}</td>
+                            <td>{backup.unavailableSections}</td>
+                            <td>
+                              <button onClick={() => openBackup(backup.id)}>View details</button>
+                              <button onClick={() => openBackup(backup.id, true)}>
+                                Export backup
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+              {selectedBackup && backupPayload && (
+                <section className="panel">
+                  <div className="panel-heading">
+                    <div>
+                      <h2>Backup #{selectedBackup.summary.id}</h2>
+                      <p>SHA-256 integrity verified against the saved document</p>
+                    </div>
+                  </div>
+                  <div className="form-body">
+                    <label>Export SHA-256</label>
+                    <code>{selectedBackup.summary.sha256}</code>
+                    <p className="form-note">
+                      The exported file contains the exact bytes covered by this checksum. It
+                      includes local network configuration; review it before sharing.
+                    </p>
+                    {backupPayload.limitations.map((limitation) => (
+                      <p className="form-note" key={limitation}>
+                        {limitation}
+                      </p>
+                    ))}
+                  </div>
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Settings</th>
+                          <th>Adapter GUID</th>
+                          <th>Records</th>
+                          <th>Capture status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {backupPayload.settings.sections.map((section, index) => (
+                          <tr key={index}>
+                            <td>
+                              {section.name}
+                              {section.error && <small>{section.error}</small>}
+                            </td>
+                            <td>{section.adapterId || 'System / interface indexes'}</td>
+                            <td>{section.values.length}</td>
+                            <td>{section.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+            </>
           )}
           {view === 'policy' && (
             <div className="two-columns">

@@ -12,6 +12,8 @@ The current implementation includes the desktop, a local read-only application s
 
 On desktop startup, the local service validates configuration, opens the SQLite database, records a startup event, and registers bounded application commands. Network discovery executes a fixed, embedded, read-only PowerShell script through the Windows system executable. No caller input is interpolated into that script. Discovery has a 30-second deadline and bounded output. The worker performs real timed TCP connects to user-confirmed endpoints, emits live progress, supports cancellation, and saves results transactionally. Closing the desktop cancels an active run and waits for it to save before exiting.
 
+The manual backup workflow captures inventory and supported settings, commits an immutable document and SHA-256 transactionally, and verifies the exact document bytes before export. Settings capture has a 60-second deadline, bounded output, and cancellation. Database schema version two adds snapshots without altering existing benchmark history. These snapshots expose unavailable sections and do not enable restoration. See [backup gates and limitations](backups.md).
+
 `estrogen-ping-patch.exe --mcp` runs JSON-RPC over stdio without opening the GUI. The MCP client owns that subprocess and its lifecycle. No TCP listener or privileged access is granted to it. The desktop and preflight initialize the same MCP handler; inference remains disabled.
 
 ## Component choices

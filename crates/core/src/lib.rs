@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+pub mod backups;
 pub mod benchmark;
 pub mod config;
 pub mod discovery;

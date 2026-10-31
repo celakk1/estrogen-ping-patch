@@ -4,7 +4,7 @@ A local Windows network experimentation application built with Rust, Tauri 2, Re
 
 ## Development status
 
-This is an early development build. It provides read-only network discovery, bounded TCP connection baselines across multiple destinations, cancellation, live progress, local SQLite history, JSON/HTML report exports, and a read-only MCP stdio interface. It preserves the existing network configuration.
+This is an early development build. It provides read-only network discovery, bounded TCP connection baselines across multiple destinations, cancellation, live progress, local SQLite history, JSON/HTML reports, local network settings snapshots with SHA-256-verified JSON exports, and a read-only MCP stdio interface. It preserves the existing network configuration. Automatic snapshot restoration is not implemented.
 
 Automatic network modifications, the privileged Windows service, throughput providers, controlled optimization, crash rollback, scheduling, and optional inference providers are still under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md). The application must not be described as a complete optimizer until those requirements have been validated.
 
@@ -47,6 +47,7 @@ The installed application launches from its Start menu shortcut without a termin
 - [Security and threat model](docs/security.md)
 - [Development and acceptance tracking](docs/development.md)
 - [Candidate registry](docs/candidates.md)
+- [Network settings backups and recovery requirements](docs/backups.md)
 - [Research sources](docs/research.md)
 
 ## License

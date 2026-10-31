@@ -87,3 +87,31 @@ export interface AppStatus {
   config: Config;
   dataDirectory: string;
 }
+
+export interface BackupSummary {
+  id: number;
+  capturedAt: string;
+  sha256: string;
+  capturedSections: number;
+  unavailableSections: number;
+}
+
+export interface BackupExport {
+  summary: BackupSummary;
+  payloadJson: string;
+}
+
+export interface BackupPayload {
+  capturedAt: string;
+  inventory: Inventory;
+  settings: {
+    sections: {
+      name: string;
+      adapterId: string;
+      status: 'captured' | 'unavailable';
+      values: unknown[];
+      error: string | null;
+    }[];
+  };
+  limitations: string[];
+}

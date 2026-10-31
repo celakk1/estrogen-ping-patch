@@ -1,4 +1,8 @@
-use crate::{AppResult, benchmark::BenchmarkRun};
+use crate::{
+    AppResult,
+    backups::{BackupExport, BackupSummary, checksum, validatePayload},
+    benchmark::BenchmarkRun,
+};
 use rusqlite::{Connection, params};
 use std::path::Path;
 
@@ -8,8 +12,13 @@ pub fn openDatabase(path: &Path) -> AppResult<Connection> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
+    migrateDatabase(&connection)?;
+    Ok(connection)
+}
+
+fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 1 {
+    if version > 2 {
         return Err("Database is newer than this application; refusing to downgrade it".into());
     }
     if version == 0 {
@@ -21,7 +30,86 @@ pub fn openDatabase(path: &Path) -> AppResult<Connection> {
             PRAGMA user_version = 1;
             COMMIT;")?;
     }
-    Ok(connection)
+    if version < 2 {
+        connection.execute_batch("BEGIN IMMEDIATE;
+            CREATE TABLE configuration_snapshots(id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, sha256 TEXT NOT NULL, captured_sections INTEGER NOT NULL, unavailable_sections INTEGER NOT NULL, payload_json TEXT NOT NULL);
+            PRAGMA user_version = 2;
+            COMMIT;")?;
+    }
+    Ok(())
+}
+
+pub fn saveBackup(
+    connection: &mut Connection,
+    payload: &serde_json::Value,
+) -> AppResult<BackupSummary> {
+    let (capturedSections, unavailableSections) = validatePayload(payload)?;
+    let payloadJson = serde_json::to_string_pretty(payload)?;
+    if payloadJson.len() > 2_500_000 {
+        return Err("Snapshot exceeds the 2.5 MB backup limit".into());
+    }
+    let sha256 = checksum(&payloadJson);
+    let capturedAt = payload["capturedAt"]
+        .as_str()
+        .ok_or("Snapshot timestamp missing")?
+        .to_string();
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let count: u32 =
+        transaction.query_row("SELECT COUNT(*) FROM configuration_snapshots", [], |row| {
+            row.get(0)
+        })?;
+    if count >= 200 {
+        return Err("The 200-snapshot safety limit has been reached. Existing backups were preserved; export and archive them before continuing.".into());
+    }
+    transaction.execute("INSERT INTO configuration_snapshots(captured_at,sha256,captured_sections,unavailable_sections,payload_json) VALUES(?1,?2,?3,?4,?5)", params![capturedAt,sha256,capturedSections as u32,unavailableSections as u32,payloadJson])?;
+    let id = transaction.last_insert_rowid();
+    transaction.commit()?;
+    Ok(BackupSummary {
+        id,
+        capturedAt,
+        sha256,
+        capturedSections,
+        unavailableSections,
+    })
+}
+
+pub fn backupHistory(connection: &Connection) -> AppResult<Vec<BackupSummary>> {
+    let mut statement = connection.prepare("SELECT id,captured_at,sha256,captured_sections,unavailable_sections FROM configuration_snapshots ORDER BY id DESC LIMIT 200")?;
+    let rows = statement.query_map([], |row| {
+        Ok(BackupSummary {
+            id: row.get(0)?,
+            capturedAt: row.get(1)?,
+            sha256: row.get(2)?,
+            capturedSections: row.get::<_, u32>(3)? as usize,
+            unavailableSections: row.get::<_, u32>(4)? as usize,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn loadBackup(connection: &Connection, id: i64) -> AppResult<BackupExport> {
+    let (capturedAt, sha256, capturedSections, unavailableSections, payloadJson): (String,String,u32,u32,String) = connection.query_row("SELECT captured_at,sha256,captured_sections,unavailable_sections,payload_json FROM configuration_snapshots WHERE id=?1", [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
+    if checksum(&payloadJson) != sha256 {
+        return Err("Backup integrity verification failed. The stored settings have been preserved, but this snapshot must not be used for restoration.".into());
+    }
+    let payload: serde_json::Value = serde_json::from_str(&payloadJson)?;
+    let counts = validatePayload(&payload)?;
+    if payload["capturedAt"].as_str() != Some(capturedAt.as_str())
+        || counts != (capturedSections as usize, unavailableSections as usize)
+    {
+        return Err("Backup metadata does not match its verified settings document".into());
+    }
+    Ok(BackupExport {
+        summary: BackupSummary {
+            id,
+            capturedAt,
+            sha256,
+            capturedSections: capturedSections as usize,
+            unavailableSections: unavailableSections as usize,
+        },
+        payloadJson,
+    })
 }
 
 pub fn saveRun(connection: &mut Connection, run: &mut BenchmarkRun) -> AppResult<()> {
@@ -60,6 +148,30 @@ mod tests {
         config::Config,
     };
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn addingBackupsPreservesVersionOneHistory() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE application_events(id INTEGER PRIMARY KEY, kind TEXT); INSERT INTO application_events VALUES(1,'preserve'); PRAGMA user_version=1;").unwrap();
+        migrateDatabase(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT kind FROM application_events WHERE id=1",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "preserve"
+        );
+        assert_eq!(backupHistory(&connection).unwrap().len(), 0);
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+                .unwrap(),
+            2
+        );
+    }
 
     #[test]
     fn migrationAndReportRoundTripPreserveRawSamples() {

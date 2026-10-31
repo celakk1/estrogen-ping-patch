@@ -1,4 +1,4 @@
-import type { BenchmarkRun } from './types';
+import type { BackupExport, BenchmarkRun } from './types';
 
 export const formatMs = (value: number | null | undefined): string =>
   value == null || !Number.isFinite(value) ? 'Unavailable' : `${value.toFixed(2)} ms`;
@@ -27,6 +27,15 @@ export function downloadReport(run: BenchmarkRun, format: 'json' | 'html'): void
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = `epp-baseline-${run.id}.${format}`;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export function downloadBackup(backup: BackupExport): void {
+  const url = URL.createObjectURL(new Blob([backup.payloadJson], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `epp-network-backup-${backup.summary.id}-${backup.summary.sha256}.json`;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

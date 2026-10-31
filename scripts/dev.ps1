@@ -12,7 +12,7 @@ $script:failureCode = 1
 $workspaceMutex = $null
 $ownsMutex = $false
 
-function Invoke-Checked {
+function invokeChecked {
     param([string]$program, [string[]]$arguments)
     & $program @arguments
     if ($LASTEXITCODE -ne 0) {
@@ -21,7 +21,7 @@ function Invoke-Checked {
     }
 }
 
-function Test-Toolchain {
+function testToolchain {
     foreach ($tool in @('rustc.exe', 'cargo.exe', 'node.exe', 'npm.cmd')) {
         if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
             throw "Missing $tool. Install Rust from https://rustup.rs and Node.js 24 LTS from https://nodejs.org, then reopen this launcher. See docs/setup.md."
@@ -44,16 +44,16 @@ function Test-Toolchain {
     Write-Host 'Toolchain ready: Rust MSVC x64, Node.js 24, npm, C++ tools, WebView2.'
 }
 
-function Get-DependencyFingerprint {
+function getDependencyFingerprint {
     $manifestHash = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'package.json') -Algorithm SHA256).Hash
     $lockHash = (Get-FileHash -LiteralPath (Join-Path $projectRoot 'package-lock.json') -Algorithm SHA256).Hash
     $nodeAbi = & node.exe -p 'process.versions.modules'
     return "$manifestHash/$lockHash/$nodeAbi"
 }
 
-function Install-ProjectDependencies {
+function installProjectDependencies {
     $stampPath = Join-Path $projectRoot 'node_modules\.epp-dependencies'
-    $fingerprint = Get-DependencyFingerprint
+    $fingerprint = getDependencyFingerprint
     $needsInstall = -not (Test-Path -LiteralPath $stampPath)
     if (-not $needsInstall) {
         $needsInstall = (Get-Content -LiteralPath $stampPath -Raw).Trim() -ne $fingerprint
@@ -65,14 +65,14 @@ function Install-ProjectDependencies {
     }
     if ($needsInstall) {
         Write-Host 'Installing locked JavaScript dependencies with npm ci...'
-        Invoke-Checked 'npm.cmd' @('ci', '--no-audit', '--no-fund')
+        invokeChecked 'npm.cmd' @('ci', '--no-audit', '--no-fund')
         Set-Content -LiteralPath $stampPath -Value $fingerprint -Encoding ASCII
     } else {
         Write-Host 'JavaScript dependencies are already installed and match the lockfile.'
     }
 }
 
-function Remove-GeneratedDirectory {
+function removeGeneratedDirectory {
     param([string]$relativePath)
     $targetPath = [IO.Path]::GetFullPath((Join-Path $projectRoot $relativePath))
     if (-not $targetPath.StartsWith($projectRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -97,38 +97,38 @@ try {
     try { $ownsMutex = $workspaceMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (-not $ownsMutex) { throw 'Another development task is already running in this checkout. Close its GUI and launcher or wait for it to finish, then rerun this script. Do not run as administrator.' }
     if ($task -eq 'clean') {
-        foreach ($generatedPath in @('target', 'dist', 'coverage', '.cache', 'src-tauri\gen')) { Remove-GeneratedDirectory $generatedPath }
+        foreach ($generatedPath in @('target', 'dist', 'coverage', '.cache', 'src-tauri\gen')) { removeGeneratedDirectory $generatedPath }
         Write-Host 'Build artifacts removed. Installed dependencies and application data were preserved.'
         exit 0
     }
-    Test-Toolchain
-    Install-ProjectDependencies
+    testToolchain
+    installProjectDependencies
     switch ($task) {
         'setup' {
-            Invoke-Checked 'cargo.exe' @('fetch', '--locked')
-            Invoke-Checked 'npm.cmd' @('run', 'check')
-            Invoke-Checked 'cargo.exe' @('run', '--locked', '-p', 'epp-core', '--bin', 'epp-check')
+            invokeChecked 'cargo.exe' @('fetch', '--locked')
+            invokeChecked 'npm.cmd' @('run', 'check')
+            invokeChecked 'cargo.exe' @('run', '--locked', '-p', 'epp-core', '--bin', 'epp-check')
             Write-Host 'Setup complete. Double-click launch.bat to open the desktop application.'
         }
         'launch' {
-            Invoke-Checked 'cargo.exe' @('run', '--locked', '-p', 'epp-core', '--bin', 'epp-check')
-            Invoke-Checked 'npm.cmd' @('run', 'tauri', '--', 'dev')
+            invokeChecked 'cargo.exe' @('run', '--locked', '-p', 'epp-core', '--bin', 'epp-check')
+            invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'dev')
         }
         'build' {
-            Invoke-Checked 'npm.cmd' @('run', 'tauri', '--', 'build', '--no-bundle')
+            invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'build', '--no-bundle')
             Write-Host 'Executable: target\release\estrogen-ping-patch.exe'
         }
         'test' {
-            Invoke-Checked 'npm.cmd' @('run', 'format:check')
-            Invoke-Checked 'npm.cmd' @('run', 'check')
-            Invoke-Checked 'npm.cmd' @('test')
-            Invoke-Checked 'cargo.exe' @('fmt', '--all', '--', '--check')
-            Invoke-Checked 'cargo.exe' @('test', '--workspace', '--locked')
-            Invoke-Checked 'cargo.exe' @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
-            Invoke-Checked 'node.exe' @('--test', 'scripts/launcher.test.mjs')
+            invokeChecked 'npm.cmd' @('run', 'format:check')
+            invokeChecked 'npm.cmd' @('run', 'check')
+            invokeChecked 'npm.cmd' @('test')
+            invokeChecked 'cargo.exe' @('fmt', '--all', '--', '--check')
+            invokeChecked 'cargo.exe' @('test', '--workspace', '--locked')
+            invokeChecked 'cargo.exe' @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
+            invokeChecked 'node.exe' @('--test', 'scripts/launcher.test.mjs')
         }
         'package' {
-            Invoke-Checked 'npm.cmd' @('run', 'tauri', '--', 'build', '--bundles', 'nsis')
+            invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'build', '--bundles', 'nsis')
             $installers = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'target\release\bundle\nsis') -Filter '*-setup.exe')
             if ($installers.Count -eq 0) { throw 'Tauri returned success but no NSIS installer was found.' }
             $installers | ForEach-Object { Write-Host "Installer: $($_.FullName)" }

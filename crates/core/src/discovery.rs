@@ -3,11 +3,35 @@ use serde_json::Value;
 use std::{
     io::Read,
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 pub fn inventory() -> AppResult<Value> {
+    let result = readWindowsData(include_str!("discovery.ps1"), Duration::from_secs(30), None)?;
+    validateInventory(&result)?;
+    Ok(result)
+}
+
+pub(crate) fn cancellableInventory(cancelled: &AtomicBool) -> AppResult<Value> {
+    let result = readWindowsData(
+        include_str!("discovery.ps1"),
+        Duration::from_secs(30),
+        Some(cancelled),
+    )?;
+    validateInventory(&result)?;
+    Ok(result)
+}
+
+pub(crate) fn readWindowsData(
+    script: &'static str,
+    timeout: Duration,
+    cancelled: Option<&AtomicBool>,
+) -> AppResult<Value> {
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return Err("Configuration capture was cancelled".into());
+    }
     if !cfg!(windows) {
         return Err("Network discovery currently requires Windows 10/11".into());
     }
@@ -22,7 +46,7 @@ pub fn inventory() -> AppResult<Value> {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            include_str!("discovery.ps1"),
+            script,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -54,12 +78,17 @@ pub fn inventory() -> AppResult<Value> {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if start.elapsed() > Duration::from_secs(30) {
+        let wasCancelled = cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed));
+        if wasCancelled || start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
             let _ = outputThread.join();
             let _ = errorThread.join();
-            return Err("Windows discovery timed out after 30 seconds; check NetAdapter and NetTCPIP availability".into());
+            return Err(if wasCancelled {
+                "Configuration capture was cancelled; no settings have been changed".into()
+            } else {
+                format!("Windows configuration capture timed out after {} seconds; no settings have been changed", timeout.as_secs()).into()
+            });
         }
         thread::sleep(Duration::from_millis(50));
     };
@@ -79,9 +108,7 @@ pub fn inventory() -> AppResult<Value> {
     if output.len() > 2_000_000 {
         return Err("Inventory exceeded the 2 MB safety limit".into());
     }
-    let result: Value = serde_json::from_slice(&output)?;
-    validateInventory(&result)?;
-    Ok(result)
+    Ok(serde_json::from_slice(&output)?)
 }
 
 pub fn validateInventory(inventory: &Value) -> AppResult<()> {

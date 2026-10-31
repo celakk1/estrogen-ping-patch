@@ -8,7 +8,9 @@ if (Test-Path -LiteralPath $shortcutDirectory) { throw 'An existing Start menu i
 $application = $null
 $installed = $false
 $previousDataDirectory = $env:EPP_DATA_DIR
+$previousWebViewDirectory = $env:WEBVIEW2_USER_DATA_FOLDER
 $env:EPP_DATA_DIR = Join-Path $installDirectory 'test-data'
+$env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $installDirectory 'webview-profile'
 
 try {
     $installer = Start-Process -FilePath $installerPath -ArgumentList "/S /D=$installDirectory" -WindowStyle Hidden -PassThru
@@ -30,16 +32,26 @@ try {
     do {
         Start-Sleep -Milliseconds 200
         $application.Refresh()
-        if ($application.HasExited) { throw 'Installed desktop application exited before opening its window.' }
+        if ($application.HasExited) { throw "Installed desktop application exited before opening its window (exit code: $($application.ExitCode))." }
     } while (-not $application.MainWindowHandle -and [DateTime]::UtcNow -lt $deadline)
     if (-not $application.MainWindowHandle) { throw 'Installed desktop application did not open its GUI.' }
     if ($application.MainWindowTitle -ne 'estrogen ping patch') { throw 'Installed desktop title was unexpected.' }
     Write-Host 'Installer smoke passed: per-user install, Windows GUI subsystem, Start menu shortcut, and desktop window.'
 } finally {
     $env:EPP_DATA_DIR = $previousDataDirectory
+    $env:WEBVIEW2_USER_DATA_FOLDER = $previousWebViewDirectory
     if ($null -ne $application -and -not $application.HasExited) {
-        [void]$application.CloseMainWindow()
-        if (-not $application.WaitForExit(10000)) { throw 'Test application did not close; preserve the test installation for inspection.' }
+        $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(45)
+        $closeRequestAccepted = $false
+        do {
+            $application.Refresh()
+            if ($application.HasExited) { break }
+            # windows can reject close requests while the owner window is disabled.
+            if (-not $closeRequestAccepted) { $closeRequestAccepted = $application.CloseMainWindow() }
+            if ($application.WaitForExit(250)) { break }
+        } while ([DateTime]::UtcNow -lt $shutdownDeadline)
+        Write-Host "Shutdown request accepted: $closeRequestAccepted. Test process exited: $($application.HasExited)."
+        if (-not $application.HasExited) { throw "Test application did not close within its shutdown deadline (close request accepted: $closeRequestAccepted); preserve the test installation for inspection." }
     }
     if ($installed) {
         $uninstallerPath = Join-Path $installDirectory 'uninstall.exe'
