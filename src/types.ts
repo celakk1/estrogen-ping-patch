@@ -88,6 +88,19 @@ export interface AppStatus {
   dataDirectory: string;
 }
 
+export interface ServiceReport {
+  state: string;
+  detail: string;
+  response: {
+    schemaVersion: number;
+    serviceVersion: string;
+    servicePid: number;
+    mode: string;
+    modificationsPermitted: boolean;
+    rollbackAvailable: boolean;
+  } | null;
+}
+
 export interface BackupSummary {
   id: number;
   capturedAt: string;

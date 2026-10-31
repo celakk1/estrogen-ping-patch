@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": {
+      "../target/release/epp-network-service.exe": "service/epp-network-service.exe",
+      "../scripts/manage-service.ps1": "service/manage-service.ps1",
+      "../install-service.bat": "install-service.bat",
+      "../uninstall-service.bat": "uninstall-service.bat"
+    }
+  }
+}

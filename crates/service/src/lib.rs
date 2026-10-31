@@ -1,0 +1,42 @@
+#![allow(non_snake_case)]
+
+pub mod protocol;
+#[cfg(windows)]
+mod security;
+#[cfg(windows)]
+mod transport;
+#[cfg(windows)]
+pub mod windows;
+
+pub type ServiceResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub const SERVICE_NAME: &str = "EstrogenPingPatch";
+pub const PIPE_NAME: &str = r"\\.\pipe\estrogen-ping-patch-service-v1";
+pub const SERVICE_ACCOUNT_SID: &str = "S-1-5-19";
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceReport {
+    pub state: String,
+    pub detail: String,
+    pub response: Option<protocol::ServiceStatus>,
+}
+
+pub fn inspectBlocking() -> ServiceReport {
+    #[cfg(windows)]
+    {
+        match windows::inspectBlocking() {
+            Ok(report) => report,
+            Err(error) => ServiceReport {
+                state: "unavailable".into(),
+                detail: error.to_string(),
+                response: None,
+            },
+        }
+    }
+    #[cfg(not(windows))]
+    ServiceReport {
+        state: "unsupported".into(),
+        detail: "The dedicated service requires Windows".into(),
+        response: None,
+    }
+}

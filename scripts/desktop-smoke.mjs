@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { waitForDesktopPage } from './webview-test.mjs';
 
 const endpoint = process.env.EPP_CDP_URL;
 if (!endpoint || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint)) {
@@ -25,11 +26,7 @@ const second = await listener();
 let browser;
 try {
   browser = await chromium.connectOverCDP(endpoint, { timeout: 15_000 });
-  const page = browser
-    .contexts()
-    .flatMap((context) => context.pages())
-    .find((page) => /127\.0\.0\.1:1420|tauri\.localhost/.test(page.url()));
-  assert.ok(page, 'No estrogen ping patch test WebView found');
+  const page = await waitForDesktopPage(browser);
   await page.waitForFunction(() => Boolean(window.__TAURI_INTERNALS__));
   if (process.env.EPP_DATA_DIR) {
     const status = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('status'));
@@ -68,9 +65,31 @@ try {
   assert.ok((await page.getByRole('cell', { name: 'completed', exact: true }).count()) > 0);
   await page.getByRole('button', { name: 'Safety & policy', exact: true }).click();
   assert.ok((await page.getByText('Disabled in this build', { exact: true }).count()) > 0);
+  const service = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke('getPrivilegedService'),
+  );
+  assert.equal(typeof service.state, 'string');
+  assert.ok(service.detail.length > 0);
+  if (service.state === 'notInstalled') {
+    await page.getByRole('button', { name: 'Install optional service', exact: true }).waitFor();
+  }
+  await page.getByRole('button', { name: 'Refresh service status', exact: true }).click();
+  const rejectedAction = await page.evaluate(async () => {
+    try {
+      await window.__TAURI_INTERNALS__.invoke('manageService', { action: 'runCommand' });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.equal(
+    rejectedAction,
+    true,
+    'Service management must reject unknown actions before execution',
+  );
   assert.deepEqual(errors, []);
   console.log(
-    'Desktop smoke passed: real Windows inventory, six successful loopback measurements, persisted history, and visible safety boundary.',
+    'Desktop smoke passed: real Windows inventory, six successful loopback measurements, persisted history, service status, rejected unknown management action, and visible safety boundary.',
   );
 } finally {
   first.server.close();

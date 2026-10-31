@@ -6,7 +6,7 @@ A local Windows network experimentation application built with Rust, Tauri 2, Re
 
 This is an early development build. It provides read-only network discovery, bounded TCP connection baselines across multiple destinations, cancellation, live progress, local SQLite history, JSON/HTML reports, local network settings snapshots with SHA-256-verified JSON exports, and a read-only MCP stdio interface. It preserves the existing network configuration. Automatic snapshot restoration is not implemented.
 
-Automatic network modifications, the privileged Windows service, throughput providers, controlled optimization, crash rollback, scheduling, and optional inference providers are still under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md). The application must not be described as a complete optimizer until those requirements have been validated.
+A separate Windows service now provides authenticated local status reporting, with optional installation and management from **Safety & policy**. It runs as LocalService, accepts no network setters, and is not needed for diagnostics or backups. Its SCM installation lifecycle is under validation in a disposable Windows runner. Automatic network modifications, operation authorization, controlled optimization, crash rollback, throughput providers, scheduling, and optional inference providers remain under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md).
 
 ## Quick start
 
@@ -31,6 +31,8 @@ Scripts retain output for double-click users and return the failing command's ex
 
 The installed application launches from its Start menu shortcut without a terminal. Development scripts are not part of its runtime requirements. Installers are unsigned until a signing identity is configured; no release is published automatically.
 
+The optional service has separate `install-service.bat` and `uninstall-service.bat` helpers. Service management requests its own Windows administrator approval; `launch.bat` and the desktop remain unelevated. Uninstall the service through **Safety & policy** before uninstalling the desktop. See [service management and trust boundaries](docs/service.md).
+
 ## Privacy and safety
 
 - No telemetry, advertising, or automatic cloud inference.
@@ -48,6 +50,7 @@ The installed application launches from its Start menu shortcut without a termin
 - [Development and acceptance tracking](docs/development.md)
 - [Candidate registry](docs/candidates.md)
 - [Network settings backups and recovery requirements](docs/backups.md)
+- [Dedicated Windows service](docs/service.md)
 - [Research sources](docs/research.md)
 
 ## License

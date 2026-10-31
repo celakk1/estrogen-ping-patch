@@ -6,7 +6,7 @@ use epp_core::{
     benchmark::{BenchmarkRun, Endpoint, Sample},
     config::Config,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -55,8 +55,56 @@ fn status(service: State<'_, LocalService>) -> Result<Value, String> {
     let config =
         epp_core::config::loadConfig(&service.directory).map_err(|error| error.to_string())?;
     Ok(
-        json!({"version": env!("CARGO_PKG_VERSION"), "service": "ready", "privilegedService": "notInstalled", "mcp": "readOnly", "busy": service.busy.load(Ordering::SeqCst), "config": config, "dataDirectory": service.directory}),
+        json!({"version": env!("CARGO_PKG_VERSION"), "service": "ready", "privilegedService": "checkServiceStatus", "mcp": "readOnly", "busy": service.busy.load(Ordering::SeqCst), "config": config, "dataDirectory": service.directory}),
     )
+}
+
+#[tauri::command]
+async fn getPrivilegedService() -> Result<epp_service::ServiceReport, String> {
+    tauri::async_runtime::spawn_blocking(epp_service::inspectBlocking)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ServiceAction {
+    Install,
+    Start,
+    Stop,
+    Uninstall,
+}
+
+#[tauri::command]
+async fn manageService(app: tauri::AppHandle, action: ServiceAction) -> Result<(), String> {
+    let scriptPath = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/manage-service.ps1")
+    } else {
+        app.path()
+            .resource_dir()
+            .map_err(|error| error.to_string())?
+            .join("service/manage-service.ps1")
+    };
+    let action = match action {
+        ServiceAction::Install => "install",
+        ServiceAction::Start => "start",
+        ServiceAction::Stop => "stop",
+        ServiceAction::Uninstall => "uninstall",
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if !scriptPath.is_file() { return Err("Service management resources are missing. Use build.bat or install the packaged application.".to_string()); }
+        let powershell = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot is unavailable")?).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut command = std::process::Command::new(powershell);
+        command.env_remove("PSModulePath").args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(scriptPath).args(["-action", action]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let output = command.output().map_err(|error| error.to_string())?;
+        if !output.status.success() { return Err(format!("Service management failed (exit {:?}): {} {}", output.status.code(), String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))); }
+        Ok(())
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -222,7 +270,7 @@ fn main() {
             app.manage(LocalService { directory, busy: Arc::new(AtomicBool::new(false)), cancelled: Arc::new(AtomicBool::new(false)) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, getInventory, getHistory, getBackups, captureBackup, exportBackup, runBaseline, cancelBaseline])
+        .invoke_handler(tauri::generate_handler![status, getPrivilegedService, manageService, getInventory, getHistory, getBackups, captureBackup, exportBackup, runBaseline, cancelBaseline])
         .build(tauri::generate_context!());
     let app = match app {
         Ok(app) => app,

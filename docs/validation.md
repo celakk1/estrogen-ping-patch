@@ -6,7 +6,7 @@ Checked on 2026-10-31 on the current Windows x64 development machine. This verif
 | --- | --- | --- |
 | `setup.bat` | Successful toolchain validation, locked dependency installation, TypeScript check, storage/config/MCP preflight; subsequent invocation reused installed packages | System prerequisites were already installed; missing Rust path tested separately |
 | `launch.bat` | Vite and the actual Tauri desktop started from a repository path containing spaces | No clean external machine tested yet |
-| `test.bat` | Formatting, TypeScript, 2 frontend tests, 28 Rust tests, workspace Clippy, and 4 Windows launcher tests | Does not validate unimplemented service, setters, inference, or throughput |
+| `test.bat` | Formatting, TypeScript, 2 frontend tests, 39 Rust tests, workspace Clippy, 4 Windows launcher tests, and 2 WebView readiness tests | Does not validate setters, recovery, inference, or throughput |
 | Launcher coordination | A second setup command was rejected while packaging held the checkout lock; isolated lock regression test preserved active artifacts | Direct Cargo/npm commands bypass the batch coordination lock |
 | Cleanup | Actual `clean.bat` in a temporary checkout removed generated artifacts and preserved dependencies/private data; junction target was rejected | Main checkout was not cleaned during active builds |
 | `build.bat` | Produced optimized `target/release/estrogen-ping-patch.exe` | Compilation alone is not gameplay/network improvement or recovery proof |
@@ -15,7 +15,8 @@ Checked on 2026-10-31 on the current Windows x64 development machine. This verif
 | Packaged MCP | Release executable over stdio initialized, listed two read-only tools, rejected arbitrary command tool, and exited cleanly | MCP protocol subset only; no AI inference integration |
 | Backup GUI and actual JSON download | Isolated packaged GUI saved snapshot, reopened history, matched adapter GUIDs, verified downloaded bytes against SHA-256, and cancelled capture without adding a partial record | This machine exposed 18 captured and 23 unavailable sections; automatic restoration remains unavailable |
 | Native DNS reader | Six tests cover real Windows reads/explicit errors, canonical GUID byte layout, exact null/empty/text/flag/integer values, invalid/oversized text rejection, cancellation, and cleanup after serialization failure; packaged capture succeeded on 4/7 adapters | Three adapters returned Windows error 2 and were reported unavailable. Read-only version-one fields; automatic/static restoration and policy/DoH/dual-stack semantics require lab validation |
-| Temporary installer lifecycle | Per-user silent install, GUI PE subsystem, Start menu shortcut target, actual desktop window, and uninstallation checked | No upgrade/reboot or separate-user/OS matrix yet |
+| Temporary installer lifecycle | Per-user silent install, GUI PE subsystem, Start menu shortcut, desktop window, exact hashes of all optional service resources, and uninstallation checked | No upgrade/reboot or separate-user/OS matrix yet |
+| Dedicated service protocol | Eleven tests exercise real pipes, ACL allow/deny, denied pipe-instance creation, token rejection/reversion, server PID mismatch, malformed frames, five-second timeout recovery, and stop cancellation; packaged status client reports the actual not-installed state | SCM installation/removal is reserved for the disposable CI runner and is not yet verified; no service was installed on the development machine |
 | npm audit | No reported vulnerabilities at the time of the check | Not a complete application security audit |
 | Staged secret scan and diff | Pattern-based scan passed; generated/runtime files excluded and staged whitespace checked | Pattern scanning cannot prove absence of every possible secret |
 
@@ -28,6 +29,8 @@ Checked on 2026-10-31 on the current Windows x64 development machine. This verif
 - Fresh Windows checkouts require explicit LF rules for CSS and JavaScript modules to match the formatter. A new clone passed the same formatting check after the attributes correction.
 - Vite's default root watcher also traversed locked Cargo artifacts. The development watcher now excludes generated Cargo and application output directories.
 - The cross-process mutex regression fixture must normalize Windows short paths with the same Windows path API as the launcher. A local 8.3 temporary-path reproduction failed before the correction and passed afterward.
+- Pipe handles cannot be recycled with the resolved Mio version: stale read completion state caused the second connection to fail. Fresh instances with a listener retained across clients pass the real pipe tests. Client ACLs also need read-attribute access; omitting that bit rejected the authorized user at `CreateFileW`, while adding it preserves denial of pipe-instance creation.
+- CI exposed that a WebView debugging endpoint can appear before the application page is available. Desktop/backup smoke checks now wait for the expected page with a deadline and URL diagnostics; a delayed-page regression test passes. The hosted correction still requires its next CI run.
 
 ## Reproducing optional GUI and installer smoke checks
 

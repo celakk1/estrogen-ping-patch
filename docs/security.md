@@ -10,7 +10,7 @@ Network connectivity, original adapter/TCP/DNS settings, authorization records, 
 | --- | --- | --- | --- |
 | External metadata / GUI and report | Script or markup injection | React escaping, HTML export escaping, strict CSP, no remote content | Implemented |
 | MCP client / application operations | Arbitrary command execution, permission expansion | Explicit read-only tools, initialization, argument validation, bounded JSON lines | Read-only subset implemented |
-| Local user / privileged service | Unauthorized network changes, pipe spoofing | Explicit owner/service ACLs, client identity, remote client rejection, bounded typed protocol | Service not implemented; all mutations disabled |
+| Local user / dedicated service | Unauthorized requests, pipe spoofing | Explicit user/service ACLs, impersonated token identity, remote rejection, SCM PID/session verification, bounded typed protocol | Implemented for read-only status; all mutations disabled; SCM lifecycle validation pending |
 | Worker / network | Unbounded traffic, hangs, sensitive endpoint probing | Explicit start, bounded endpoint/sample counts, connect timeouts, cancellation, session deadline | Implemented for TCP connect probes; bulk transfer budgets pending |
 | Process crash / experiment | Stranded network configuration | Durable checkpoints, independent watchdog, idempotent verified recovery | Pending; no mutations permitted |
 | Model output / candidate execution | Prompt injection or unsafe proposals | Treat as data; deterministic registry validation; authorization cannot be granted by AI | No inference or proposals enabled |

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
+import { waitForDesktopPage } from './webview-test.mjs';
 
 const endpoint = process.env.EPP_CDP_URL;
 if (!endpoint || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint)) {
@@ -11,11 +12,7 @@ if (!endpoint || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint)) {
 const browser = await chromium.connectOverCDP(endpoint, { timeout: 15_000 });
 let session;
 try {
-  const page = browser
-    .contexts()
-    .flatMap((context) => context.pages())
-    .find((page) => /127\.0\.0\.1:1420|tauri\.localhost/.test(page.url()));
-  assert.ok(page, 'Test desktop not found');
+  const page = await waitForDesktopPage(browser);
   await page.waitForFunction(() => Boolean(window.__TAURI_INTERNALS__));
   if (process.env.EPP_DATA_DIR) {
     const status = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('status'));

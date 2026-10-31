@@ -72,6 +72,15 @@ function installProjectDependencies {
     }
 }
 
+function buildServiceResources {
+    invokeChecked 'cargo.exe' @('build', '--release', '--locked', '-p', 'epp-service')
+    $releaseDirectory = Join-Path $projectRoot 'target\release'
+    $serviceResources = Join-Path $releaseDirectory 'service'
+    New-Item -ItemType Directory -Force -Path $serviceResources | Out-Null
+    Copy-Item -LiteralPath (Join-Path $releaseDirectory 'epp-network-service.exe'), (Join-Path $projectRoot 'scripts\manage-service.ps1') -Destination $serviceResources
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'install-service.bat'), (Join-Path $projectRoot 'uninstall-service.bat') -Destination $releaseDirectory
+}
+
 function removeGeneratedDirectory {
     param([string]$relativePath)
     $targetPath = [IO.Path]::GetFullPath((Join-Path $projectRoot $relativePath))
@@ -112,10 +121,12 @@ try {
         }
         'launch' {
             invokeChecked 'cargo.exe' @('run', '--locked', '-p', 'epp-core', '--bin', 'epp-check')
+            invokeChecked 'cargo.exe' @('build', '--locked', '-p', 'epp-service')
             invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'dev')
         }
         'build' {
-            invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'build', '--no-bundle')
+            buildServiceResources
+            invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'build', '--no-bundle', '--config', 'src-tauri/service.bundle.json')
             Write-Host 'Executable: target\release\estrogen-ping-patch.exe'
         }
         'test' {
@@ -125,10 +136,11 @@ try {
             invokeChecked 'cargo.exe' @('fmt', '--all', '--', '--check')
             invokeChecked 'cargo.exe' @('test', '--workspace', '--locked')
             invokeChecked 'cargo.exe' @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
-            invokeChecked 'node.exe' @('--test', 'scripts/launcher.test.mjs')
+            invokeChecked 'node.exe' @('--test', 'scripts/launcher.test.mjs', 'scripts/webview-test.test.mjs')
         }
         'package' {
-            invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'build', '--bundles', 'nsis')
+            buildServiceResources
+            invokeChecked 'npm.cmd' @('run', 'tauri', '--', 'build', '--bundles', 'nsis', '--config', 'src-tauri/service.bundle.json')
             $installers = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'target\release\bundle\nsis') -Filter '*-setup.exe')
             if ($installers.Count -eq 0) { throw 'Tauri returned success but no NSIS installer was found.' }
             $installers | ForEach-Object { Write-Host "Installer: $($_.FullName)" }

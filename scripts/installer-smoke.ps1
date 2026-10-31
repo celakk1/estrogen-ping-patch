@@ -19,6 +19,18 @@ try {
     $installed = $true
     $executablePath = Join-Path $installDirectory 'estrogen-ping-patch.exe'
     if (-not (Test-Path -LiteralPath $executablePath)) { throw 'Installer did not produce the expected desktop executable.' }
+    foreach ($resource in @('service\epp-network-service.exe', 'service\manage-service.ps1', 'install-service.bat', 'uninstall-service.bat')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $installDirectory $resource) -PathType Leaf)) { throw "Installer omitted service resource: $resource" }
+    }
+    $sourceFiles = @{
+        'service\epp-network-service.exe' = (Join-Path $PSScriptRoot '..\target\release\epp-network-service.exe')
+        'service\manage-service.ps1' = (Join-Path $PSScriptRoot 'manage-service.ps1')
+        'install-service.bat' = (Join-Path $PSScriptRoot '..\install-service.bat')
+        'uninstall-service.bat' = (Join-Path $PSScriptRoot '..\uninstall-service.bat')
+    }
+    foreach ($resource in $sourceFiles.Keys) {
+        if ((Get-FileHash -LiteralPath $sourceFiles[$resource] -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath (Join-Path $installDirectory $resource) -Algorithm SHA256).Hash) { throw "Installed service resource does not match the checked build: $resource" }
+    }
     $bytes = [IO.File]::ReadAllBytes($executablePath)
     $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
     $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 4 + 20 + 68)

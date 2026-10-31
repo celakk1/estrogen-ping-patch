@@ -13,6 +13,7 @@ tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
 epp-core = { path = "../crates/core" }
+epp-service = { path = "../crates/service" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }

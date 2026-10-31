@@ -4,7 +4,7 @@
 
 The target architecture has four trust domains: the unelevated Tauri desktop, a bounded benchmark/experiment worker, a dedicated privileged Windows service, and an unprivileged MCP/inference component. SQLite records raw evidence separately from decisions. The GUI and inference component cannot execute arbitrary commands or mutate system settings.
 
-The current implementation includes the desktop, a local read-only application service owned by Tauri, a cancellable worker, and a standalone MCP stdio mode. These are useful running components, but they do not substitute for the privileged service. Network modifications remain unavailable until the service's authorization, authenticated named pipes, durable checkpoints, verification, watchdog, and recovery tests exist.
+The current implementation includes the desktop, a local read-only application service owned by Tauri, a cancellable worker, a standalone MCP stdio mode, and an optional dedicated Windows service with authenticated status requests. The Windows service runs as LocalService and currently exposes no settings writes. Network modifications remain unavailable until scoped operation authorization, durable checkpoints, verified setters, watchdog, and recovery tests exist.
 
 ## Runtime paths
 
@@ -25,9 +25,9 @@ The manual backup workflow captures inventory and supported settings, commits an
 | Core | Rust; same measurement, statistics, validation, and persistence code in tests and desktop | Blocking OS work is kept off the GUI thread |
 | Database | Bundled SQLite through rusqlite; transactions, WAL, FULL synchronous mode | End-of-run sample persistence currently loses an unfinished run on a process crash |
 | Configuration | Versioned JSON, strict known-field validation with preservation of unknown fields | Future schemas are rejected rather than silently downgraded |
-| IPC | Tauri commands now; authenticated named pipes required for privileged service | No privileged IPC implementation yet |
+| IPC | Tauri commands and a local named pipe with explicit user/service ACLs, token identity checks, SCM PID/session checks, bounded messages and deadlines | Dedicated service protocol currently permits status only |
 | MCP | Small explicit JSON-RPC stdio allowlist with 64 KiB frame bound | Read-only subset; no inference or proposal execution |
-| Packaging | Per-user Tauri NSIS installer | Unsigned; service installation remains separate future work |
+| Packaging | Per-user Tauri NSIS installer with separate optional service helper | Unsigned; service installation requests its own approval and must be removed separately |
 
 ## Privileged service feasibility gate
 

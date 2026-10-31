@@ -12,6 +12,7 @@ import type {
   Profile,
   Progress,
   Sample,
+  ServiceReport,
 } from './types';
 import { downloadBackup, downloadReport, formatMs } from './report';
 
@@ -89,6 +90,8 @@ function LatencyChart({ samples }: { samples: Sample[] }) {
 export default function App() {
   const [view, setView] = useState<View>('overview');
   const [appStatus, setAppStatus] = useState<AppStatus | null>(null);
+  const [serviceReport, setServiceReport] = useState<ServiceReport | null>(null);
+  const [managingService, setManagingService] = useState(false);
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [history, setHistory] = useState<BenchmarkRun[]>([]);
@@ -106,6 +109,24 @@ export default function App() {
   const [secondAddress, setSecondAddress] = useState('8.8.8.8:53');
   const [light, setLight] = useState(false);
   const runRef = useRef(false);
+
+  async function refreshService() {
+    setServiceReport(await invoke<ServiceReport>('getPrivilegedService'));
+  }
+
+  async function changeService(action: 'install' | 'start' | 'stop' | 'uninstall') {
+    if (managingService) return;
+    setManagingService(true);
+    setError('');
+    try {
+      await invoke('manageService', { action });
+      await refreshService();
+    } catch (error) {
+      setError(String(error));
+    } finally {
+      setManagingService(false);
+    }
+  }
 
   async function refreshInventory() {
     setLoadingInventory(true);
@@ -168,6 +189,13 @@ export default function App() {
     invoke<BackupSummary[]>('getBackups')
       .then((backups) => {
         if (active) setBackups(backups);
+      })
+      .catch((error) => {
+        if (active) setError(String(error));
+      });
+    invoke<ServiceReport>('getPrivilegedService')
+      .then((report) => {
+        if (active) setServiceReport(report);
       })
       .catch((error) => {
         if (active) setError(String(error));
@@ -793,8 +821,8 @@ export default function App() {
                   <dl>
                     <dt>System changes</dt>
                     <dd>Disabled in this build</dd>
-                    <dt>Privileged service</dt>
-                    <dd>Not installed</dd>
+                    <dt>Dedicated Windows service</dt>
+                    <dd>{serviceReport?.state ?? 'Checking status'}</dd>
                     <dt>AI mode</dt>
                     <dd>Disabled</dd>
                     <dt>Cloud budget</dt>
@@ -808,6 +836,60 @@ export default function App() {
                     The desktop application runs as your normal user. No startup operation requires
                     administrator privileges.
                   </p>
+                  <p>{serviceReport?.detail}</p>
+                  <div className="actions">
+                    <button
+                      disabled={managingService}
+                      onClick={() =>
+                        void refreshService().catch((error) => setError(String(error)))
+                      }
+                    >
+                      Refresh service status
+                    </button>
+                    {serviceReport?.state === 'notInstalled' && (
+                      <button
+                        disabled={managingService || running || capturingBackup}
+                        onClick={() => void changeService('install')}
+                      >
+                        Install optional service
+                      </button>
+                    )}
+                    {serviceReport?.state === 'stopped' && (
+                      <button
+                        disabled={managingService}
+                        onClick={() => void changeService('start')}
+                      >
+                        Start service
+                      </button>
+                    )}
+                    {serviceReport?.state === 'ready' && (
+                      <button disabled={managingService} onClick={() => void changeService('stop')}>
+                        Stop service
+                      </button>
+                    )}
+                    {serviceReport &&
+                      !['notInstalled', 'unsupported', 'unavailable'].includes(
+                        serviceReport.state,
+                      ) && (
+                        <button
+                          disabled={managingService}
+                          onClick={() => void changeService('uninstall')}
+                        >
+                          Uninstall service
+                        </button>
+                      )}
+                  </div>
+                  <p>
+                    Service management requests a separate Windows administrator approval. The
+                    service currently runs as LocalService and cannot change network settings.
+                    Backups and measurements remain available without installing it.
+                  </p>
+                  {managingService && (
+                    <p role="status">
+                      Waiting for dedicated service management. Respond to the Windows approval
+                      prompt if shown.
+                    </p>
+                  )}
                 </div>
               </section>
               <section className="panel">
