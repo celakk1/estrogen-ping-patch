@@ -1,4 +1,5 @@
 export type Profile = 'latency' | 'balanced' | 'download';
+export type ProbeProtocol = 'tcpConnect' | 'icmpEcho';
 export interface Config {
   schemaVersion: number;
   profile: Profile;
@@ -42,7 +43,8 @@ export interface Inventory {
 export interface Summary {
   attempted: number;
   successful: number;
-  connectionFailurePercent: number;
+  connectionFailurePercent?: number;
+  echoTimeoutPercent?: number;
   medianMs: number | null;
   p95Ms: number | null;
   p99Ms: number | null;
@@ -52,6 +54,25 @@ export interface Summary {
 export interface Endpoint {
   id: string;
   address: string;
+  protocol?: ProbeProtocol;
+}
+export interface EchoOutcome {
+  status:
+    'reply' | 'timedOut' | 'ipError' | 'osError' | 'invalidReply' | 'cancelled' | 'unsupported';
+  rttMs: number | null;
+  rttUnitMs: number;
+  callDurationMs: number;
+  responder: string | null;
+  responderScopeId: number | null;
+  nativeCode: number | null;
+}
+export interface EchoCounts {
+  replies: number;
+  timeouts: number;
+  ipErrors: number;
+  osErrors: number;
+  invalidReplies: number;
+  unsupported: number;
 }
 export interface Sample {
   endpointId: string;
@@ -59,16 +80,17 @@ export interface Sample {
   timestamp: string;
   connectMs: number | null;
   error: string | null;
+  echo?: EchoOutcome;
 }
 export interface BenchmarkRun {
   id: number;
   startedAt: string;
   finishedAt: string;
   status: string;
-  protocol: string;
+  protocol: ProbeProtocol;
   appVersion: string;
   config: Config;
-  results: { endpoint: Endpoint; summary: Summary }[];
+  results: { endpoint: Endpoint; summary: Summary; echoCounts?: EchoCounts }[];
   samples: Sample[];
 }
 export interface Progress {

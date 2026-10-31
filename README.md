@@ -4,7 +4,7 @@ A local Windows network experimentation application built with Rust, Tauri 2, Re
 
 ## Development status
 
-This is an early development build. It provides read-only network discovery, bounded TCP connection baselines across multiple destinations, cancellation, live progress, local SQLite history, JSON/HTML reports, local network settings snapshots with SHA-256-verified JSON exports, and a read-only MCP stdio interface. It preserves the existing network configuration. Automatic snapshot restoration is not implemented.
+This is an early development build. It provides read-only network discovery, bounded TCP connection and IPv4/IPv6 ICMP echo baselines across multiple destinations, cancellation, live progress, local SQLite history, JSON/HTML reports, local network settings snapshots with SHA-256-verified JSON exports, and a read-only MCP stdio interface. It preserves the existing network configuration. Automatic snapshot restoration is not implemented.
 
 A separate Windows service provides authenticated local status reporting, with optional installation and management from **Safety & policy**. It runs as LocalService, accepts no network setters, and is not needed for diagnostics or backups. Protected service-owned recovery journal storage verifies checkpoint integrity and detects incomplete work at startup. Disposable Windows CI passed storage permissions, simulated pending-checkpoint detection, corrupted-storage refusal, restart, and journal preservation across service removal/reinstallation. Automatic network modifications, operation authorization, controlled optimization, native crash rollback, throughput providers, scheduling, and optional inference providers remain under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md).
 
@@ -32,6 +32,14 @@ Scripts retain output for double-click users and return the failing command's ex
 The installed application launches from its Start menu shortcut without a terminal. Development scripts are not part of its runtime requirements. Installers are unsigned until a signing identity is configured; no release is published automatically.
 
 The optional service has separate `install-service.bat` and `uninstall-service.bat` helpers. Service management requests its own Windows administrator approval; `launch.bat` and the desktop remain unelevated. Uninstall the service through **Safety & policy** before uninstalling the desktop. See [service management and trust boundaries](docs/service.md).
+
+## Networking baselines
+
+Choose **TCP connection establishment** or **ICMP echo RTT** under **Network benchmark**. TCP targets use numeric `IP:port` addresses; ICMP targets use numeric IP addresses without a port. IPv6 link-local echo targets require a numeric interface scope, such as `fe80::1%12`. Starting a baseline sends only the selected bounded probes. Default public resolver addresses are network controls; neither test measures DNS lookup performance or represents every internet route.
+
+ICMP reports Windows' whole-millisecond RTT separately from TCP connect time and API call duration. Raw zero RTT is displayed as `<1 ms`. Timeouts, IP errors, system errors, and invalid replies remain distinct; timeout percentage is unavailable if non-timeout errors prevent a clean estimate. ICMP may be filtered or rate-limited and is not application packet loss. Throughput, loaded latency, DNS benchmarking, and automatic optimization remain unfinished. No game selection, game launch, or in-game telemetry is required.
+
+Application database version three supports protocol-specific reports while retaining earlier TCP history and configuration snapshots. Older previews refuse this newer database instead of interpreting ICMP records as TCP. Use the current application to read it; do not downgrade the database version manually. The dedicated service journal has its own independent schema.
 
 ## Privacy and safety
 

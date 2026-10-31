@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 pub struct Summary {
     pub attempted: usize,
     pub successful: usize,
-    pub connectionFailurePercent: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connectionFailurePercent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub echoTimeoutPercent: Option<f64>,
     pub medianMs: Option<f64>,
     pub p95Ms: Option<f64>,
     pub p99Ms: Option<f64>,
@@ -45,11 +48,12 @@ pub fn summarize(samples: &[Option<f64>]) -> Summary {
     Summary {
         attempted: samples.len(),
         successful: sorted.len(),
-        connectionFailurePercent: if samples.is_empty() {
+        connectionFailurePercent: Some(if samples.is_empty() {
             0.0
         } else {
             (samples.len() - sorted.len()) as f64 * 100.0 / samples.len() as f64
-        },
+        }),
+        echoTimeoutPercent: None,
         medianMs: quantile(&sorted, 0.5),
         p95Ms: quantile(&sorted, 0.95),
         p99Ms: quantile(&sorted, 0.99),
@@ -72,7 +76,7 @@ mod tests {
     fn quantilesAndFailuresAreProtocolSpecific() {
         let summary = summarize(&[Some(1.0), Some(2.0), None, Some(3.0), Some(4.0)]);
         assert_eq!(summary.medianMs, Some(2.5));
-        assert_eq!(summary.connectionFailurePercent, 20.0);
+        assert_eq!(summary.connectionFailurePercent, Some(20.0));
         assert_eq!(summary.successiveVariationMs, Some(1.0));
         assert_eq!(summary.iqrMs, Some(1.5));
     }
@@ -81,7 +85,7 @@ mod tests {
     fn noFabricatedValuesWhenEveryConnectionFails() {
         let summary = summarize(&[None, None, None]);
         assert_eq!(summary.medianMs, None);
-        assert_eq!(summary.connectionFailurePercent, 100.0);
+        assert_eq!(summary.connectionFailurePercent, Some(100.0));
         assert_eq!(summary.successiveVariationMs, None);
     }
 
@@ -90,5 +94,17 @@ mod tests {
         let summary = summarize(&[Some(f64::NAN), Some(-2.0), Some(4.0)]);
         assert_eq!(summary.successful, 1);
         assert_eq!(summary.p99Ms, Some(4.0));
+    }
+
+    #[test]
+    fn serializedTimingsRoundTripWithoutChangingFloatingPointBits() {
+        let value = 0.42969999999999997_f64;
+        let json = serde_json::to_string(&value).unwrap();
+        let saved: f64 = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            saved.to_bits(),
+            value.to_bits(),
+            "Changed persisted timing: {json}"
+        );
     }
 }

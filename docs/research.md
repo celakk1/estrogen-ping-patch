@@ -18,6 +18,12 @@ Research checked on 2026-10-31. These references establish design constraints; t
 
 Verify official provider APIs, traffic policies, privacy terms, supported discovery, and redistribution licenses before implementing NDT7, Cloudflare throughput infrastructure, or optional Ookla/iperf3 adapters. No undocumented website endpoint is used as a speed-test API. Verify Windows 10/11 client API compatibility and driver behavior in a test lab before enabling any candidate setter. Verify supported inference APIs, credential protection, and MCP proposal validation before enabling paid or local inference.
 
+## Direct ICMP measurement
+
+- [IcmpSendEcho](https://learn.microsoft.com/en-us/windows/win32/api/icmpapi/nf-icmpapi-icmpsendecho) supplies synchronous IPv4 replies and requires room for reply metadata, payload, and error data. The application reads only scalar reply fields, not returned pointers. Its fixed payload and reply buffer are independent of user-provided command text.
+- [Icmp6SendEcho2](https://learn.microsoft.com/en-us/windows/win32/api/icmpapi/nf-icmpapi-icmp6sendecho2) supplies IPv6 replies with source/destination socket addresses. The buffer also accounts for the documented IO status block. Both event and APC parameters are null, so request storage remains alive for the complete synchronous call.
+- [ICMP reply fields](https://learn.microsoft.com/en-us/windows/win32/api/ipexport/ns-ipexport-icmp_echo_reply) identify RTT in milliseconds and separate IP status from a successful reply. Whole-millisecond reporting does not establish sub-millisecond clock accuracy. Timeout and other failures must not be replaced with zero RTT or treated as universal application packet loss.
+
 ## Backup and DNS restoration constraints
 
 - [Get-NetAdapterAdvancedProperty](https://learn.microsoft.com/en-us/powershell/module/netadapter/get-netadapteradvancedproperty) exposes driver registry keywords and values; [Get-NetTCPSetting](https://learn.microsoft.com/en-us/powershell/module/nettcpip/get-nettcpsetting) exposes TCP template settings. Snapshot capture reads these supported interfaces and records unavailable sections.

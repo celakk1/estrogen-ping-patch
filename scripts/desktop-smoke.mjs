@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { chromium } from 'playwright-core';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { waitForDesktopPage } from './webview-test.mjs';
 
@@ -24,6 +24,7 @@ async function listener() {
 const first = await listener();
 const second = await listener();
 let browser;
+let session;
 try {
   browser = await chromium.connectOverCDP(endpoint, { timeout: 15_000 });
   const page = await waitForDesktopPage(browser);
@@ -61,6 +62,57 @@ try {
   mkdirSync('artifacts', { recursive: true });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: 'artifacts/desktop-baseline.png', fullPage: true });
+  await page.getByLabel('Network benchmark').selectOption('icmpEcho');
+  await page.getByLabel('First destination (IP or IPv6%scopeId)').fill('127.0.0.1');
+  await page.getByLabel('Second destination (IP or IPv6%scopeId)').fill('::1');
+  await page.getByRole('button', { name: 'Start baseline', exact: true }).click();
+  await page
+    .getByRole('img', { name: 'Measured ICMP echo round-trip times', exact: true })
+    .waitFor();
+  await page.getByRole('button', { name: 'Export JSON', exact: true }).waitFor({ timeout: 30_000 });
+  assert.equal(await page.getByText('3/3 echo replies', { exact: true }).count(), 2);
+  const echoRun = await page.evaluate(
+    async () => (await window.__TAURI_INTERNALS__.invoke('getHistory'))[0],
+  );
+  assert.equal(echoRun.protocol, 'icmpEcho');
+  assert.equal(echoRun.samples.length, 6);
+  for (const sample of echoRun.samples) {
+    assert.equal(sample.connectMs, null);
+    assert.equal(sample.echo.status, 'reply');
+    assert.equal(sample.echo.rttUnitMs, 1);
+    assert.equal(sample.echo.nativeCode, 0);
+    assert.ok(Number.isInteger(sample.echo.rttMs));
+  }
+  for (const result of echoRun.results) {
+    assert.equal(result.summary.connectionFailurePercent, undefined);
+    assert.equal(result.summary.echoTimeoutPercent, 0);
+  }
+  session = await page.context().newCDPSession(page);
+  await session.send('Browser.setDownloadBehavior', {
+    behavior: 'allow',
+    downloadPath: path.resolve('artifacts'),
+    eventsEnabled: true,
+  });
+  for (const format of ['JSON', 'HTML']) {
+    const downloaded = page.waitForEvent('download', { timeout: 15_000 });
+    await page.getByRole('button', { name: `Export ${format}`, exact: true }).click();
+    const download = await downloaded;
+    assert.equal(await download.failure(), null);
+    const content = readFileSync(path.resolve('artifacts', download.suggestedFilename()), 'utf8');
+    if (format === 'JSON') assert.deepEqual(JSON.parse(content), echoRun);
+    else {
+      assert.match(content, /ICMP echo RTT/);
+      assert.match(content, /ICMP echo timeouts/);
+      assert.doesNotMatch(content, /TCP connection establishment/);
+    }
+  }
+  await session.send('Browser.setDownloadBehavior', { behavior: 'default' });
+  await page.screenshot({ path: 'artifacts/desktop-echo-baseline.png', fullPage: true });
+  await page.reload();
+  await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
+  await page.getByRole('cell', { name: 'ICMP echo', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'View', exact: true }).first().click();
+  assert.equal(await page.getByText('3/3 echo replies', { exact: true }).count(), 2);
   await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
   assert.ok((await page.getByRole('cell', { name: 'completed', exact: true }).count()) > 0);
   await page.getByRole('button', { name: 'Safety & policy', exact: true }).click();
@@ -89,10 +141,12 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    'Desktop smoke passed: real Windows inventory, six successful loopback measurements, persisted history, service status, rejected unknown management action, and visible safety boundary.',
+    'Desktop smoke passed: real Windows inventory, six TCP and six IPv4/IPv6 ICMP loopback measurements, protocol-specific statistics, persisted history/reload, actual JSON/HTML downloads, service status, rejected unknown management action, and visible safety boundary.',
   );
 } finally {
   first.server.close();
   second.server.close();
+  if (session)
+    await session.send('Browser.setDownloadBehavior', { behavior: 'default' }).catch(() => {});
   if (browser) await browser.close();
 }

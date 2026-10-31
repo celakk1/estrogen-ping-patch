@@ -10,18 +10,20 @@ import type {
   Config,
   Inventory,
   Profile,
+  ProbeProtocol,
   Progress,
   Sample,
   ServiceReport,
 } from './types';
-import { downloadBackup, downloadReport, formatMs } from './report';
+import { downloadBackup, downloadReport } from './report';
+import { failurePercent, formatProbeMs, protocolNotes, sampleLatency } from './measurement';
 
 type View = 'overview' | 'inventory' | 'history' | 'backups' | 'policy';
 const profiles: Profile[] = ['latency', 'balanced', 'download'];
 
-function LatencyChart({ samples }: { samples: Sample[] }) {
-  const valid = samples.filter((sample) => sample.connectMs != null);
-  const maximum = Math.max(10, ...valid.map((sample) => sample.connectMs!));
+function LatencyChart({ samples, protocol }: { samples: Sample[]; protocol: ProbeProtocol }) {
+  const valid = samples.map(sampleLatency).filter((value): value is number => value != null);
+  const maximum = Math.max(10, ...valid);
   const endpoints = [...new Set(samples.map((sample) => sample.endpointId))];
   return (
     <div className="chart">
@@ -32,18 +34,23 @@ function LatencyChart({ samples }: { samples: Sample[] }) {
       <svg
         viewBox="0 0 900 180"
         role="img"
-        aria-label="Measured TCP connection establishment times"
+        aria-label={
+          protocol === 'icmpEcho'
+            ? 'Measured ICMP echo round-trip times'
+            : 'Measured TCP connection establishment times'
+        }
       >
         {[30, 90, 150].map((y) => (
           <line key={y} x1="0" x2="900" y1={y} y2={y} stroke="currentColor" opacity="0.15" />
         ))}
         {endpoints.map((endpoint, index) => {
           const matching = samples.filter((sample) => sample.endpointId === endpoint);
-          const points = matching.map((sample, point) =>
-            sample.connectMs == null
+          const points = matching.map((sample, point) => {
+            const value = sampleLatency(sample);
+            return value == null
               ? null
-              : `${20 + (point * 860) / Math.max(matching.length - 1, 1)},${165 - (sample.connectMs / maximum) * 150}`,
-          );
+              : `${20 + (point * 860) / Math.max(matching.length - 1, 1)},${165 - (value / maximum) * 150}`;
+          });
           const segments: string[][] = [[]];
           points.forEach((point) => {
             if (point == null) segments.push([]);
@@ -105,8 +112,19 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [error, setError] = useState('');
-  const [firstAddress, setFirstAddress] = useState('1.1.1.1:53');
-  const [secondAddress, setSecondAddress] = useState('8.8.8.8:53');
+  const [protocol, setProtocol] = useState<ProbeProtocol>('tcpConnect');
+  const [targets, setTargets] = useState<Record<ProbeProtocol, [string, string]>>({
+    tcpConnect: ['1.1.1.1:53', '8.8.8.8:53'],
+    icmpEcho: ['1.1.1.1', '8.8.8.8'],
+  });
+  const [firstAddress, secondAddress] = targets[protocol];
+  function setAddress(index: 0 | 1, address: string) {
+    setTargets((previous) => {
+      const updated: [string, string] = [...previous[protocol]];
+      updated[index] = address;
+      return { ...previous, [protocol]: updated };
+    });
+  }
   const [light, setLight] = useState(false);
   const runRef = useRef(false);
 
@@ -225,12 +243,20 @@ export default function App() {
         config,
         endpoints: [
           {
-            id: firstAddress === '1.1.1.1:53' ? 'Cloudflare DNS' : 'First destination',
+            id:
+              firstAddress === (protocol === 'icmpEcho' ? '1.1.1.1' : '1.1.1.1:53')
+                ? 'Cloudflare control'
+                : 'First destination',
             address: firstAddress,
+            protocol,
           },
           {
-            id: secondAddress === '8.8.8.8:53' ? 'Google Public DNS' : 'Second destination',
+            id:
+              secondAddress === (protocol === 'icmpEcho' ? '8.8.8.8' : '8.8.8.8:53')
+                ? 'Google control'
+                : 'Second destination',
             address: secondAddress,
+            protocol,
           },
         ],
       });
@@ -248,6 +274,8 @@ export default function App() {
   const activeAdapters = inventory?.adapters.filter((adapter) => adapter.status === 'Up') ?? [];
   const primary = selected?.results[0]?.summary;
   const shownSamples = selected?.samples ?? samples;
+  const shownProtocol = selected?.protocol ?? protocol;
+  const showingEcho = shownProtocol === 'icmpEcho';
   const completed = progress?.completed ?? 0;
   const percent = progress ? Math.round((completed / progress.total) * 100) : 0;
   const backupPayload = useMemo<BackupPayload | null>(
@@ -356,16 +384,18 @@ export default function App() {
                   </span>
                 </article>
                 <article>
-                  <label>TCP CONNECT MEDIAN</label>
-                  <strong>{formatMs(primary?.medianMs)}</strong>
+                  <label>{showingEcho ? 'ICMP ECHO RTT MEDIAN' : 'TCP CONNECT MEDIAN'}</label>
+                  <strong>{formatProbeMs(primary?.medianMs, shownProtocol)}</strong>
                   <span>{selected?.results[0]?.endpoint.id ?? 'Run a baseline to measure'}</span>
                 </article>
                 <article>
-                  <label>CONNECTION FAILURES</label>
-                  <strong>
-                    {primary ? `${primary.connectionFailurePercent.toFixed(1)}%` : '--'}
-                  </strong>
-                  <span>TCP attempts, protocol specific</span>
+                  <label>{showingEcho ? 'ICMP ECHO TIMEOUTS' : 'CONNECTION FAILURES'}</label>
+                  <strong>{primary ? failurePercent(primary, shownProtocol) : '--'}</strong>
+                  <span>
+                    {showingEcho
+                      ? 'Echo attempts; errors reported separately'
+                      : 'TCP attempts, protocol specific'}
+                  </span>
                 </article>
                 <article>
                   <label>RETAINED CHANGES</label>
@@ -376,18 +406,19 @@ export default function App() {
               <section className="panel">
                 <div className="panel-heading">
                   <div>
-                    <h2>Connection timeline</h2>
-                    <p>TCP establishment time across independent destinations</p>
+                    <h2>{showingEcho ? 'Echo RTT timeline' : 'Connection timeline'}</h2>
+                    <p>
+                      {showingEcho
+                        ? 'Direct ICMP echo RTT across the selected network endpoints'
+                        : 'TCP establishment time across independent destinations'}
+                    </p>
                   </div>
                   <span className="pill">
                     {running ? 'Measuring' : (selected?.status ?? 'Awaiting baseline')}
                   </span>
                 </div>
-                <LatencyChart samples={shownSamples} />
-                <div className="chart-note">
-                  Connection time includes TCP handshake overhead. This is not a throughput, ICMP
-                  loss, or loaded-latency test.
-                </div>
+                <LatencyChart samples={shownSamples} protocol={shownProtocol} />
+                <div className="chart-note">{protocolNotes[shownProtocol]}</div>
               </section>
               <div className="two-columns">
                 <section className="panel">
@@ -398,6 +429,17 @@ export default function App() {
                     </div>
                   </div>
                   <div className="form-body">
+                    <label>
+                      Network benchmark
+                      <select
+                        disabled={running}
+                        value={protocol}
+                        onChange={(event) => setProtocol(event.target.value as ProbeProtocol)}
+                      >
+                        <option value="tcpConnect">TCP connection establishment</option>
+                        <option value="icmpEcho">ICMP echo RTT (IPv4 / IPv6)</option>
+                      </select>
+                    </label>
                     <label>Optimization profile</label>
                     <div className="segmented">
                       {profiles.map((profile) => (
@@ -446,24 +488,30 @@ export default function App() {
                       </label>
                     </div>
                     <label>
-                      First destination (IP:port)
+                      {protocol === 'icmpEcho'
+                        ? 'First destination (IP or IPv6%scopeId)'
+                        : 'First destination (IP:port)'}
                       <input
                         disabled={running}
                         value={firstAddress}
-                        onChange={(event) => setFirstAddress(event.target.value)}
+                        onChange={(event) => setAddress(0, event.target.value)}
                       />
                     </label>
                     <label>
-                      Second destination (IP:port)
+                      {protocol === 'icmpEcho'
+                        ? 'Second destination (IP or IPv6%scopeId)'
+                        : 'Second destination (IP:port)'}
                       <input
                         disabled={running}
                         value={secondAddress}
-                        onChange={(event) => setSecondAddress(event.target.value)}
+                        onChange={(event) => setAddress(1, event.target.value)}
                       />
                     </label>
                     <p className="form-note">
-                      Starting sends TCP probes to these addresses. Change them only to endpoints
-                      you are permitted to test.
+                      Starting sends {protocol === 'icmpEcho' ? 'ICMP echo requests' : 'TCP probes'}{' '}
+                      to these addresses. Change them only to endpoints you are permitted to test.
+                      Public resolver controls do not represent every internet route or measure DNS
+                      lookup time. ICMP link-local IPv6 requires a numeric interface scope ID.
                     </p>
                     <div className="button-row">
                       <button
@@ -521,19 +569,33 @@ export default function App() {
                     ) : selected ? (
                       <>
                         <div className="result-list">
-                          {selected.results.map(({ endpoint, summary }) => (
+                          {selected.results.map(({ endpoint, summary, echoCounts }) => (
                             <div key={endpoint.id}>
                               <strong>{endpoint.id}</strong>
-                              <span>Median {formatMs(summary.medianMs)}</span>
                               <span>
-                                p95 {formatMs(summary.p95Ms)} / p99 {formatMs(summary.p99Ms)}
+                                Median {formatProbeMs(summary.medianMs, selected.protocol)}
                               </span>
                               <span>
-                                Successive variation {formatMs(summary.successiveVariationMs)}
+                                p95 {formatProbeMs(summary.p95Ms, selected.protocol)} / p99{' '}
+                                {formatProbeMs(summary.p99Ms, selected.protocol)}
                               </span>
                               <span>
-                                {summary.successful}/{summary.attempted} successful connections
+                                Successive variation{' '}
+                                {formatProbeMs(summary.successiveVariationMs, selected.protocol)}
                               </span>
+                              <span>
+                                {summary.successful}/{summary.attempted}{' '}
+                                {selected.protocol === 'icmpEcho'
+                                  ? 'echo replies'
+                                  : 'successful connections'}
+                              </span>
+                              {echoCounts && (
+                                <span>
+                                  Timeouts {echoCounts.timeouts}; IP errors {echoCounts.ipErrors};
+                                  system errors {echoCounts.osErrors}; invalid replies{' '}
+                                  {echoCounts.invalidReplies}; unsupported {echoCounts.unsupported}
+                                </span>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -656,6 +718,7 @@ export default function App() {
                         <th>Run</th>
                         <th>Started</th>
                         <th>Profile</th>
+                        <th>Protocol</th>
                         <th>Attempts</th>
                         <th>Status</th>
                         <th>Report</th>
@@ -667,6 +730,7 @@ export default function App() {
                           <td>#{run.id}</td>
                           <td>{new Date(run.startedAt).toLocaleString()}</td>
                           <td>{run.config.profile}</td>
+                          <td>{run.protocol === 'icmpEcho' ? 'ICMP echo' : 'TCP connect'}</td>
                           <td>{run.samples.length}</td>
                           <td>{run.status}</td>
                           <td>

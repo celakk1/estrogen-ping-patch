@@ -2,7 +2,7 @@
 
 The complete product scope is [the supplied master specification](specification.md), plus the Windows execution and private-repository requirements described in the README. A working baseline preview is a milestone, not completion of the optimizer.
 
-The owner's clarified product direction is system-wide networking optimization with gaming responsiveness as a core constraint. There must be no required game selector or "boost this game" workflow. User-controlled validation targets and optional application measurements support the same shared-network experiment engine. Improvements must be demonstrated across the selected workload cohort, with regressions checked before retention; no universal improvement across every game may be assumed.
+The owner's clarified product direction is system-wide networking optimization with gaming responsiveness as a core constraint. There must be no required game selector or "boost this game" workflow. Use actual networking benchmarks rather than measuring ping inside games: unloaded RTT, jitter, protocol-specific loss, DNS, throughput, and loaded responsiveness across multiple benchmark endpoints. Do not require game integration or gameplay telemetry. Improvements must be demonstrated across the stable benchmark cohort, with regressions checked before retention; no universal improvement across every game or route may be assumed.
 
 ## Milestones
 
@@ -11,7 +11,7 @@ The owner's clarified product direction is system-wide networking optimization w
 | 1. Research and feasibility | Architecture, initial threat model, source verification, candidate registry | Initial documents written; mutation/provider feasibility gates remain open |
 | 2. Application foundation | Tauri GUI, logical local service, config, SQLite, restricted MCP, launch/build/test/setup/clean/package | Implemented; validation evidence recorded separately |
 | 3. Read-only diagnostics | OS, adapter identity, drivers, default routes, DNS, interface MTU/metrics | Basic discovery implemented; workload/policy/VPN/power/advanced capabilities remain |
-| 4. Benchmarking | Multiple independent TCP destinations, raw samples, quantiles, cancellation, progress, reports | TCP-connect subset implemented; DNS, ICMP, load, throughput, provider discovery remain |
+| 4. Benchmarking | Multiple independent destinations, raw samples, quantiles, cancellation, progress, reports | TCP-connect and native IPv4/IPv6 ICMP echo paths implemented. Protocol-specific history/reports and error categories passed current packaged desktop checks. DNS, load, throughput, and provider discovery remain |
 | 5. Safe optimization | Privileged Windows service, authenticated pipe protocol, allowlisted setters, checkpoints, verification, watchdog, restore | Manual snapshots/export, authenticated read-only LocalService process, durable checkpoint library, and protected service storage implemented. Simulated process-termination tests and extended service journal lab checks passed. Native setters/restoration, scoped authorization, and watchdog remain pending; system changes disabled |
 | 6. Autonomous optimization | Repeated controlled sessions, confidence, practical thresholds, drift checks, bounded search, persistent schedules, ETA | Pending; baseline-only ETA implemented |
 | 7. AI/MCP | Restricted read-only/proposal tools, optional local/cloud providers, secure credentials, budgets, deterministic fallback | Read-only MCP subset implemented; inference/proposals pending |

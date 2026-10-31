@@ -14,7 +14,7 @@ dirs = "6"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_NetworkManagement_IpHelper", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.61", features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_LibraryLoader"] }
 
 [[bin]]
 name = "epp-check"

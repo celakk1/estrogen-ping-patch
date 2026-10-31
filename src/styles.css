@@ -12,7 +12,8 @@ body {
   margin: 0;
 }
 button,
-input {
+input,
+select {
   font: inherit;
 }
 button {
@@ -374,7 +375,8 @@ h3 {
   gap: 15px;
   margin-top: 19px;
 }
-input {
+input,
+select {
   display: block;
   width: 100%;
   margin-top: 8px;
@@ -386,7 +388,8 @@ input {
   font-size: 12px;
   outline: none;
 }
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--accent);
 }
 button {

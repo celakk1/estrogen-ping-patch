@@ -18,7 +18,7 @@ pub fn openDatabase(path: &Path) -> AppResult<Connection> {
 
 fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 2 {
+    if version > 3 {
         return Err("Database is newer than this application; refusing to downgrade it".into());
     }
     if version == 0 {
@@ -35,6 +35,9 @@ fn migrateDatabase(connection: &Connection) -> AppResult<()> {
             CREATE TABLE configuration_snapshots(id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, sha256 TEXT NOT NULL, captured_sections INTEGER NOT NULL, unavailable_sections INTEGER NOT NULL, payload_json TEXT NOT NULL);
             PRAGMA user_version = 2;
             COMMIT;")?;
+    }
+    if version < 3 {
+        connection.execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 3; COMMIT;")?;
     }
     Ok(())
 }
@@ -144,7 +147,7 @@ pub fn history(connection: &Connection, limit: u32) -> AppResult<Vec<BenchmarkRu
 mod tests {
     use super::*;
     use crate::{
-        benchmark::{Endpoint, runBenchmark},
+        benchmark::{Endpoint, ProbeProtocol, runBenchmark},
         config::Config,
     };
     use std::sync::atomic::AtomicBool;
@@ -169,7 +172,7 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            2
+            3
         );
     }
 
@@ -181,11 +184,13 @@ mod tests {
             vec![
                 Endpoint {
                     id: "a".into(),
-                    address: "127.0.0.1:1".parse().unwrap(),
+                    address: "127.0.0.1:1".into(),
+                    protocol: ProbeProtocol::TcpConnect,
                 },
                 Endpoint {
                     id: "b".into(),
-                    address: "127.0.0.1:2".parse().unwrap(),
+                    address: "127.0.0.1:2".into(),
+                    protocol: ProbeProtocol::TcpConnect,
                 },
             ],
             &AtomicBool::new(true),
@@ -199,6 +204,27 @@ mod tests {
         assert_eq!(records[0].status, "cancelled");
         assert_eq!(records[0].id, 1);
         assert!(records[0].samples.is_empty());
+        let mut legacy = serde_json::to_value(&run).unwrap();
+        for result in legacy["results"].as_array_mut().unwrap() {
+            result["endpoint"]
+                .as_object_mut()
+                .unwrap()
+                .remove("protocol");
+        }
+        connection
+            .execute(
+                "UPDATE benchmark_runs SET report_json=?1 WHERE id=1",
+                [legacy.to_string()],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        migrateDatabase(&connection).unwrap();
+        let legacyRecords = history(&connection, 20).unwrap();
+        assert_eq!(legacyRecords[0].protocol, "tcpConnect");
+        assert_eq!(
+            legacyRecords[0].results[0].endpoint.protocol,
+            ProbeProtocol::TcpConnect
+        );
         assert_eq!(
             connection
                 .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
