@@ -1,5 +1,6 @@
 mod store;
 pub use store::Journal;
+pub const SCHEMA_VERSION: u32 = 2;
 
 use crate::ServiceResult;
 use serde::{Deserialize, Serialize};
@@ -32,11 +33,16 @@ pub struct MtuCheckpoint {
     pub addressFamily: AddressFamily,
     pub originalMtu: u32,
     pub proposedMtu: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nativeOriginal: Option<crate::mtu::Snapshot>,
 }
 
 impl MtuCheckpoint {
     pub fn validate(&self) -> ServiceResult<()> {
-        if self.schemaVersion != 1 || self.id.is_nil() || self.context.adapterGuid.is_nil() {
+        if !matches!(self.schemaVersion, 1 | 2)
+            || self.id.is_nil()
+            || self.context.adapterGuid.is_nil()
+        {
             return Err("Unsupported checkpoint schema or missing durable identity".into());
         }
         for value in [&self.context.osBuild, &self.context.driverVersion] {
@@ -73,6 +79,23 @@ impl MtuCheckpoint {
             || self.originalMtu == self.proposedMtu
         {
             return Err("Checkpoint MTU values are unsupported or unchanged".into());
+        }
+        match (self.schemaVersion, &self.nativeOriginal) {
+            (1, None) => {}
+            (2, Some(native)) => {
+                if native.journalContext()? != self.context
+                    || native.addressFamily != self.addressFamily
+                    || native.settings.nlMtu != self.originalMtu
+                    || self.proposedMtu > native.linkMtu
+                    || native.capturedAtUnixMs > self.createdAtUnixMs
+                    || self.createdAtUnixMs - native.capturedAtUnixMs > 5000
+                {
+                    return Err("Native checkpoint original, context, capability, or capture time is inconsistent".into());
+                }
+            }
+            _ => {
+                return Err("Checkpoint schema does not match its native original snapshot".into());
+            }
         }
         Ok(())
     }
@@ -120,6 +143,8 @@ pub struct Observation {
     pub context: AdapterContext,
     pub addressFamily: AddressFamily,
     pub mtu: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<crate::mtu::Snapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -205,6 +230,29 @@ fn validateEvent(
         };
         if !valid {
             return Err("Live setting differs from the expected original/candidate; manual investigation is required".into());
+        }
+        match (&document.nativeOriginal, &observed.native) {
+            (Some(original), Some(native)) => {
+                if matches!(event.state, State::Restoring | State::Restored) {
+                    native.validateMtuIdentity(original)?;
+                } else {
+                    native.validateMtuObservation(original)?;
+                }
+                if native.settings.nlMtu != observed.mtu
+                    || native.journalContext()? != observed.context
+                    || native.capturedAtUnixMs > event.timestampUnixMs.saturating_add(250)
+                    || event
+                        .timestampUnixMs
+                        .saturating_sub(native.capturedAtUnixMs)
+                        > 5000
+                {
+                    return Err(
+                        "Native observation value, identity, or freshness is invalid".into(),
+                    );
+                }
+            }
+            (None, None) => {}
+            _ => return Err("Native checkpoint and observation evidence do not match".into()),
         }
     } else if event.observation.is_some() {
         return Err("Unexpected observation on a non-verification event".into());

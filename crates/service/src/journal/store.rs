@@ -36,7 +36,7 @@ impl Journal {
             transaction.execute_batch("CREATE TABLE checkpoints(id TEXT PRIMARY KEY, document_json TEXT NOT NULL, sha256 TEXT NOT NULL);
                 CREATE TABLE checkpoint_events(checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id), sequence INTEGER NOT NULL, event_json TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(checkpoint_id,sequence));")?;
             transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-            transaction.pragma_update(None, "user_version", 1)?;
+            transaction.pragma_update(None, "user_version", super::SCHEMA_VERSION)?;
         }
         transaction.commit()?;
         let integrity: String =
@@ -47,8 +47,16 @@ impl Journal {
         if connection.prepare("PRAGMA foreign_key_check")?.exists([])? {
             return Err("Recovery journal contains orphaned events".into());
         }
-        let journal = Self { connection };
+        let mut journal = Self { connection };
         journal.pendingRecovery()?;
+        if validateDatabaseIdentity(&journal.connection)? == 1 {
+            let transaction = journal
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            pending(&transaction)?;
+            transaction.pragma_update(None, "user_version", super::SCHEMA_VERSION)?;
+            transaction.commit()?;
+        }
         Ok(journal)
     }
 
@@ -139,7 +147,7 @@ fn validateDatabaseIdentity(connection: &Connection) -> ServiceResult<u32> {
     let applicationId: u32 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if applicationId == APPLICATION_ID && version == 1 {
+    if applicationId == APPLICATION_ID && matches!(version, 1 | 2) {
         return Ok(version);
     }
     if applicationId == 0 && version == 0 {
@@ -161,8 +169,8 @@ fn checksum(value: &str) -> String {
 
 fn insertEvent(connection: &Connection, id: Uuid, event: &Event) -> ServiceResult<()> {
     let payload = serde_json::to_string(event)?;
-    if payload.len() > 4096 {
-        return Err("Recovery event exceeds its 4096-byte limit".into());
+    if payload.len() > 16_384 {
+        return Err("Recovery event exceeds its 16 KiB limit".into());
     }
     connection.execute("INSERT INTO checkpoint_events(checkpoint_id,sequence,event_json,sha256) VALUES(?1,?2,?3,?4)", params![id.to_string(),event.sequence,payload,checksum(&payload)])?;
     Ok(())
@@ -185,14 +193,14 @@ fn load(connection: &Connection, id: Uuid) -> ServiceResult<Checkpoint> {
     while let Some(row) = rows.next()? {
         let sequence: u32 = row.get(0)?;
         let length: i64 = row.get(3)?;
-        if !(0..=4096).contains(&length) {
+        if !(0..=16_384).contains(&length) {
             return Err("Recovery event exceeds its supported size".into());
         }
         let eventPayload: String = row.get(1)?;
         let eventDigest: String = row.get(2)?;
         if events.len() >= MAX_EVENTS as usize
             || sequence as usize != events.len()
-            || eventPayload.len() > 4096
+            || eventPayload.len() > 16_384
             || checksum(&eventPayload) != eventDigest
         {
             return Err("Recovery event sequence, size, or checksum is invalid".into());

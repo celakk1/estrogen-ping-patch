@@ -80,6 +80,91 @@ pub struct Snapshot {
     pub settings: InterfaceSettings,
 }
 
+impl Snapshot {
+    pub fn journalContext(&self) -> ServiceResult<crate::journal::AdapterContext> {
+        let luid = self
+            .interfaceLuid
+            .parse::<u64>()
+            .map_err(|_| "Native snapshot LUID is invalid")?;
+        if self.schemaVersion != 1
+            || self.adapterGuid.is_nil()
+            || self.interfaceIndex == 0
+            || luid == 0
+            || luid.to_string() != self.interfaceLuid
+            || self.capturedAtUnixMs == 0
+            || self.capturedAtUnixMs > i64::MAX as u64
+            || self.os.major < 10
+            || self.os.build == 0
+            || !matches!(self.os.nativeArchitecture, 9 | 12)
+        {
+            return Err("Native checkpoint identity or OS context is incomplete".into());
+        }
+        let DriverContext::Captured { identity } = &self.driver else {
+            return Err("Native checkpoint requires a verified driver identity".into());
+        };
+        for (value, maximum) in [
+            (&identity.version, 256),
+            (&identity.infPath, 4096),
+            (&identity.infSection, 4096),
+            (&identity.deviceInstanceId, 4096),
+        ] {
+            if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
+                return Err("Native checkpoint driver identity is malformed".into());
+            }
+        }
+        let minimum = match self.addressFamily {
+            AddressFamily::Ipv4 => 68,
+            AddressFamily::Ipv6 => 1280,
+        };
+        if self.settings.nlMtu < minimum
+            || self.linkMtu < self.settings.nlMtu
+            || self.alias.len() > 2048
+            || self.description.len() > 2048
+        {
+            return Err("Native checkpoint MTU capability or interface metadata is invalid".into());
+        }
+        Ok(crate::journal::AdapterContext {
+            adapterGuid: self.adapterGuid,
+            osBuild: format!(
+                "{}.{}.{}.{};arch={}",
+                self.os.major,
+                self.os.minor,
+                self.os.build,
+                self.os.updateRevision,
+                self.os.nativeArchitecture
+            ),
+            driverVersion: identity.version.clone(),
+        })
+    }
+
+    pub(crate) fn validateMtuIdentity(&self, original: &Self) -> ServiceResult<()> {
+        if self.journalContext()? != original.journalContext()?
+            || self.addressFamily != original.addressFamily
+            || self.os != original.os
+            || self.driver != original.driver
+            || self.linkMtu != original.linkMtu
+            || self.interfaceType != original.interfaceType
+            || self.tunnelType != original.tunnelType
+        {
+            return Err("Native adapter, OS, driver, family, or MTU capability changed".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validateMtuObservation(&self, original: &Self) -> ServiceResult<()> {
+        self.validateMtuIdentity(original)?;
+        let mut settings = self.settings.clone();
+        settings.nlMtu = original.settings.nlMtu;
+        if settings != original.settings {
+            return Err(
+                "Unrelated native interface settings changed; refusing an unsafe MTU transition"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureEntry {

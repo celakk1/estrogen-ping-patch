@@ -183,7 +183,7 @@ pub(crate) async fn query(
                 || response.mode != "readOnly"
                 || response.modificationsPermitted
                 || response.rollbackAvailable
-                || response.checkpointStore.schemaVersion != 1
+                || response.checkpointStore.schemaVersion != crate::journal::SCHEMA_VERSION
                 || response.checkpointStore.verifiedAtUnixMs == 0
                 || response.checkpointStore.verifiedAtUnixMs > i64::MAX as u64
                 || response.checkpointStore.pendingRecoveryCount > 2000
@@ -221,7 +221,7 @@ mod tests {
 
     fn checkpointStore() -> CheckpointStoreStatus {
         CheckpointStoreStatus {
-            schemaVersion: 1,
+            schemaVersion: crate::journal::SCHEMA_VERSION,
             verifiedAtUnixMs: nowUnixMs().unwrap() + 86_400_000,
             pendingRecoveryCount: 0,
         }

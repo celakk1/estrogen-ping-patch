@@ -74,7 +74,7 @@ pub(crate) fn open(serviceSid: &str) -> ServiceResult<OwnedJournal> {
     let pending = journal.pendingRecovery()?.len().try_into()?;
     Ok(OwnedJournal {
         status: CheckpointStoreStatus {
-            schemaVersion: 1,
+            schemaVersion: crate::journal::SCHEMA_VERSION,
             verifiedAtUnixMs: crate::transport::nowUnixMs()?,
             pendingRecoveryCount: pending,
         },

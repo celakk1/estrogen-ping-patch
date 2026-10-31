@@ -140,7 +140,7 @@ mod tests {
         let status = response(
             &request,
             &CheckpointStoreStatus {
-                schemaVersion: 1,
+                schemaVersion: crate::journal::SCHEMA_VERSION,
                 verifiedAtUnixMs: 1000,
                 pendingRecoveryCount: 1,
             },

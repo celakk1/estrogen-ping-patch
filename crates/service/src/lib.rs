@@ -3,6 +3,7 @@
 pub mod journal;
 pub mod mtu;
 pub mod protocol;
+pub mod recovery;
 #[cfg(windows)]
 mod security;
 #[cfg(windows)]

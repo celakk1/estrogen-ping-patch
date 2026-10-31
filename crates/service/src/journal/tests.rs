@@ -64,6 +64,7 @@ fn document(id: u128) -> MtuCheckpoint {
         addressFamily: AddressFamily::Ipv4,
         originalMtu: 1500,
         proposedMtu: 1400,
+        nativeOriginal: None,
     }
 }
 
@@ -72,6 +73,7 @@ fn observed(document: &MtuCheckpoint, mtu: u32) -> Observation {
         context: document.context.clone(),
         addressFamily: document.addressFamily,
         mtu,
+        native: None,
     }
 }
 

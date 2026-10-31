@@ -10,6 +10,8 @@ A separate Windows service provides authenticated local status reporting, with o
 
 Backup exports additionally preserve native IPv4/IPv6 interface fields with GUID/LUID checks and OS/PnP-driver context. Missing context and persistent-store/restore limits remain explicit. These diagnostic snapshots do not enable automatic restoration or settings changes.
 
+The service recovery library now coordinates native-evidence MTU checkpoints, write intent, readback, and exact-value recovery through a typed backend contract. Simulated-adapter tests cover interrupted writes, authorization revocation, outside changes, and failed journal writes. The running service has no native setter/backend or recovery watchdog yet; these tests do not establish native adapter restoration.
+
 ## Quick start
 
 Supported development platform: Windows 10/11 x64, Rust stable MSVC, Node.js 24 LTS with npm 11 or 12, Visual Studio 2022 C++ Build Tools with a Windows SDK, and Microsoft Edge WebView2 Runtime.
