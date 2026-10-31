@@ -22,6 +22,8 @@ The whole-row `SetIpInterfaceEntry` approach failed the preservation gate on the
 
 Each trial has a 120-second wall-clock lease and monotonic deadline. Stopping the lab service releases an intentional pause and permits restoration. Startup processes its matching unresolved trial before considering new work, with recovery independent of an expired apply lease. A terminal trial ID cannot be replayed to apply a candidate again. Phase markers in the Application event log indicate that the native call returned; they do not themselves prove readback or durable completion. Only the verified journal and fresh observations establish the final result.
 
+New trials now require a [durable operation grant](authorization.md) before checkpoint preparation and application. Admission and the running command check the same exact scope. Restart recovery skips opening the separate grant database. The expanded matrix adds `revoke` and `authorization-unavailable` phases: revoke commits the grant's terminal event before the forced crash; the unavailable case temporarily replaces the closed grant database path with an empty directory while preserving its file and sidecars. Both must still restore through the intact recovery journal. This expanded matrix remains pending until its CI run passes.
+
 The Windows operation provides no compare-and-set transaction with the GUID validation. The unique lab alias avoids targeting a recycled numeric interface index, but checking immediately before a write and comparing afterward cannot eliminate races with an administrator renaming or replacing devices. Production policy/concurrency guards remain necessary.
 
 ## CI matrix and limits

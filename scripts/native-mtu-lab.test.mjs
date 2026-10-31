@@ -12,6 +12,10 @@ const shell = path.join(
 const options = { skip: process.platform !== 'win32' };
 
 function powershell(script, environment = {}) {
+  const source =
+    String.raw`$env:PSModulePath = "$PSHOME\Modules;$env:ProgramFiles\WindowsPowerShell\Modules"` +
+    '\n' +
+    script;
   return spawnSync(
     shell,
     [
@@ -19,7 +23,7 @@ function powershell(script, environment = {}) {
       '-NoProfile',
       '-NonInteractive',
       '-EncodedCommand',
-      Buffer.from(script, 'utf16le').toString('base64'),
+      Buffer.from(source, 'utf16le').toString('base64'),
     ],
     {
       encoding: 'utf8',
@@ -132,4 +136,48 @@ Write-Output 'comparison verified'
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /comparison verified/);
+});
+
+test('authorization fault fixture preserves the original database and sidecars', options, () => {
+  const result = powershell(String.raw`
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:EPP_LAB_SCRIPT, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) { throw 'Native lab script failed parsing.' }
+foreach ($name in @('blockAuthorization', 'restoreAuthorization')) {
+    $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if ($null -eq $function) { throw 'Authorization fault fixture function is missing.' }
+    . ([scriptblock]::Create($function.Extent.Text))
+}
+$dataRoot = Join-Path ([IO.Path]::GetTempPath()) ('epp-authorization-fixture-' + [Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($dataRoot) | Out-Null
+$path = Join-Path $dataRoot 'authorization.sqlite3'
+$wal = "$path-wal"
+$state = $null
+try {
+    [IO.File]::WriteAllText($path, 'original database fixture')
+    [IO.File]::WriteAllText($wal, 'original wal fixture')
+    $originalHash = (Get-FileHash -LiteralPath $path).Hash
+    $walHash = (Get-FileHash -LiteralPath $wal).Hash
+    $state = blockAuthorization
+    if (-not (Test-Path -LiteralPath $path -PathType Container) -or (Get-FileHash -LiteralPath $state.backup).Hash -cne $originalHash) { throw 'Authorization was not blocked without changing the original bytes.' }
+    if ((Get-FileHash -LiteralPath $wal).Hash -cne $walHash) { throw 'Authorization WAL was changed.' }
+    restoreAuthorization $state
+    $state = $null
+    if ((Get-FileHash -LiteralPath $path).Hash -cne $originalHash) { throw 'Authorization database was not restored exactly.' }
+    [IO.File]::WriteAllText("$path.lab-blocked", 'existing fixture')
+    $refused = $false
+    try { $null = blockAuthorization } catch { $refused = $true }
+    if (-not $refused -or [IO.File]::ReadAllText($path) -cne 'original database fixture') { throw 'A backup collision was not refused safely.' }
+    Write-Output 'authorization fault fixture verified'
+} finally {
+    if ($state) { restoreAuthorization $state }
+    foreach ($file in @($path, $wal, "$path.lab-blocked")) { if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file } }
+    if (@(Get-ChildItem -LiteralPath $dataRoot -Force).Count -eq 0) { Remove-Item -LiteralPath $dataRoot }
+}
+`);
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /authorization fault fixture verified/);
 });

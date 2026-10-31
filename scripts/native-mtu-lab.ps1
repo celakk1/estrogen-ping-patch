@@ -26,6 +26,7 @@ $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $instanceId = $null
 $serviceCreated = $false
 $evidence = @()
+$blockedAuthorization = $null
 
 function invokeSc([string[]]$arguments) {
     $output = & $sc @arguments 2>&1
@@ -80,6 +81,21 @@ function settingsJson([object]$settings) {
         $ordered[$property.Name] = $property.Value
     }
     $ordered | ConvertTo-Json -Depth 4 -Compress
+}
+
+function blockAuthorization {
+    $path = Join-Path $dataRoot 'authorization.sqlite3'
+    $backup = "$path.lab-blocked"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Test-Path -LiteralPath $backup)) { throw 'Authorization fault fixture requires one existing file and no backup collision.' }
+    Move-Item -LiteralPath $path -Destination $backup
+    try { [IO.Directory]::CreateDirectory($path) | Out-Null } catch { Move-Item -LiteralPath $backup -Destination $path; throw }
+    [pscustomobject]@{ path = $path; backup = $backup }
+}
+
+function restoreAuthorization([object]$state) {
+    if (-not (Test-Path -LiteralPath $state.path -PathType Container) -or @(Get-ChildItem -LiteralPath $state.path -Force).Count -ne 0) { throw 'Authorization fault fixture changed unexpectedly; preserving its backup.' }
+    Remove-Item -LiteralPath $state.path
+    Move-Item -LiteralPath $state.backup -Destination $state.path
 }
 
 function persistentPolicy([int]$interfaceIndex) {
@@ -150,7 +166,7 @@ try {
         $original = captureNative $guid $family
         if ($original.driver.status -ne 'captured' -or $original.driver.identity.infPath -ine 'netloop.inf' -or $original.driver.identity.deviceInstanceId -ine $instanceId) { throw 'Native evidence does not match the newly created loopback device.' }
         Write-Host "Native pre-trial evidence: family=$family; MTU=$($original.settings.nlMtu); SitePrefixLength=$($original.settings.sitePrefixLength)."
-        foreach ($phase in @('complete', 'apply', 'restore')) {
+        foreach ($phase in @('complete', 'apply', 'restore', 'revoke', 'authorization-unavailable')) {
             $trialId = [Guid]::NewGuid().ToString('D')
             $imagePath = "`"$installedExe`" --native-mtu-lab-service $ownerSid $($guid.ToString('D')) $family $phase $trialId"
             $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -161,16 +177,18 @@ try {
             $startedAt = Get-Date
             invokeSc -arguments @('start', $serviceName)
             if ($phase -ne 'complete') {
-                $purpose = $(if ($phase -eq 'apply') { 'Apply' } else { 'Restore' })
+                $purpose = $(if ($phase -eq 'restore') { 'Restore' } else { 'Apply' })
                 $written = waitEvent $startedAt $trialId 'nativeWriteReturned' $purpose
+                if ($phase -eq 'revoke') { $null = waitEvent $startedAt $trialId 'grantRevoked' '' }
                 $live = captureNative $guid $family
-                $expected = $(if ($phase -eq 'apply') { 1400 } else { $original.settings.nlMtu })
+                $expected = $(if ($phase -eq 'restore') { $original.settings.nlMtu } else { 1400 })
                 if ($live.settings.nlMtu -ne $expected) { throw 'Native write marker does not match independently read effective MTU.' }
                 if ((persistentPolicy $interfaceIndex) -cne $policyBefore) { throw 'Native setter changed persistent policy during the interrupted trial.' }
                 $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
                 if ($registered.ProcessId -ne $written.processId -or $registered.StartName -ne 'LocalSystem') { throw 'Crash target does not match the dedicated lab service.' }
                 Stop-Process -Id $registered.ProcessId -Force
                 waitStopped
+                if ($phase -eq 'authorization-unavailable') { $blockedAuthorization = blockAuthorization }
                 invokeSc -arguments @('start', $serviceName)
             }
             $complete = waitEvent $startedAt $trialId 'complete' ''
@@ -179,17 +197,19 @@ try {
             if ($complete.state -ne 'restored' -or $complete.pendingRecoveryCount -ne 0 -or $current.settings.nlMtu -ne $original.settings.nlMtu -or (settingsJson $current.settings) -cne (settingsJson $original.settings)) { throw 'Native recovery failed exact MTU/unrelated-settings verification.' }
             if ((settingsJson $complete.original.settings) -cne (settingsJson $original.settings)) { throw 'Durable native original does not match the independent pre-trial capture.' }
             if ((persistentPolicy $interfaceIndex) -cne $policyBefore -or (dnsPolicy $guid $interfaceIndex) -cne $dnsBefore) { throw 'Native trial changed persistent interface or automatic/static DNS origin values.' }
-            $expectedWrites = $(if ($phase -eq 'complete') { 2 } elseif ($phase -eq 'apply') { 1 } else { 0 })
+            $expectedWrites = $(if ($phase -eq 'complete') { 2 } elseif ($phase -eq 'restore') { 0 } else { 1 })
             if ($complete.writesThisProcess -ne $expectedWrites) { throw 'Restart recovery wrote an unexpected number of MTU values.' }
             $evidence += @{ family = $family; phase = $phase; originalMtu = $original.settings.nlMtu; finalMtu = $current.settings.nlMtu; state = $complete.state; writesAfterRestart = $complete.writesThisProcess }
+            if ($blockedAuthorization) { restoreAuthorization $blockedAuthorization; $blockedAuthorization = $null }
         }
     }
-    Write-Host 'Native MTU lab passed: exact IPv4/IPv6 restore, process termination during apply/restore, preserved unrelated fields, persistent policy, and DNS origin values on an owned Microsoft loopback adapter.'
+    Write-Host 'Native MTU lab passed: exact IPv4/IPv6 restore, process termination during apply/restore, revoked/unavailable authorization, preserved unrelated fields, persistent policy, and DNS origin values on an owned Microsoft loopback adapter.'
     $evidence | ConvertTo-Json -Depth 5
 } finally {
     if ($serviceCreated) {
         $service = Get-Service $serviceName -ErrorAction SilentlyContinue
         if ($service -and $service.Status -ne 'Stopped') { Stop-Service $serviceName; waitStopped }
+        if ($blockedAuthorization) { restoreAuthorization $blockedAuthorization; $blockedAuthorization = $null }
         invokeSc -arguments @('delete', $serviceName)
     }
     if ($instanceId) { [NativeMtuLabDevice]::remove($instanceId) }

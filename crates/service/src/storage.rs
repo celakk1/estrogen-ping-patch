@@ -19,6 +19,17 @@ pub(crate) struct OwnedJournal {
     _journal: Journal,
     _directory: File,
     _parent: File,
+    #[cfg(feature = "native-mtu-lab")]
+    directoryPath: PathBuf,
+    #[cfg(feature = "native-mtu-lab")]
+    serviceSid: String,
+}
+
+#[cfg(feature = "native-mtu-lab")]
+pub(crate) struct OwnedAuthorization {
+    pub(crate) store: crate::authorization::AuthorizationStore,
+    _directory: File,
+    _parent: File,
 }
 
 fn programData() -> ServiceResult<PathBuf> {
@@ -85,6 +96,10 @@ fn openNamed(serviceSid: &str, directoryName: &str) -> ServiceResult<OwnedJourna
         _journal: journal,
         _directory: directoryGuard,
         _parent: parentGuard,
+        #[cfg(feature = "native-mtu-lab")]
+        directoryPath: directory,
+        #[cfg(feature = "native-mtu-lab")]
+        serviceSid: serviceSid.into(),
     })
 }
 
@@ -98,14 +113,39 @@ impl OwnedJournal {
     pub(crate) fn journal(&mut self) -> &mut Journal {
         &mut self._journal
     }
+
+    pub(crate) fn authorization(&self) -> ServiceResult<OwnedAuthorization> {
+        let names = [
+            "authorization.sqlite3",
+            "authorization.sqlite3-wal",
+            "authorization.sqlite3-shm",
+        ];
+        verifyStateFiles(&self.directoryPath, &self.serviceSid, &names)?;
+        let store =
+            crate::authorization::AuthorizationStore::open(&self.directoryPath.join(names[0]))?;
+        verifyStateFiles(&self.directoryPath, &self.serviceSid, &names)?;
+        Ok(OwnedAuthorization {
+            store,
+            _directory: self._directory.try_clone()?,
+            _parent: self._parent.try_clone()?,
+        })
+    }
 }
 
 fn verifyFiles(directory: &Path, serviceSid: &str) -> ServiceResult<()> {
-    for name in [
-        "recovery.sqlite3",
-        "recovery.sqlite3-wal",
-        "recovery.sqlite3-shm",
-    ] {
+    verifyStateFiles(
+        directory,
+        serviceSid,
+        &[
+            "recovery.sqlite3",
+            "recovery.sqlite3-wal",
+            "recovery.sqlite3-shm",
+        ],
+    )
+}
+
+fn verifyStateFiles(directory: &Path, serviceSid: &str, names: &[&str]) -> ServiceResult<()> {
+    for name in names {
         let path = directory.join(name);
         match openProtectedPath(&path, false) {
             Ok(file) => security::verifyStorageHandle(file.as_raw_handle(), serviceSid, false)?,

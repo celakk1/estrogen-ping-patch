@@ -205,9 +205,9 @@ pub(crate) fn writeLabMtu(
     expected: &Snapshot,
     value: u32,
     deadline: std::time::Instant,
-    applyLease: Option<(u64, &AtomicBool)>,
+    authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
 ) -> ServiceResult<()> {
-    windows::writeLabMtu(permit, original, expected, value, deadline, applyLease)
+    windows::writeLabMtu(permit, original, expected, value, deadline, authorize)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

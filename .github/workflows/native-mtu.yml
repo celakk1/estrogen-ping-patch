@@ -2,7 +2,7 @@ name: Native MTU recovery lab
 
 on:
   push:
-    branches: [main, codex/native-mtu-lab]
+    branches: [main, codex/native-mtu-lab, codex/authorization-grants]
     paths:
       - 'crates/service/**'
       - 'scripts/native-mtu-lab*'

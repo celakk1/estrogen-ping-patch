@@ -76,20 +76,18 @@ pub(crate) fn writeLabMtu(
     expected: &Snapshot,
     value: u32,
     deadline: Instant,
-    applyLease: Option<(u64, &AtomicBool)>,
+    mut authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
 ) -> ServiceResult<()> {
     permit.validateTarget(original)?;
-    if value != original.settings.nlMtu && value != 1400 {
+    if value != original.settings.nlMtu && (value != 1400 || authorize.is_none()) {
         return Err("Native lab permits only its fixed candidate or exact original MTU".into());
     }
-    let check = || -> ServiceResult<()> {
+    let mut check = || -> ServiceResult<()> {
         if Instant::now() >= deadline {
             return Err("Windows MTU command deadline expired".into());
         }
-        if let Some((expires, cancelled)) = applyLease
-            && (cancelled.load(Ordering::SeqCst) || crate::transport::nowUnixMs()? >= expires)
-        {
-            return Err("Native lab apply authorization was revoked or expired".into());
+        if let Some(validate) = authorize.as_mut() {
+            validate()?;
         }
         Ok(())
     };

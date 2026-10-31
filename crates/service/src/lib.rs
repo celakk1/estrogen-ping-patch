@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+pub mod authorization;
 pub mod journal;
 pub mod mtu;
 #[cfg(all(windows, feature = "native-mtu-lab"))]

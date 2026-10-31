@@ -32,6 +32,8 @@ enum Phase {
     Apply,
     Restore,
     Complete,
+    Revoke,
+    AuthorizationUnavailable,
 }
 
 struct Config {
@@ -75,7 +77,7 @@ impl ServicePermit {
 fn config(arguments: &[String]) -> ServiceResult<Config> {
     let [ownerSid, guid, family, phase, trialId] = arguments else {
         return Err(
-            "Native lab service requires SID GUID ipv4|ipv6 apply|restore|complete TRIAL_ID".into(),
+            "Native lab service requires SID GUID ipv4|ipv6 complete|apply|restore|revoke|authorization-unavailable TRIAL_ID".into(),
         );
     };
     let guid = Uuid::parse_str(guid)?;
@@ -96,6 +98,8 @@ fn config(arguments: &[String]) -> ServiceResult<Config> {
             "apply" => Phase::Apply,
             "restore" => Phase::Restore,
             "complete" => Phase::Complete,
+            "revoke" => Phase::Revoke,
+            "authorization-unavailable" => Phase::AuthorizationUnavailable,
             _ => return Err("Unsupported native lab interruption phase".into()),
         },
     })
@@ -193,6 +197,8 @@ struct Backend<'a> {
     started: Instant,
     pause: Option<WritePurpose>,
     writes: usize,
+    authorization: Option<&'a mut crate::authorization::AuthorizationStore>,
+    grantId: Option<Uuid>,
 }
 
 impl MtuBackend for Backend<'_> {
@@ -222,7 +228,18 @@ impl MtuBackend for Backend<'_> {
                 .nativeOriginal
                 .as_ref()
                 .ok_or("Native lab original is missing")?,
-        )
+        )?;
+        self.authorization
+            .as_deref_mut()
+            .ok_or("Native application requires the protected authorization store")?
+            .authorize(
+                self.grantId
+                    .ok_or("Native operation has no authorization grant")?,
+                document,
+                &self.config.ownerSid,
+                action,
+                now,
+            )
     }
     fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation> {
         if document.context.adapterGuid != self.config.guid
@@ -262,23 +279,55 @@ impl MtuBackend for Backend<'_> {
         {
             return Err("Native lab write does not match its typed purpose".into());
         }
-        mtu::writeLabMtu(
-            &self.permit,
-            original,
-            expected
-                .native
-                .as_ref()
-                .ok_or("Native lab expected observation is missing")?,
-            value,
-            if purpose == WritePurpose::Apply {
-                (Instant::now() + Duration::from_secs(5)).min(self.started + LAB_DEADLINE)
-            } else {
-                Instant::now() + Duration::from_secs(5)
-            },
-            (purpose == WritePurpose::Apply)
-                .then_some((document.leaseExpiresAtUnixMs, self.stop.as_ref())),
-        )?;
+        {
+            let mut authorization = self.authorization.as_deref_mut();
+            let grantId = self.grantId;
+            let ownerSid = &self.config.ownerSid;
+            let stop = &self.stop;
+            let mut check = || -> ServiceResult<()> {
+                if stop.load(Ordering::SeqCst) {
+                    return Err("Native lab application was stopped".into());
+                }
+                authorization
+                    .as_deref_mut()
+                    .ok_or("Native application requires a protected authorization store")?
+                    .check(
+                        grantId.ok_or("Native operation has no authorization grant")?,
+                        document,
+                        ownerSid,
+                        AuthorizationAction::Apply,
+                        nowUnixMs()?,
+                    )
+            };
+            mtu::writeLabMtu(
+                &self.permit,
+                original,
+                expected
+                    .native
+                    .as_ref()
+                    .ok_or("Native lab expected observation is missing")?,
+                value,
+                if purpose == WritePurpose::Apply {
+                    (Instant::now() + Duration::from_secs(5)).min(self.started + LAB_DEADLINE)
+                } else {
+                    Instant::now() + Duration::from_secs(5)
+                },
+                if purpose == WritePurpose::Apply {
+                    Some(&mut check as &mut dyn FnMut() -> ServiceResult<()>)
+                } else {
+                    None
+                },
+            )?;
+        }
         self.writes += 1;
+        if self.config.phase == Phase::Revoke && purpose == WritePurpose::Apply {
+            let id = self.grantId.ok_or("Revocation requires a recorded grant")?;
+            self.authorization
+                .as_deref_mut()
+                .ok_or("Revocation requires its protected store")?
+                .revoke(id, &self.config.ownerSid, nowUnixMs()?)?;
+            event(json!({"phase":"grantRevoked", "trialId":document.id, "grantId":id}))?;
+        }
         event(
             json!({"phase":"nativeWriteReturned", "trialId":document.id, "adapterGuid":self.config.guid, "family":self.config.family,
             "purpose":format!("{purpose:?}"), "value":value, "processId":std::process::id()}),
@@ -296,6 +345,13 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     let permit = servicePermit(config)?;
     let serviceSid = security::serviceSidForName(LAB_SERVICE_NAME)?;
     let mut owned = storage::openMtuLab(&serviceSid)?;
+    let needsAuthorization = owned.journal().pendingRecovery()?.is_empty()
+        && owned.journal().load(config.trialId).is_err();
+    let mut authorization = if needsAuthorization {
+        Some(owned.authorization()?)
+    } else {
+        None
+    };
     let journal = owned.journal();
     let mut backend = Backend {
         config,
@@ -304,6 +360,8 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         started: Instant::now(),
         pause: None,
         writes: 0,
+        authorization: authorization.as_mut().map(|owned| &mut owned.store),
+        grantId: None,
     };
     let pending = journal.pendingRecovery()?;
     if !pending.is_empty() {
@@ -344,9 +402,20 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
             proposedMtu: 1400,
             nativeOriginal: Some(original),
         };
+        let grant = backend
+            .authorization
+            .as_deref_mut()
+            .ok_or("Native operation has no authorization store")?
+            .issue(&document, &config.ownerSid, false, nowUnixMs()?)?;
+        backend.grantId = Some(grant.id);
+        event(
+            json!({"phase":"grantIssued", "trialId":document.id, "grantId":grant.id, "checkpointSha256":grant.checkpointSha256}),
+        )?;
         MtuCoordinator::new(journal, &mut backend, nowUnixMs).prepare(document.clone())?;
         backend.pause = match config.phase {
-            Phase::Apply => Some(WritePurpose::Apply),
+            Phase::Apply | Phase::Revoke | Phase::AuthorizationUnavailable => {
+                Some(WritePurpose::Apply)
+            }
             Phase::Restore => Some(WritePurpose::Restore),
             Phase::Complete => None,
         };
@@ -475,6 +544,11 @@ mod tests {
             phase: Phase::Complete,
         };
         assert!(servicePermit(&config).is_err());
+        let fixture = crate::authorization::tests::Fixture::new();
+        let mut authorization = fixture.open();
+        let grant = authorization
+            .issue(&document, &config.ownerSid, false, 1000)
+            .unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let mut backend = Backend {
             config: &config,
@@ -486,6 +560,8 @@ mod tests {
             started: Instant::now(),
             pause: None,
             writes: 0,
+            authorization: Some(&mut authorization),
+            grantId: Some(grant.id),
         };
         assert!(
             backend
