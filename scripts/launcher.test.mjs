@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import {
   cpSync,
@@ -55,29 +54,16 @@ test(
   { skip: !windows, timeout: 15_000 },
   async () => {
     const directory = fixture();
-    const rootHash = createHash('sha256')
-      .update(directory.toUpperCase())
-      .digest('hex')
-      .toUpperCase();
     const holderPath = path.join(directory, 'hold-mutex.ps1');
     writeFileSync(
       holderPath,
-      "param([string]$mutexName)\n$mutex = [Threading.Mutex]::new($true, $mutexName)\n[Console]::WriteLine('ready')\n[void][Console]::ReadLine()\n$mutex.ReleaseMutex()\n$mutex.Dispose()\n",
+      "$projectRoot = [IO.Path]::GetFullPath($PSScriptRoot)\n$hasher = [Security.Cryptography.SHA256]::Create()\n$rootHash = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($projectRoot.ToUpperInvariant()))).Replace('-', '')\n$hasher.Dispose()\n$mutex = [Threading.Mutex]::new($true, \"Local\\epp-workspace-$rootHash\")\n[Console]::WriteLine('ready')\n[void][Console]::ReadLine()\n$mutex.ReleaseMutex()\n$mutex.Dispose()\n",
     );
     mkdirSync(path.join(directory, 'target'));
     writeFileSync(path.join(directory, 'target', 'keep.txt'), 'active build');
-    const holder = spawn(
-      shell,
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-File',
-        holderPath,
-        '-mutexName',
-        `Local\\epp-workspace-${rootHash}`,
-      ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    const holder = spawn(shell, ['-NoLogo', '-NoProfile', '-File', holderPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     try {
       const [ready] = await once(holder.stdout, 'data');
       assert.match(ready.toString(), /ready/);
