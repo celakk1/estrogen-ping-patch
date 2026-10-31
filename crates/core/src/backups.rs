@@ -25,11 +25,16 @@ pub struct BackupExport {
 pub fn capture(cancelled: &AtomicBool) -> AppResult<Value> {
     let startedAt = Utc::now().to_rfc3339();
     let inventory = discovery::cancellableInventory(cancelled)?;
-    let settings = discovery::readWindowsData(
+    let mut settings = discovery::readWindowsData(
         include_str!("backup.ps1"),
         Duration::from_secs(60),
         Some(cancelled),
     )?;
+    let nativeSections = crate::native_dns::captureSections(&inventory, cancelled)?;
+    settings["sections"]
+        .as_array_mut()
+        .ok_or("Snapshot settings sections must be an array")?
+        .extend(nativeSections);
     let payload = json!({
         "schemaVersion": 1,
         "kind": "networkSettingsSnapshot",
@@ -44,6 +49,7 @@ pub fn capture(cancelled: &AtomicBool) -> AppResult<Value> {
             "This is a read-only settings snapshot, not a verified full-system restore point.",
             "Unavailable driver or operating-system sections are recorded explicitly.",
             "Resolved DNS addresses alone do not prove whether DNS configuration was automatic or static.",
+            "Native DNS version-one fields preserve API-reported values, not a proven full-policy or dual-stack restore checkpoint.",
             "Capture is not an atomic operating-system transaction; settings may change during collection.",
             "Automatic restoration and pre-change rollback checkpoints require the privileged service and are not enabled."
         ]

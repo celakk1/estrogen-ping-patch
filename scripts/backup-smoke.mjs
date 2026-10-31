@@ -16,6 +16,15 @@ try {
     .flatMap((context) => context.pages())
     .find((page) => /127\.0\.0\.1:1420|tauri\.localhost/.test(page.url()));
   assert.ok(page, 'Test desktop not found');
+  await page.waitForFunction(() => Boolean(window.__TAURI_INTERNALS__));
+  if (process.env.EPP_DATA_DIR) {
+    const status = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('status'));
+    assert.equal(
+      path.resolve(status.dataDirectory).toLowerCase(),
+      path.resolve(process.env.EPP_DATA_DIR).toLowerCase(),
+      'Selected WebView must use the isolated test profile',
+    );
+  }
   await page.reload();
   await page.getByRole('button', { name: 'Configuration backups', exact: true }).click();
   await page.getByRole('button', { name: 'Capture backup', exact: true }).click();
@@ -41,6 +50,24 @@ try {
     record.summary.capturedSections + record.summary.unavailableSections,
   );
   const adapterIds = new Set(snapshot.inventory.adapters.map((adapter) => adapter.id));
+  const nativeDns = snapshot.settings.sections.filter(
+    (section) => section.name === 'nativeInterfaceDns',
+  );
+  assert.equal(nativeDns.length, snapshot.inventory.adapters.length);
+  for (const section of nativeDns) {
+    if (section.status === 'captured') {
+      const value = section.values[0];
+      assert.equal(value.api, 'GetInterfaceDnsSettings');
+      assert.equal(value.version, 1);
+      assert.match(value.flagsHex, /^0x[a-f0-9]{16}$/);
+      for (const key of ['domain', 'nameServer', 'searchList', 'profileNameServer']) {
+        assert.ok(value[key] === null || typeof value[key] === 'string');
+      }
+    } else {
+      assert.equal(section.status, 'unavailable');
+      assert.equal(typeof section.error, 'string');
+    }
+  }
   assert.ok(
     snapshot.settings.sections
       .filter((section) => section.adapterId)
@@ -78,7 +105,7 @@ try {
   );
   assert.equal(currentCount, previousCount, 'Cancelled capture must not persist a partial backup');
   console.log(
-    `Backup smoke passed: ${record.summary.capturedSections} captured sections, ${record.summary.unavailableSections} explicitly unavailable, persisted history, matching adapter GUIDs, downloaded JSON with verified SHA-256, and cancellation without a partial record. Automatic restore remains disabled.`,
+    `Backup smoke passed: ${record.summary.capturedSections} captured sections, ${record.summary.unavailableSections} explicitly unavailable, ${nativeDns.filter((section) => section.status === 'captured').length}/${nativeDns.length} native DNS readers succeeded, persisted history, matching adapter GUIDs, downloaded JSON with verified SHA-256, and cancellation without a partial record. Automatic restore remains disabled.`,
   );
 } finally {
   if (session)

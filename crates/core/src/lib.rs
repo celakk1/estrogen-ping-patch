@@ -5,6 +5,7 @@ pub mod benchmark;
 pub mod config;
 pub mod discovery;
 pub mod mcp;
+mod native_dns;
 pub mod statistics;
 pub mod storage;
 

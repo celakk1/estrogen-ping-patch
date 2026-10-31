@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
+import path from 'node:path';
 
 const endpoint = process.env.EPP_CDP_URL;
 if (!endpoint || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint)) {
@@ -29,6 +30,15 @@ try {
     .flatMap((context) => context.pages())
     .find((page) => /127\.0\.0\.1:1420|tauri\.localhost/.test(page.url()));
   assert.ok(page, 'No estrogen ping patch test WebView found');
+  await page.waitForFunction(() => Boolean(window.__TAURI_INTERNALS__));
+  if (process.env.EPP_DATA_DIR) {
+    const status = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('status'));
+    assert.equal(
+      path.resolve(status.dataDirectory).toLowerCase(),
+      path.resolve(process.env.EPP_DATA_DIR).toLowerCase(),
+      'Selected WebView must use the isolated test profile',
+    );
+  }
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {

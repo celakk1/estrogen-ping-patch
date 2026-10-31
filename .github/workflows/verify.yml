@@ -48,6 +48,9 @@ jobs:
         run: package.bat
       - name: Packaged MCP
         run: node scripts/mcp-smoke.mjs
+      - name: Packaged desktop and backups
+        shell: powershell
+        run: ./scripts/gui-smoke.ps1
       - name: Installer lifecycle
         shell: powershell
         run: |
