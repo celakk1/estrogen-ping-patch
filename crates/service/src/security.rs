@@ -139,7 +139,11 @@ pub(crate) fn currentSid() -> ServiceResult<String> {
 }
 
 pub(crate) fn serviceSid() -> ServiceResult<String> {
-    let name: Vec<u16> = format!(r"NT SERVICE\{}", crate::SERVICE_NAME)
+    serviceSidForName(crate::SERVICE_NAME)
+}
+
+pub(crate) fn serviceSidForName(serviceName: &str) -> ServiceResult<String> {
+    let name: Vec<u16> = format!(r"NT SERVICE\{serviceName}")
         .encode_utf16()
         .chain(Some(0))
         .collect();

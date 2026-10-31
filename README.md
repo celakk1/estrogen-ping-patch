@@ -12,6 +12,8 @@ Backup exports additionally preserve native IPv4/IPv6 interface fields with GUID
 
 The service recovery library now coordinates native-evidence MTU checkpoints, write intent, readback, and exact-value recovery through a typed backend contract. Simulated-adapter tests cover interrupted writes, authorization revocation, outside changes, and failed journal writes. The running service has no native setter/backend or recovery watchdog yet; these tests do not establish native adapter restoration.
 
+A separate, disabled-by-default [native MTU lab](docs/native-mtu-lab.md) passed six owned-loopback trials on a disposable hosted Windows runner: normal apply/restore and process termination during apply/restore for IPv4 and IPv6. Exact original MTU, unrelated fields, persistent policy, and DNS origin values were verified afterward. The lab is excluded from ordinary launch/build/package workflows and does not enable optimization in the application.
+
 ## Quick start
 
 Supported development platform: Windows 10/11 x64, Rust stable MSVC, Node.js 24 LTS with npm 11 or 12, Visual Studio 2022 C++ Build Tools with a Windows SDK, and Microsoft Edge WebView2 Runtime.

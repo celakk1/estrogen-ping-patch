@@ -156,13 +156,58 @@ impl Snapshot {
         let mut settings = self.settings.clone();
         settings.nlMtu = original.settings.nlMtu;
         if settings != original.settings {
-            return Err(
-                "Unrelated native interface settings changed; refusing an unsafe MTU transition"
-                    .into(),
-            );
+            let current = serde_json::to_value(&settings)?;
+            let expected = serde_json::to_value(&original.settings)?;
+            let changed = current
+                .as_object()
+                .ok_or("Native interface settings must serialize as an object")?
+                .iter()
+                .filter(|(name, value)| expected.get(name.as_str()) != Some(*value))
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "Unrelated native interface settings changed ({changed}); refusing an unsafe MTU transition"
+            ).into());
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn driftDiagnosticsNameUnrelatedFieldsWithoutChangingEvidence() {
+        let original = crate::recovery::tests::nativeFixture();
+        let mut observed = original.clone();
+        observed.settings.nlMtu = 1400;
+        observed.settings.metric += 1;
+        observed.settings.sitePrefixLength = 64;
+        let before = observed.clone();
+        let error = observed
+            .validateMtuObservation(&original)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("metric"));
+        assert!(error.contains("sitePrefixLength"));
+        assert!(!error.contains("nlMtu"));
+        assert_eq!(observed, before);
+        observed.settings.metric = original.settings.metric;
+        observed.settings.sitePrefixLength = original.settings.sitePrefixLength;
+        observed.validateMtuObservation(&original).unwrap();
+    }
+}
+
+#[cfg(all(windows, feature = "native-mtu-lab"))]
+pub(crate) fn writeLabMtu(
+    permit: &crate::mtu_lab::ServicePermit,
+    original: &Snapshot,
+    expected: &Snapshot,
+    value: u32,
+    deadline: std::time::Instant,
+    applyLease: Option<(u64, &AtomicBool)>,
+) -> ServiceResult<()> {
+    windows::writeLabMtu(permit, original, expected, value, deadline, applyLease)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

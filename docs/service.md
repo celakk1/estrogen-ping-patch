@@ -28,6 +28,8 @@ Status reports the journal verification time and unresolved checkpoint count as 
 
 The journal database is now schema two, retaining validated legacy checkpoints and adding native original/readback evidence. Its version is reported separately from pipe protocol schema two. Older service binaries cannot open the upgraded journal; reinstall a current service build after upgrading the desktop. The recovery coordinator library is tested with a simulated adapter but is not wired to service startup or native setters. Status continues to report `rollbackAvailable: false`.
 
+The feature-gated [native MTU lab](native-mtu-lab.md) has a separately named service, storage directory, and LocalSystem account for an owned-loopback verification matrix. It is excluded from normal builds and installation. It does not change this service's account or status-only contract.
+
 ## Protocol and identity
 
 - A fixed local pipe uses a protected DACL for SYSTEM, the service-specific SID, and the selected user's SID. User rights permit data exchange, attribute reads, and synchronization, without create-pipe-instance or security-descriptor modification rights.

@@ -2,6 +2,8 @@
 
 pub mod journal;
 pub mod mtu;
+#[cfg(all(windows, feature = "native-mtu-lab"))]
+pub mod mtu_lab;
 pub mod protocol;
 pub mod recovery;
 #[cfg(windows)]

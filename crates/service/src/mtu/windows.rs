@@ -1,4 +1,6 @@
 mod context;
+#[cfg(feature = "native-mtu-lab")]
+mod write;
 use super::{CaptureEntry, InterfaceSettings, Snapshot};
 use crate::{ServiceResult, journal::AddressFamily};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +19,8 @@ use windows_sys::{
     },
     core::GUID,
 };
+#[cfg(feature = "native-mtu-lab")]
+pub(super) use write::writeLabMtu;
 
 fn checkCancellation(cancelled: &AtomicBool) -> ServiceResult<()> {
     if cancelled.load(Ordering::SeqCst) {

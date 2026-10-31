@@ -1,0 +1,40 @@
+name: Native MTU recovery lab
+
+on:
+  push:
+    branches: [main, codex/native-mtu-lab]
+    paths:
+      - 'crates/service/**'
+      - 'scripts/native-mtu-lab*'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/native-mtu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-mtu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-mtu:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guard and device helper tests
+        run: node --test scripts/native-mtu-lab.test.mjs
+      - name: Format and native feature tests
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p epp-service --features native-mtu-lab
+      - name: Native feature lint
+        run: cargo clippy --locked -p epp-service --all-targets --features native-mtu-lab -- -D warnings
+      - name: Build isolated lab service
+        run: cargo build --release --locked -p epp-service --features native-mtu-lab --target-dir target/native-mtu-lab
+      - name: Owned adapter and native crash recovery
+        shell: powershell
+        run: ./scripts/native-mtu-lab.ps1 -allowNetworkChanges

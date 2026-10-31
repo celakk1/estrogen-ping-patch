@@ -13,6 +13,10 @@ fn main() {
 fn execute() -> epp_service::ServiceResult<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.as_slice() {
+        #[cfg(feature = "native-mtu-lab")]
+        [mode, rest @ ..] if mode == "--native-mtu-lab-service" => {
+            epp_service::mtu_lab::run(rest)
+        }
         [mode, ownerFlag, ownerSid] if mode == "--service" && ownerFlag == "--owner-sid" => {
             epp_service::windows::run(ownerSid.clone())
         }

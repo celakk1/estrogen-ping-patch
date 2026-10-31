@@ -136,7 +136,7 @@ try {
             invokeChecked 'cargo.exe' @('fmt', '--all', '--', '--check')
             invokeChecked 'cargo.exe' @('test', '--workspace', '--locked')
             invokeChecked 'cargo.exe' @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
-            invokeChecked 'node.exe' @('--test', 'scripts/launcher.test.mjs', 'scripts/webview-test.test.mjs', 'scripts/service-manager.test.mjs')
+            invokeChecked 'node.exe' @('--test', 'scripts/launcher.test.mjs', 'scripts/webview-test.test.mjs', 'scripts/service-manager.test.mjs', 'scripts/native-mtu-lab.test.mjs')
         }
         'package' {
             buildServiceResources

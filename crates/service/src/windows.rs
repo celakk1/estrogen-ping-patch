@@ -28,7 +28,11 @@ pub fn run(ownerSid: String) -> ServiceResult<()> {
 
 static OWNER_SID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-fn setState(handle: ServiceStatusHandle, state: ServiceState, failed: bool) -> ServiceResult<()> {
+pub(crate) fn setState(
+    handle: ServiceStatusHandle,
+    state: ServiceState,
+    failed: bool,
+) -> ServiceResult<()> {
     handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,

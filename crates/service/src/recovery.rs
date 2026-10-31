@@ -328,4 +328,4 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

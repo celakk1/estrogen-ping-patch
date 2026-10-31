@@ -62,10 +62,14 @@ fn openProtectedPath(path: &Path, directory: bool) -> ServiceResult<File> {
 }
 
 pub(crate) fn open(serviceSid: &str) -> ServiceResult<OwnedJournal> {
+    openNamed(serviceSid, "estrogen-ping-patch-service")
+}
+
+fn openNamed(serviceSid: &str, directoryName: &str) -> ServiceResult<OwnedJournal> {
     security::requireServiceMembership(serviceSid)?;
     let parent = programData()?;
     let parentGuard = openProtectedPath(&parent, true)?;
-    let directory = parent.join("estrogen-ping-patch-service");
+    let directory = parent.join(directoryName);
     let directoryGuard = openProtectedPath(&directory, true)?;
     security::verifyStorageHandle(directoryGuard.as_raw_handle(), serviceSid, true)?;
     verifyFiles(&directory, serviceSid)?;
@@ -82,6 +86,18 @@ pub(crate) fn open(serviceSid: &str) -> ServiceResult<OwnedJournal> {
         _directory: directoryGuard,
         _parent: parentGuard,
     })
+}
+
+#[cfg(feature = "native-mtu-lab")]
+pub(crate) fn openMtuLab(serviceSid: &str) -> ServiceResult<OwnedJournal> {
+    openNamed(serviceSid, "estrogen-ping-patch-mtu-lab")
+}
+
+#[cfg(feature = "native-mtu-lab")]
+impl OwnedJournal {
+    pub(crate) fn journal(&mut self) -> &mut Journal {
+        &mut self._journal
+    }
 }
 
 fn verifyFiles(directory: &Path, serviceSid: &str) -> ServiceResult<()> {

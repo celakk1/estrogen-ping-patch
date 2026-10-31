@@ -35,7 +35,7 @@ impl Fixture {
             value: directory.join("simulated-interface.json"),
             directory,
         };
-        save(&fixture.value, &snapshot());
+        save(&fixture.value, &nativeFixture());
         fixture
     }
     fn open(&self) -> Journal {
@@ -86,14 +86,14 @@ fn save(path: &Path, value: &Snapshot) {
 fn read(path: &Path) -> Snapshot {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
-fn snapshot() -> Snapshot {
+pub(crate) fn nativeFixture() -> Snapshot {
     serde_json::from_value(serde_json::json!({"schemaVersion":1,"capturedAtUnixMs":1000,"adapterGuid":Uuid::from_u128(100),"addressFamily":"ipv4","interfaceLuid":"18446744073709551615","interfaceIndex":7,"alias":"simulated","description":"simulated interface","linkMtu":1500,"interfaceType":6,"tunnelType":0,"operationalStatus":1,"mediaConnectState":1,"interfaceStatusFlags":5,
         "os":{"major":10,"minor":0,"build":26100,"updateRevision":100,"nativeArchitecture":9},
         "driver":{"status":"captured","identity":{"version":"1.2.3","infPath":"epp-fixture.inf","infSection":"fixture","deviceInstanceId":"ROOT\\EPP_FIXTURE\\0001"}},
         "settings":{"advertisingEnabled":false,"forwardingEnabled":false,"weakHostSend":false,"weakHostReceive":false,"useAutomaticMetric":true,"useNeighborUnreachabilityDetection":true,"managedAddressConfigurationSupported":false,"otherStatefulConfigurationSupported":false,"advertiseDefaultRoute":false,"routerDiscoveryBehavior":0,"dadTransmits":1,"baseReachableTime":30000,"retransmitTime":1000,"pathMtuDiscoveryTimeout":600000,"linkLocalAddressBehavior":0,"linkLocalAddressTimeout":0,"zoneIndices":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"sitePrefixLength":0,"metric":25,"nlMtu":1500,"disableDefaultRoutes":false}})).unwrap()
 }
 fn document(id: u128) -> MtuCheckpoint {
-    let native = snapshot();
+    let native = nativeFixture();
     MtuCheckpoint {
         schemaVersion: 2,
         id: Uuid::from_u128(id),
