@@ -25,11 +25,27 @@ try {
   }
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.getByRole('button', { name: 'Speed & load', exact: true }).click();
+  await page.getByRole('button', { name: 'Benchmarks', exact: true }).click();
+  await page.getByRole('button', { name: /^Speed test\b/ }).click();
   assert.equal(await page.getByLabel('Use Cloudflare transfer endpoints').isVisible(), false);
   await page.evaluate(() => window.scrollTo(0, 0));
   mkdirSync('artifacts', { recursive: true });
   await page.screenshot({ path: 'artifacts/desktop-beginner-load.png', fullPage: true });
+  const viewport = await page.evaluate(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const startBounds = await page
+    .getByRole('button', { name: 'Start speed test', exact: true })
+    .boundingBox();
+  assert.ok(
+    startBounds && startBounds.y + startBounds.height <= 768,
+    'Start speed test must be visible without scrolling at 1024 by 768',
+  );
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+  await page.screenshot({ path: 'artifacts/desktop-beginner-load-narrow.png', fullPage: true });
+  await page.setViewportSize(viewport);
   async function configure() {
     const advanced = page
       .getByLabel('Use Cloudflare transfer endpoints')
@@ -49,9 +65,9 @@ try {
     await advanced.locator(':scope > summary').click();
   }
   await configure();
-  await page.getByRole('button', { name: 'Start load test', exact: true }).click();
+  await page.getByRole('button', { name: 'Start speed test', exact: true }).click();
   await page
-    .getByRole('button', { name: 'Export load JSON', exact: true })
+    .getByRole('button', { name: 'Export raw data (JSON)', exact: true })
     .waitFor({ timeout: 30_000 });
   const run = await page.evaluate(
     async () => (await window.__TAURI_INTERNALS__.invoke('getLoadHistory'))[0],
@@ -101,7 +117,7 @@ try {
     const downloaded = page.waitForEvent('download', { timeout: 15_000 });
     await page
       .getByRole('button', {
-        name: format === 'HTML' ? 'Save load report' : 'Export load JSON',
+        name: format === 'HTML' ? 'Save report' : 'Export raw data (JSON)',
         exact: true,
       })
       .click();
@@ -122,14 +138,14 @@ try {
   );
   await page.screenshot({ path: 'artifacts/desktop-load-session.png', fullPage: true });
   await page.reload();
-  await page.getByRole('button', { name: 'Speed & load', exact: true }).click();
-  await page.getByRole('button', { name: 'View load report', exact: true }).first().click();
-  await page.getByRole('button', { name: 'Export load JSON', exact: true }).waitFor();
+  await page.getByRole('button', { name: /^Speed test\b/ }).click();
+  await page.getByRole('button', { name: 'View report', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Export raw data (JSON)', exact: true }).waitFor();
   await configure();
-  await page.getByRole('button', { name: 'Start load test', exact: true }).click();
-  await page.getByRole('button', { name: 'Stop load test', exact: true }).click();
+  await page.getByRole('button', { name: 'Start speed test', exact: true }).click();
+  await page.getByRole('button', { name: 'Stop speed test', exact: true }).click();
   await page
-    .getByRole('button', { name: 'Export load JSON', exact: true })
+    .getByRole('button', { name: 'Export raw data (JSON)', exact: true })
     .waitFor({ timeout: 10_000 });
   const cancelled = await page.evaluate(
     async () => (await window.__TAURI_INTERNALS__.invoke('getLoadHistory'))[0],

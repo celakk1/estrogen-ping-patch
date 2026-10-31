@@ -635,36 +635,32 @@ summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
-.test-picker {
+.benchmark-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
   margin-bottom: 24px;
 }
-.test-option {
+.benchmark-tabs button {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 10px;
-  padding: 20px;
+  gap: 6px;
+  padding: 14px 18px;
   text-align: left;
   background: var(--surface);
   border-radius: 10px;
 }
-.test-option > span:not(.test-option-title) {
+.benchmark-tabs span {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.6;
 }
-.test-option .test-option-title {
+.benchmark-tabs strong {
   font-size: 15px;
   font-weight: 650;
 }
-.test-option small {
-  font-size: 11px;
-  color: var(--accent);
-}
-.test-option.selected {
+.benchmark-tabs button[aria-pressed='true'] {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 7%, var(--surface));
 }
@@ -974,11 +970,20 @@ summary {
   .benchmark-layout {
     grid-template-columns: minmax(0, 1fr);
   }
-  .test-picker {
-    gap: 10px;
+  .test-facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .test-option {
-    padding: 15px;
+  .test-facts > div {
+    display: block;
+  }
+  .test-facts strong {
+    display: block;
+    margin-top: 8px;
+    text-align: left;
+  }
+  .test-facts > div + div {
+    border-top: 0;
+    border-left: 1px solid var(--border);
   }
   .load-stages > div {
     padding: 12px;
@@ -1020,8 +1025,22 @@ summary {
     display: inline-block;
     margin-top: 16px;
   }
-  .test-picker {
+  .benchmark-tabs {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .test-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .test-facts > div {
+    display: flex;
+  }
+  .test-facts strong {
+    margin-top: 0;
+    text-align: right;
+  }
+  .test-facts > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--border);
   }
   .load-stages {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1,6 +1,6 @@
 # Direct DNS benchmarks
 
-Select **Website lookup (DNS)** in **Connection test**, review **Website name to look up**, then press **Start test**. **Advanced settings** lets you enter two numeric resolver `IP:port` addresses and choose an A or AAAA record type. Both servers receive the same query name and record type. Standard DNS uses port 53. Scoped IPv6 resolver addresses use `[fe80::1%12]:53`. The core supports two to eight distinct endpoints; the current form exposes two.
+Select **Finding a website (DNS)** under **Benchmarks > Connection test**, review **Website name to look up**, then press **Start test**. **Advanced settings** lets you enter two numeric resolver `IP:port` addresses and choose an A or AAAA record type. Both servers receive the same query name and record type. Standard DNS uses port 53. Scoped IPv6 resolver addresses use `[fe80::1%12]:53`. The core supports two to eight distinct endpoints; the current form exposes two.
 
 The defaults are Cloudflare `1.1.1.1:53`, Google Public DNS `8.8.8.8:53`, and `example.com` A. Provider addresses were checked against their official documentation on 2026-10-31. Configured, ISP, VPN, or private resolvers can be entered explicitly; there is no automatic resolver replacement or discovery policy. A/AAAA selects the answer address family independently of the resolver's IPv4/IPv6 transport address.
 

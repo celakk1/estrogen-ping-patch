@@ -131,7 +131,7 @@ export default function LoadPanel({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>Run a speed & load test</h2>
+              <h2>Check your speed</h2>
               <p>Download and upload test data while checking response times.</p>
             </div>
           </div>
@@ -151,8 +151,8 @@ export default function LoadPanel({
                   }
                 }}
               >
-                <option value="quick">Quick (about 21 MB per provider)</option>
-                <option value="longer">More data (about 84 MB per provider)</option>
+                <option value="quick">Quick (about 21 MB per test server)</option>
+                <option value="longer">More data (about 84 MB per test server)</option>
                 <option value="custom" disabled>
                   Custom size (set in Advanced settings)
                 </option>
@@ -160,7 +160,7 @@ export default function LoadPanel({
             </label>
             <div className="test-facts">
               <div>
-                <span>Transfer server{providerCount === 1 ? '' : 's'}</span>
+                <span>Speed test server{providerCount === 1 ? '' : 's'}</span>
                 <strong>
                   {cloudflare ? 'Cloudflare' : ''}
                   {cloudflare && origin.trim() ? ', ' : ''}
@@ -174,7 +174,7 @@ export default function LoadPanel({
               </div>
               <div>
                 <span>Time limit</span>
-                <strong>30 seconds per transfer</strong>
+                <strong>30 seconds for each direction</strong>
               </div>
             </div>
             <p className="form-note">
@@ -208,19 +208,19 @@ export default function LoadPanel({
                 disabled={!config || disabled || providerCount === 0 || !validSize || overBudget}
                 onClick={start}
               >
-                {running ? 'Test running...' : 'Start load test'}
+                {running ? 'Test running...' : 'Start speed test'}
               </button>
               {running && (
                 <button
                   onClick={() => invoke('cancelBaseline').catch((error) => setError(String(error)))}
                 >
-                  Stop load test
+                  Stop speed test
                 </button>
               )}
             </div>
             <p className="field-help">
-              Selected servers receive your IP address. The data limit covers test payload; protocol
-              overhead adds some traffic.
+              Selected servers receive your IP address. The limit counts test data. Connection
+              messages add to the actual data used.
             </p>
             <details className="advanced-settings">
               <summary>
@@ -347,10 +347,10 @@ export default function LoadPanel({
         <section className="panel" aria-live="polite">
           <div className="panel-heading">
             <div>
-              <h2>{running ? 'Your load test is running' : 'Your load test results'}</h2>
+              <h2>{running ? 'Your speed test is running' : 'Your speed test results'}</h2>
               <p>
                 {running && progress
-                  ? `Provider ${progress.providerIndex + 1} of ${progress.providerCount}: ${loadStages.find((stage) => stage.phase === progress.phase)?.title}`
+                  ? `Test server ${progress.providerIndex + 1} of ${progress.providerCount}: ${loadStages.find((stage) => stage.phase === progress.phase)?.title}`
                   : selected
                     ? new Date(selected.startedAt).toLocaleString()
                     : 'Transfer speeds and response times appear here.'}
@@ -397,7 +397,7 @@ export default function LoadPanel({
                 </div>
                 <h3>See what changes when traffic starts</h3>
                 <p>
-                  Select <strong>Start load test</strong>. We check response times before the
+                  Select <strong>Start speed test</strong>. We check response times before the
                   transfers, during download and upload, and afterward.
                 </p>
                 <dl>
@@ -419,7 +419,7 @@ export default function LoadPanel({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>Response times around the transfers</h2>
+              <h2>Response times before, during, and after</h2>
               <p>
                 Compare each server across the four phases. Smaller numbers mean faster replies.
               </p>
@@ -431,13 +431,13 @@ export default function LoadPanel({
       <section className="panel load-history">
         <div className="panel-heading">
           <div>
-            <h2>Previous load tests</h2>
+            <h2>Previous speed tests</h2>
             <p>Open a saved report to review its speeds and response times.</p>
           </div>
         </div>
         {history.length === 0 ? (
           <div className="form-body">
-            <p>No load tests saved yet. Finished or stopped tests will appear here.</p>
+            <p>No speed tests saved yet. Finished or stopped tests will appear here.</p>
           </div>
         ) : (
           <div className="table-scroll">
@@ -464,7 +464,7 @@ export default function LoadPanel({
                     <td>{run.plan.providers.length}</td>
                     <td>
                       <button disabled={running} onClick={() => setSelected(run)}>
-                        View load report
+                        View report
                       </button>
                     </td>
                   </tr>

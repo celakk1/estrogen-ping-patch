@@ -18,7 +18,7 @@ import type {
 import { downloadBackup, downloadReport } from './report';
 import BenchmarkOverview from './BenchmarkOverview';
 import LoadPanel from './LoadPanel';
-import { protocolNames } from './measurement';
+import { testGuide } from './benchmark-guide';
 
 type View = 'overview' | 'load' | 'inventory' | 'history' | 'backups' | 'policy';
 
@@ -208,6 +208,7 @@ export default function App() {
     () => (selectedBackup ? JSON.parse(selectedBackup.payloadJson) : null),
     [selectedBackup],
   );
+  const showingBenchmarks = view === 'overview' || view === 'load';
 
   return (
     <div className={`app ${light ? 'light' : ''}`}>
@@ -222,15 +223,18 @@ export default function App() {
         <nav>
           {(
             [
-              ['overview', 'Connection test'],
-              ['load', 'Speed & load'],
+              ['overview', 'Benchmarks'],
               ['inventory', 'System inventory'],
               ['history', 'Benchmark history'],
               ['backups', 'Configuration backups'],
               ['policy', 'Safety & policy'],
             ] as const
           ).map(([key, title]) => (
-            <button key={key} className={view === key ? 'active' : ''} onClick={() => setView(key)}>
+            <button
+              key={key}
+              className={view === key || (key === 'overview' && showingBenchmarks) ? 'active' : ''}
+              onClick={() => setView(key)}
+            >
               <span className={`nav-mark ${key}`} />
               {title}
             </button>
@@ -249,20 +253,18 @@ export default function App() {
         <header>
           <div className="breadcrumb">
             Workspace <span>/</span>{' '}
-            {view === 'load'
-              ? 'Speed & load'
-              : view === 'overview'
-                ? 'Connection test'
-                : view === 'inventory'
-                  ? 'System inventory'
-                  : view === 'history'
-                    ? 'Benchmark history'
-                    : view === 'backups'
-                      ? 'Configuration backups'
-                      : 'Safety & policy'}
+            {showingBenchmarks
+              ? 'Benchmarks'
+              : view === 'inventory'
+                ? 'System inventory'
+                : view === 'history'
+                  ? 'Benchmark history'
+                  : view === 'backups'
+                    ? 'Configuration backups'
+                    : 'Safety & policy'}
           </div>
           <div className="pill">
-            <i /> {appStatus ? 'Local service ready' : 'Connecting to desktop'}
+            <i /> {appStatus ? 'Desktop ready' : 'Connecting to desktop'}
           </div>
         </header>
         <div className="content">
@@ -275,36 +277,46 @@ export default function App() {
           )}
           <section className="page-heading">
             <div>
-              <div className="eyebrow">MEASURE. EXPERIMENT. VALIDATE.</div>
+              <div className="eyebrow">NETWORK TOOLS</div>
               <h1>
-                {view === 'load'
-                  ? 'Test speed and responsiveness.'
-                  : view === 'overview'
-                    ? 'Test your connection.'
-                    : view === 'inventory'
-                      ? 'System inventory'
-                      : view === 'history'
-                        ? 'Your measurement history'
-                        : view === 'backups'
-                          ? 'Preserve your starting point.'
-                          : 'Safety comes first.'}
+                {showingBenchmarks
+                  ? 'Benchmarks'
+                  : view === 'inventory'
+                    ? 'System inventory'
+                    : view === 'history'
+                      ? 'Your measurement history'
+                      : view === 'backups'
+                        ? 'Preserve your starting point.'
+                        : 'Safety comes first.'}
               </h1>
               <p>
-                {view === 'load'
-                  ? 'See what happens to response times while test data is downloaded and uploaded.'
-                  : view === 'overview'
-                    ? 'Choose what to measure. The defaults are ready to use, and results are explained below.'
-                    : view === 'inventory'
-                      ? 'Read-only Windows discovery, captured locally.'
-                      : view === 'history'
-                        ? 'Raw samples and reports stay on this computer.'
-                        : view === 'backups'
-                          ? 'Read-only settings snapshots, stored locally and checked before export.'
-                          : 'Bounded operations, explicit authorization, and reversible changes.'}
+                {showingBenchmarks
+                  ? 'Measure your connection. These tests do not change your network settings.'
+                  : view === 'inventory'
+                    ? 'Read-only Windows discovery, captured locally.'
+                    : view === 'history'
+                      ? 'Raw samples and reports stay on this computer.'
+                      : view === 'backups'
+                        ? 'Read-only settings snapshots, stored locally and checked before export.'
+                        : 'Bounded operations, explicit authorization, and reversible changes.'}
               </p>
             </div>
-            <span className="badge">TESTING PREVIEW</span>
+            <span className="badge">
+              {showingBenchmarks ? 'Optimization is still in development' : 'DEVELOPMENT PREVIEW'}
+            </span>
           </section>
+          {showingBenchmarks && (
+            <div className="benchmark-tabs" role="group" aria-label="Benchmark tests">
+              <button aria-pressed={view === 'overview'} onClick={() => setView('overview')}>
+                <strong>Connection test</strong>
+                <span>Check ping, connections, and website lookups.</span>
+              </button>
+              <button aria-pressed={view === 'load'} onClick={() => setView('load')}>
+                <strong>Speed test</strong>
+                <span>Check download/upload speed and delay during traffic.</span>
+              </button>
+            </div>
+          )}
           {view === 'overview' && (
             <BenchmarkOverview
               config={config}
@@ -416,9 +428,8 @@ export default function App() {
                       <tr>
                         <th>Run</th>
                         <th>Started</th>
-                        <th>Profile</th>
-                        <th>Protocol</th>
-                        <th>Attempts</th>
+                        <th>Test</th>
+                        <th>Checks</th>
                         <th>Status</th>
                         <th>Report</th>
                       </tr>
@@ -428,16 +439,15 @@ export default function App() {
                         <tr key={run.id}>
                           <td>#{run.id}</td>
                           <td>{new Date(run.startedAt).toLocaleString()}</td>
-                          <td>{run.config.profile}</td>
-                          <td>
-                            {run.protocol === 'dnsLookup'
-                              ? protocolNames.dnsLookup
-                              : run.protocol === 'icmpEcho'
-                                ? 'ICMP echo'
-                                : 'TCP connect'}
-                          </td>
+                          <td>{testGuide[run.protocol].title}</td>
                           <td>{run.samples.length}</td>
-                          <td>{run.status}</td>
+                          <td>
+                            {run.status === 'completed'
+                              ? 'Finished'
+                              : run.status === 'cancelled'
+                                ? 'Stopped'
+                                : 'Incomplete'}
+                          </td>
                           <td>
                             <button
                               disabled={running}

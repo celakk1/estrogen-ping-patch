@@ -131,39 +131,30 @@ export default function BenchmarkOverview(props: Props) {
       : 0;
   return (
     <>
-      <div className="test-picker" role="group" aria-label="Choose what to measure">
-        {(['icmpEcho', 'tcpConnect', 'dnsLookup'] as const).map((kind) => (
-          <button
-            key={kind}
-            aria-label={testGuide[kind].title}
-            aria-pressed={protocol === kind}
-            className={`test-option ${protocol === kind ? 'selected' : ''}`}
-            disabled={running}
-            onClick={() => onProtocolChange(kind)}
-          >
-            <span className="test-option-title">{testGuide[kind].title}</span>
-            <span>{testGuide[kind].description}</span>
-            {kind === 'icmpEcho' && <small>Suggested first test</small>}
-          </button>
-        ))}
-      </div>
       <div className="two-columns benchmark-layout">
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <h2>
-                Run a{' '}
-                {protocol === 'icmpEcho'
-                  ? 'response time'
-                  : protocol === 'dnsLookup'
-                    ? 'website lookup'
-                    : 'connection setup'}{' '}
-                test
-              </h2>
-              <p>{guide.measures}</p>
+              <h2>Check your connection</h2>
+              <p>Start with ping. No server setup is needed.</p>
             </div>
           </div>
           <div className="form-body">
+            <label>
+              What to check
+              <select
+                disabled={running}
+                value={protocol}
+                onChange={(event) => onProtocolChange(event.target.value as ProbeProtocol)}
+              >
+                {(['icmpEcho', 'tcpConnect', 'dnsLookup'] as const).map((kind) => (
+                  <option key={kind} value={kind}>
+                    {testGuide[kind].title}
+                  </option>
+                ))}
+              </select>
+              <span className="field-help">{guide.measures}</span>
+            </label>
             <div className="test-facts">
               <div>
                 <span>Test servers</span>
@@ -184,7 +175,7 @@ export default function BenchmarkOverview(props: Props) {
               <div>
                 <span>Time to allow</span>
                 <strong>
-                  {limitSeconds == null ? 'Waiting for settings' : `About ${limitSeconds} seconds`}
+                  {limitSeconds == null ? 'Waiting for settings' : `Up to ${limitSeconds} seconds`}
                 </strong>
               </div>
             </div>
@@ -218,8 +209,8 @@ export default function BenchmarkOverview(props: Props) {
               not change your network settings.
             </p>
             <p className="form-note">
-              For a quiet-connection result, pause other downloads or streams first. Use{' '}
-              <strong>Speed & load</strong> to test how your connection behaves during traffic.
+              Pause other downloads or streams for a quiet-connection result. Choose{' '}
+              <strong>Speed test</strong> above to check your connection during traffic.
             </p>
             {running && (
               <p className="form-note" role="status">
@@ -238,21 +229,9 @@ export default function BenchmarkOverview(props: Props) {
                 Advanced settings<span>Servers, number of checks, and technical options</span>
               </summary>
               <div className="advanced-body">
-                <label>
-                  Network benchmark
-                  <select
-                    disabled={running}
-                    value={protocol}
-                    onChange={(event) => onProtocolChange(event.target.value as ProbeProtocol)}
-                  >
-                    <option value="icmpEcho">Response time (ICMP echo)</option>
-                    <option value="tcpConnect">Connection setup (TCP)</option>
-                    <option value="dnsLookup">Website lookup (DNS)</option>
-                  </select>
-                </label>
                 <div className="input-grid">
                   <label>
-                    Samples per endpoint
+                    Checks per server
                     <input
                       type="number"
                       min="3"
@@ -267,7 +246,7 @@ export default function BenchmarkOverview(props: Props) {
                     <span className="field-help">How many checks to send to each server.</span>
                   </label>
                   <label>
-                    Maximum runtime (minutes)
+                    Stop after (minutes)
                     <input
                       type="number"
                       min="1"
@@ -422,7 +401,7 @@ export default function BenchmarkOverview(props: Props) {
                           {formatProbeMs(summary.medianMs, shownProtocol)}
                         </span>
                       </div>
-                      <p>{testGuide[shownProtocol].typical} (median)</p>
+                      <p>{testGuide[shownProtocol].typical}</p>
                       <div className="result-stat-row">
                         <span>
                           {summary.successful} of {summary.attempted} checks succeeded
@@ -441,8 +420,10 @@ export default function BenchmarkOverview(props: Props) {
                           <dd>{formatProbeMs(summary.successiveVariationMs, shownProtocol)}</dd>
                         </dl>
                         <p className="form-note">
-                          p95 is the 95th percentile of successful timings. Variation shows how much
-                          consecutive successful timings differ. A short test has limited samples.
+                          Typical time is the median: half of the successful checks were faster,
+                          half were slower. p95 is the 95th percentile of successful timings.
+                          Variation shows how much consecutive successful timings differ. A short
+                          test has limited samples.
                         </p>
                         {echoCounts && (
                           <p className="form-note">
@@ -474,7 +455,9 @@ export default function BenchmarkOverview(props: Props) {
                 </div>
                 <div className="button-row report-actions">
                   <button onClick={() => downloadReport(selected, 'html')}>Save report</button>
-                  <button onClick={() => downloadReport(selected, 'json')}>Export JSON</button>
+                  <button onClick={() => downloadReport(selected, 'json')}>
+                    Export raw data (JSON)
+                  </button>
                 </div>
               </>
             ) : (

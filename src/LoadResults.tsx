@@ -59,12 +59,12 @@ export default function LoadResults({ run }: { run: LoadRun }) {
         enough response checks arrive, and may not fill your connection.
       </p>
       <div className="button-row report-actions">
-        <button onClick={() => downloadLoadReport(run, 'html')}>Save load report</button>
-        <button onClick={() => downloadLoadReport(run, 'json')}>Export load JSON</button>
+        <button onClick={() => downloadLoadReport(run, 'html')}>Save report</button>
+        <button onClick={() => downloadLoadReport(run, 'json')}>Export raw data (JSON)</button>
       </div>
       <details className="advanced-settings">
         <summary>
-          Technical transfer details<span>Raw outcomes, streams, and measurement limits</span>
+          Technical details<span>Raw outcomes, streams, and measurement limits</span>
         </summary>
         <div className="advanced-body">
           <p className="form-note">{loadNotes}</p>
@@ -100,7 +100,8 @@ export function LoadLatencyComparison({ run }: { run: LoadRun }) {
         <section key={providerIndex} className="phase-results">
           <h3>{provider.kind === 'cloudflare' ? 'Cloudflare test' : 'Your test server'}</h3>
           <p className="form-note">
-            Response times by phase. Each value is the median of successful checks to that server.
+            Response times by phase. Each value is the middle result (median) of successful checks
+            to that server.
           </p>
           <div className="table-scroll">
             <table
@@ -140,7 +141,7 @@ export function LoadLatencyComparison({ run }: { run: LoadRun }) {
                                 result.summary.medianMs,
                                 endpoint.protocol ?? 'tcpConnect',
                               )
-                            : 'No timing data'}
+                            : 'No response time measured'}
                           <small>
                             {result
                               ? `${result.summary.successful}/${result.summary.attempted} checks answered`

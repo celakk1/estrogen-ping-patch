@@ -2,27 +2,24 @@ import type { BenchmarkRun, Config, ProbeProtocol } from './types';
 
 export const testGuide: Record<
   ProbeProtocol,
-  { title: string; description: string; measures: string; typical: string }
+  { title: string; measures: string; typical: string }
 > = {
   icmpEcho: {
-    title: 'Response time (ping)',
-    description: 'Check how quickly test servers reply and how much the delay varies.',
+    title: 'Ping (response time)',
     measures:
-      'Sends small echo requests to two servers. This is a useful starting point for responsiveness.',
+      'Sends small test messages to two servers and times their replies. Lower times mean faster replies.',
     typical: 'Typical response time',
   },
   tcpConnect: {
-    title: 'Connection setup',
-    description: 'Check how long it takes to open a connection to each server.',
+    title: 'Opening a connection',
     measures:
-      'Measures the time needed to establish a TCP connection. It includes connection setup work, so it differs from ping.',
+      'Times how long it takes to open a new connection to each server. This measures connection setup, which differs from ping.',
     typical: 'Typical connection time',
   },
   dnsLookup: {
-    title: 'Website lookup (DNS)',
-    description: 'Check how quickly DNS servers find the address for a website name.',
+    title: 'Finding a website (DNS)',
     measures:
-      'Asks two DNS servers to resolve a name. Faster lookups can help new connections start; they do not lower an ongoing game connection’s ping.',
+      'Asks two DNS servers to find the address for a website name. Faster lookups can help new connections start; they do not lower an ongoing game connection’s ping.',
     typical: 'Typical lookup time',
   },
 };
@@ -54,7 +51,7 @@ export function runExplanation(run: BenchmarkRun): { title: string; detail: stri
       title: 'No usable timing results',
       detail:
         run.protocol === 'icmpEcho'
-          ? 'Some networks or servers block ping requests. Try Connection setup, or check the server addresses under Advanced settings.'
+          ? 'Some networks or servers block ping requests. Choose Opening a connection under What to check, or check the server addresses under Advanced settings.'
           : 'Check your connection and the server addresses under Advanced settings, then try again. Technical details show the recorded errors.',
     };
   if (successful !== attempted)

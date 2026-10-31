@@ -1,6 +1,6 @@
 # Transfer providers and methodology
 
-The **Speed & load** workflow runs an idle latency baseline, bounded download, bounded upload, and a recovery baseline for each selected provider. The basic form provides test-size presets, provider names, and a data allowance before starting. **Advanced settings** exposes provider selection, exact payload and stream counts, and probe targets. Two to eight fixed numeric latency targets use one protocol, TCP connect or native ICMP echo. They need not share the transfer server's route. A transfer request and a latency probe are separate measurements.
+The **Speed test** workflow runs an idle latency baseline, bounded download, bounded upload, and a recovery baseline for each selected provider. The basic form provides test-size presets, provider names, and a data allowance before starting. **Advanced settings** exposes provider selection, exact payload and stream counts, and probe targets. Two to eight fixed numeric latency targets use one protocol, TCP connect or native ICMP echo. They need not share the transfer server's route. A transfer request and a latency probe are separate measurements.
 
 The provider abstraction currently implements Cloudflare's documented transfer endpoints and [user-owned EPP HTTP servers](transfer-protocol.md). The core accepts one to four distinct server origins. The desktop form exposes Cloudflare plus one owned origin. One provider is useful for a baseline but does not satisfy provider diversity. It does not enable autonomous optimization.
 

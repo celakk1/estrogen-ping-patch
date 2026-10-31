@@ -54,13 +54,17 @@ try {
       (button) => button.textContent === 'Start test' && !button.disabled,
     ),
   );
+  assert.equal(await page.getByLabel('What to check').inputValue(), 'icmpEcho');
+  assert.equal(await page.getByRole('button', { name: 'Benchmarks', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Overview', exact: true }).count(), 0);
   assert.equal(
-    await page
-      .getByRole('button', { name: 'Response time (ping)', exact: true })
-      .getAttribute('aria-pressed'),
-    'true',
+    await page.getByRole('button', { name: 'Throughput & load', exact: true }).count(),
+    0,
   );
-  assert.equal(await page.getByLabel('Samples per endpoint').isVisible(), false);
+  assert.ok(
+    await page.getByText('Optimization is still in development', { exact: true }).isVisible(),
+  );
+  assert.equal(await page.getByLabel('Checks per server').isVisible(), false);
   assert.equal(await page.getByLabel('First destination (IP or IPv6%scopeId)').isVisible(), false);
   assert.equal(
     await page
@@ -68,12 +72,9 @@ try {
       .count(),
     0,
   );
-  assert.ok(await page.getByRole('button', { name: 'Connection setup', exact: true }).isVisible());
-  assert.ok(
-    await page.getByRole('button', { name: 'Website lookup (DNS)', exact: true }).isVisible(),
-  );
+  assert.equal(await page.getByLabel('What to check').locator('option').count(), 3);
   mkdirSync('artifacts', { recursive: true });
-  await page.screenshot({ path: 'artifacts/desktop-beginner-start.png', fullPage: true });
+  await page.screenshot({ path: 'artifacts/desktop-beginner-start.png', animations: 'disabled' });
   const viewport = await page.evaluate(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -92,6 +93,9 @@ try {
   );
   await page.screenshot({ path: 'artifacts/desktop-beginner-narrow.png', fullPage: true });
   await page.setViewportSize(viewport);
+  await page.getByRole('button', { name: 'Switch to light theme', exact: true }).click();
+  await page.screenshot({ path: 'artifacts/desktop-beginner-light.png', animations: 'disabled' });
+  await page.getByRole('button', { name: 'Switch to dark theme', exact: true }).click();
   await page.getByRole('button', { name: 'System inventory', exact: true }).click();
   await page.getByRole('columnheader', { name: 'Interface', exact: true }).waitFor();
   await page.waitForFunction(() => /Windows \d/.test(document.body.innerText), undefined, {
@@ -99,14 +103,16 @@ try {
   });
   const rows = page.locator('tbody tr');
   assert.ok((await rows.count()) > 0, 'Expected real Windows network adapters');
-  await page.getByRole('button', { name: 'Connection test', exact: true }).click();
-  await page.getByRole('button', { name: 'Connection setup', exact: true }).click();
+  await page.getByRole('button', { name: 'Benchmarks', exact: true }).click();
+  await page.getByLabel('What to check').selectOption('tcpConnect');
   await page.locator('details.advanced-settings > summary').first().click();
-  await page.getByLabel('Samples per endpoint').fill('3');
+  await page.getByLabel('Checks per server').fill('3');
   await page.getByLabel('First destination (IP:port)').fill(first.address);
   await page.getByLabel('Second destination (IP:port)').fill(second.address);
   await page.getByRole('button', { name: 'Start test', exact: true }).click();
-  await page.getByRole('button', { name: 'Export JSON', exact: true }).waitFor({ timeout: 30_000 });
+  await page
+    .getByRole('button', { name: 'Export raw data (JSON)', exact: true })
+    .waitFor({ timeout: 30_000 });
   assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
   assert.equal(await page.getByRole('alert').count(), 0);
   mkdirSync('artifacts', { recursive: true });
@@ -115,14 +121,16 @@ try {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: 'artifacts/desktop-baseline.png', fullPage: true });
   await page.locator('details.advanced-settings > summary').first().click();
-  await page.getByLabel('Network benchmark').selectOption('icmpEcho');
+  await page.getByLabel('What to check').selectOption('icmpEcho');
   await page.getByLabel('First destination (IP or IPv6%scopeId)').fill('127.0.0.1');
   await page.getByLabel('Second destination (IP or IPv6%scopeId)').fill('::1');
   await page.getByRole('button', { name: 'Start test', exact: true }).click();
   await page
     .getByRole('img', { name: 'Measured ICMP echo round-trip times', exact: true })
     .waitFor();
-  await page.getByRole('button', { name: 'Export JSON', exact: true }).waitFor({ timeout: 30_000 });
+  await page
+    .getByRole('button', { name: 'Export raw data (JSON)', exact: true })
+    .waitFor({ timeout: 30_000 });
   assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
   const echoRun = await page.evaluate(
     async () => (await window.__TAURI_INTERNALS__.invoke('getHistory'))[0],
@@ -149,7 +157,10 @@ try {
   for (const format of ['JSON', 'HTML']) {
     const downloaded = page.waitForEvent('download', { timeout: 15_000 });
     await page
-      .getByRole('button', { name: format === 'HTML' ? 'Save report' : 'Export JSON', exact: true })
+      .getByRole('button', {
+        name: format === 'HTML' ? 'Save report' : 'Export raw data (JSON)',
+        exact: true,
+      })
       .click();
     const download = await downloaded;
     assert.equal(await download.failure(), null);
@@ -167,12 +178,12 @@ try {
   await page.screenshot({ path: 'artifacts/desktop-echo-baseline.png', fullPage: true });
   await page.reload();
   await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
-  await page.getByRole('cell', { name: 'ICMP echo', exact: true }).waitFor();
+  await page.getByRole('cell', { name: 'Ping (response time)', exact: true }).waitFor();
   await page.getByRole('button', { name: 'View', exact: true }).first().click();
   assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
-  await page.getByRole('button', { name: 'Website lookup (DNS)', exact: true }).click();
+  await page.getByLabel('What to check').selectOption('dnsLookup');
   await page.locator('details.advanced-settings > summary').first().click();
-  await page.getByLabel('Samples per endpoint').fill('3');
+  await page.getByLabel('Checks per server').fill('3');
   await page.getByLabel('First destination (IP:port)').fill(firstDns.address);
   await page.getByLabel('Second destination (IP:port)').fill(secondDns.address);
   await page.getByLabel('Website name to look up').fill('example.test');
@@ -181,7 +192,7 @@ try {
     await page.getByLabel('DNS record type').selectOption(recordType);
     await page.getByRole('button', { name: 'Start test', exact: true }).click();
     await page
-      .getByRole('button', { name: 'Export JSON', exact: true })
+      .getByRole('button', { name: 'Export raw data (JSON)', exact: true })
       .waitFor({ timeout: 30_000 });
     assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
     dnsRun = await page.evaluate(
@@ -226,7 +237,10 @@ try {
   for (const format of ['JSON', 'HTML']) {
     const downloaded = page.waitForEvent('download', { timeout: 15_000 });
     await page
-      .getByRole('button', { name: format === 'HTML' ? 'Save report' : 'Export JSON', exact: true })
+      .getByRole('button', {
+        name: format === 'HTML' ? 'Save report' : 'Export raw data (JSON)',
+        exact: true,
+      })
       .click();
     const download = await downloaded;
     assert.equal(await download.failure(), null);
@@ -246,11 +260,11 @@ try {
   await page.screenshot({ path: 'artifacts/desktop-dns-baseline.png', fullPage: true });
   await page.reload();
   await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
-  await page.getByRole('cell', { name: 'DNS resolution', exact: true }).first().waitFor();
+  await page.getByRole('cell', { name: 'Finding a website (DNS)', exact: true }).first().waitFor();
   await page.getByRole('button', { name: 'View', exact: true }).first().click();
   assert.equal(await page.getByText('3 of 3 checks succeeded', { exact: true }).count(), 2);
   await page.getByRole('button', { name: 'Benchmark history', exact: true }).click();
-  assert.ok((await page.getByRole('cell', { name: 'completed', exact: true }).count()) > 0);
+  assert.ok((await page.getByRole('cell', { name: 'Finished', exact: true }).count()) > 0);
   await page.getByRole('button', { name: 'Safety & policy', exact: true }).click();
   assert.ok((await page.getByText('Disabled in this build', { exact: true }).count()) > 0);
   const service = await page.evaluate(() =>
