@@ -10,6 +10,7 @@ pub mod mcp;
 mod native_dns;
 pub mod statistics;
 pub mod storage;
+pub mod transfer;
 
 use std::path::PathBuf;
 

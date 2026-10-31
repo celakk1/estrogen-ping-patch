@@ -4,9 +4,9 @@ A local Windows network experimentation application built with Rust, Tauri 2, Re
 
 ## Development status
 
-This is an early development build. It provides read-only network discovery, bounded TCP connection, IPv4/IPv6 ICMP echo, and direct DNS A/AAAA baselines across multiple destinations, cancellation, live progress, local SQLite history, JSON/HTML reports, local network settings snapshots with SHA-256-verified JSON exports, and a read-only MCP stdio interface. It preserves the existing network configuration. Automatic snapshot restoration is not implemented.
+This is an early development build. It provides read-only network discovery, bounded TCP connection, IPv4/IPv6 ICMP echo, and direct DNS A/AAAA baselines across multiple destinations, plus bounded HTTP download/upload sessions with concurrent latency and recovery probes. It includes cancellation, live progress, local SQLite history, JSON/HTML reports, local network settings snapshots with SHA-256-verified JSON exports, and a read-only MCP stdio interface. It preserves the existing network configuration. Automatic snapshot restoration is not implemented.
 
-A separate Windows service provides authenticated local status reporting, with optional installation and management from **Safety & policy**. It runs as LocalService, accepts no network setters, and is not needed for diagnostics or backups. Protected service-owned recovery journal storage verifies checkpoint integrity and detects incomplete work at startup. Disposable Windows CI passed storage permissions, simulated pending-checkpoint detection, corrupted-storage refusal, restart, and journal preservation across service removal/reinstallation. Automatic network modifications, operation authorization, controlled optimization, native crash rollback, throughput providers, scheduling, and optional inference providers remain under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md).
+A separate Windows service provides authenticated local status reporting, with optional installation and management from **Safety & policy**. It runs as LocalService, accepts no network setters, and is not needed for diagnostics or backups. Protected service-owned recovery journal storage verifies checkpoint integrity and detects incomplete work at startup. Disposable Windows CI passed storage permissions, simulated pending-checkpoint detection, corrupted-storage refusal, restart, and journal preservation across service removal/reinstallation. Automatic network modifications, operation authorization, controlled optimization, native crash rollback, broader provider support, scheduling, and optional inference providers remain under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md).
 
 ## Quick start
 
@@ -37,16 +37,18 @@ The optional service has separate `install-service.bat` and `uninstall-service.b
 
 Choose **TCP connection establishment**, **ICMP echo RTT**, or **DNS resolution (direct resolver)** under **Network benchmark**. TCP/DNS targets use numeric `IP:port` addresses; ICMP targets use numeric IP addresses without a port. IPv6 link-local echo targets require a numeric interface scope, such as `fe80::1%12`. Starting a baseline sends only the selected bounded probes. Default public resolver addresses do not represent every internet route. TCP and ICMP do not measure DNS lookup performance.
 
-ICMP reports Windows' whole-millisecond RTT separately from TCP connect time and API call duration. Raw zero RTT is displayed as `<1 ms`. Timeouts, IP errors, system errors, and invalid replies remain distinct; timeout percentage is unavailable if non-timeout errors prevent a clean estimate. ICMP may be filtered or rate-limited and is not application packet loss. Throughput, loaded latency, and automatic optimization remain unfinished. No game selection, game launch, or in-game telemetry is required.
+ICMP reports Windows' whole-millisecond RTT separately from TCP connect time and API call duration. Raw zero RTT is displayed as `<1 ms`. Timeouts, IP errors, system errors, and invalid replies remain distinct; timeout percentage is unavailable if non-timeout errors prevent a clean estimate. ICMP may be filtered or rate-limited and is not application packet loss. Automatic optimization remains unfinished. No game selection, game launch, or in-game telemetry is required.
 
 DNS benchmarks send the chosen query name directly to each resolver over UDP with TCP fallback. Successful lookup timing, negative answers, timeouts, and system errors remain separate. Resolver cache state is unknown, and AD is resolver-reported rather than independently validated DNSSEC. Windows DNS settings stay unchanged. See [DNS behavior and limitations](docs/dns.md).
 
-Application database version four supports protocol-specific reports while retaining earlier TCP/ICMP history and configuration snapshots. Older previews refuse this newer database. Use the current application to read it; do not downgrade the database version manually. The dedicated service journal has its own independent schema.
+Choose **Throughput & load** for idle, download, upload, and recovery phases with one to four parallel HTTP/1.1 streams. The form supports Cloudflare's documented transfer endpoints plus an optional user-owned server. Starting explicitly sends synthetic traffic and shares your IP with selected providers. Payload and time limits are enforced, and raw stream outcomes, peer addresses, and concurrent TCP/ICMP samples are saved separately from unloaded baselines. Goodput includes connection setup and server time; it is not a link-capacity estimate or the provider website score. Short transfers may provide insufficient concurrent samples, and saturation is not guaranteed. See [providers and methodology](docs/providers.md) and the [owned-server protocol](docs/transfer-protocol.md). Independent public discovery, NDT7/iperf3, sustained/bidirectional testing, utilization, and repeated-session comparisons remain unfinished.
+
+Application database version five supports protocol-specific reports and separate load sessions while retaining earlier baseline history and configuration snapshots. Older previews refuse this newer database. Use the current application to read it; do not downgrade the database version manually. The dedicated service journal has its own independent schema.
 
 ## Privacy and safety
 
 - No telemetry, advertising, or automatic cloud inference.
-- No network measurement traffic until the user starts a baseline.
+- No network measurement traffic until the user starts a baseline or load session.
 - AI is disabled with a zero cloud budget. MCP exposes an explicit read-only tool allowlist.
 - Inventory and raw measurements are stored in `%LOCALAPPDATA%/estrogen-ping-patch`, outside the source checkout.
 - Use `.env.example` as documentation only. No `.env` loader is installed and no credentials are required.
@@ -63,6 +65,8 @@ Application database version four supports protocol-specific reports while retai
 - [Dedicated Windows service](docs/service.md)
 - [Research sources](docs/research.md)
 - [Direct DNS benchmarks](docs/dns.md)
+- [Transfer providers and methodology](docs/providers.md)
+- [User-owned transfer protocol](docs/transfer-protocol.md)
 
 ## License
 

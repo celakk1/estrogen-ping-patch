@@ -14,6 +14,10 @@ dirs = "6"
 sha2 = "0.10"
 hickory-proto = { version = "=0.26.3", default-features = false, features = ["std"] }
 getrandom = "0.4"
+reqwest = { version = "=0.13.5", default-features = false, features = ["native-tls", "stream"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "net"] }
+futures-util = "0.3"
+bytes = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_LibraryLoader"] }

@@ -8,6 +8,8 @@ The product optimizes the machine's shared networking configuration. Its main wo
 
 The current implementation includes the desktop, a local read-only application service owned by Tauri, a cancellable worker, a standalone MCP stdio mode, and an optional dedicated Windows service with authenticated status requests. The Windows service runs as LocalService and currently exposes no settings writes. Network modifications remain unavailable until scoped operation authorization, durable checkpoints, verified setters, watchdog, and recovery tests exist.
 
+The transfer worker runs a bounded per-phase asynchronous HTTP client on a separate thread while the session observer reuses native TCP/ICMP probes. One to four HTTP/1.1 streams share a per-direction payload budget and deadline. Samples record request overlap and actual application payload progress; summaries do not infer saturation. Provider adapters construct fixed protocol paths from validated server origins. Transfer sessions use their own version-five database table and desktop history/report flow; DNS and unloaded baseline semantics remain unchanged. See [providers](providers.md).
+
 ## Runtime paths
 
 `launch.bat -> scripts/dev.ps1 -> epp-check -> tauri dev -> Vite + desktop`
@@ -25,7 +27,7 @@ The dedicated service independently opens `%ProgramData%\estrogen-ping-patch-ser
 | Component | Choice and reason | Constraint |
 | --- | --- | --- |
 | Desktop | Tauri 2 with React and TypeScript; native WebView2 host | Windows development needs MSVC/SDK/WebView2 |
-| Styling/chart | Local CSS and SVG; no remote fonts, chart SDK, or analytics | Current plots cover TCP connect time and ICMP echo RTT; protocol labels remain separate |
+| Styling/chart | Local CSS and SVG; no remote fonts, chart SDK, or analytics | Baseline plots cover TCP, ICMP, and DNS; transfer reports keep per-phase measurements separate |
 | Core | Rust; same measurement, statistics, validation, and persistence code in tests and desktop | Blocking OS work is kept off the GUI thread |
 | Database | Bundled SQLite through rusqlite; transactions, WAL, FULL synchronous mode | End-of-run sample persistence currently loses an unfinished run on a process crash |
 | Configuration | Versioned JSON, strict known-field validation with preservation of unknown fields | Future schemas are rejected rather than silently downgraded |
@@ -47,6 +49,6 @@ ICMP uses synchronous Windows echo APIs with a fixed application-owned payload a
 
 Direct DNS uses a bounded codec and connected UDP sockets, with one TCP fallback when a matching response is truncated. Each resolver receives the same explicit A/AAAA question. Only validated address resolution contributes to `lookupMs`; negative response arrival time remains separate. Answer TTLs, CNAME chains, response codes, transport, and resolver-reported AD are retained. Resolver cache state is unknown, and address-set changes are informational. See [DNS behavior](dns.md) for limits and remaining cache/DNSSEC validation gates.
 
-Report database version four prevents older previews from misreading DNS/ICMP records. New endpoint protocol metadata defaults to TCP when reading older records, and legacy socket address strings and TCP timing fields retain their meaning. ICMP and DNS records never populate `connectMs` or a TCP connection-failure percentage.
+Report database version five prevents older previews from misreading newer data and adds a separate load-session table. New endpoint protocol metadata defaults to TCP when reading older records, and legacy socket address strings and TCP timing fields retain their meaning. ICMP and DNS records never populate `connectMs` or a TCP connection-failure percentage.
 
 Future comparisons must use repeated sessions as independent units, stable endpoint cohorts, practical significance thresholds, baseline drift checks, and hard regression constraints. Server tuning recommendations are hypotheses, not consumer Windows defaults.

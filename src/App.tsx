@@ -17,6 +17,7 @@ import type {
   ServiceReport,
 } from './types';
 import { downloadBackup, downloadReport } from './report';
+import LoadPanel from './LoadPanel';
 import {
   dnsAnswerText,
   dnsCountsText,
@@ -28,7 +29,7 @@ import {
   sampleLatency,
 } from './measurement';
 
-type View = 'overview' | 'inventory' | 'history' | 'backups' | 'policy';
+type View = 'overview' | 'load' | 'inventory' | 'history' | 'backups' | 'policy';
 const profiles: Profile[] = ['latency', 'balanced', 'download'];
 
 function LatencyChart({ samples, protocol }: { samples: Sample[]; protocol: ProbeProtocol }) {
@@ -122,6 +123,7 @@ export default function App() {
   const [samples, setSamples] = useState<Sample[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [running, setRunning] = useState(false);
+  const [loadRunning, setLoadRunning] = useState(false);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [error, setError] = useState('');
   const [protocol, setProtocol] = useState<ProbeProtocol>('tcpConnect');
@@ -172,7 +174,7 @@ export default function App() {
   }
 
   async function captureBackup() {
-    if (running || capturingBackup) return;
+    if (running || loadRunning || capturingBackup) return;
     setCapturingBackup(true);
     setBackupNotice('');
     setError('');
@@ -245,7 +247,7 @@ export default function App() {
   }, []);
 
   async function startBaseline() {
-    if (!config || running || capturingBackup) return;
+    if (!config || running || loadRunning || capturingBackup) return;
     setError('');
     setSamples([]);
     setProgress(null);
@@ -314,6 +316,7 @@ export default function App() {
           {(
             [
               ['overview', 'Overview'],
+              ['load', 'Throughput & load'],
               ['inventory', 'System inventory'],
               ['history', 'Benchmark history'],
               ['backups', 'Configuration backups'],
@@ -339,15 +342,17 @@ export default function App() {
         <header>
           <div className="breadcrumb">
             Workspace <span>/</span>{' '}
-            {view === 'overview'
-              ? 'Overview'
-              : view === 'inventory'
-                ? 'System inventory'
-                : view === 'history'
-                  ? 'Benchmark history'
-                  : view === 'backups'
-                    ? 'Configuration backups'
-                    : 'Safety & policy'}
+            {view === 'load'
+              ? 'Throughput & load'
+              : view === 'overview'
+                ? 'Overview'
+                : view === 'inventory'
+                  ? 'System inventory'
+                  : view === 'history'
+                    ? 'Benchmark history'
+                    : view === 'backups'
+                      ? 'Configuration backups'
+                      : 'Safety & policy'}
           </div>
           <div className="pill">
             <i /> {appStatus ? 'Local service ready' : 'Connecting to desktop'}
@@ -365,26 +370,30 @@ export default function App() {
             <div>
               <div className="eyebrow">MEASURE. EXPERIMENT. VALIDATE.</div>
               <h1>
-                {view === 'overview'
-                  ? 'Know your connection.'
-                  : view === 'inventory'
-                    ? 'System inventory'
-                    : view === 'history'
-                      ? 'Your measurement history'
-                      : view === 'backups'
-                        ? 'Preserve your starting point.'
-                        : 'Safety comes first.'}
+                {view === 'load'
+                  ? 'Responsiveness under load.'
+                  : view === 'overview'
+                    ? 'Know your connection.'
+                    : view === 'inventory'
+                      ? 'System inventory'
+                      : view === 'history'
+                        ? 'Your measurement history'
+                        : view === 'backups'
+                          ? 'Preserve your starting point.'
+                          : 'Safety comes first.'}
               </h1>
               <p>
-                {view === 'overview'
-                  ? 'Build an honest baseline before changing anything.'
-                  : view === 'inventory'
-                    ? 'Read-only Windows discovery, captured locally.'
-                    : view === 'history'
-                      ? 'Raw samples and reports stay on this computer.'
-                      : view === 'backups'
-                        ? 'Read-only settings snapshots, stored locally and checked before export.'
-                        : 'Bounded operations, explicit authorization, and reversible changes.'}
+                {view === 'load'
+                  ? 'Bounded transfers with concurrent latency across selected endpoints.'
+                  : view === 'overview'
+                    ? 'Build an honest baseline before changing anything.'
+                    : view === 'inventory'
+                      ? 'Read-only Windows discovery, captured locally.'
+                      : view === 'history'
+                        ? 'Raw samples and reports stay on this computer.'
+                        : view === 'backups'
+                          ? 'Read-only settings snapshots, stored locally and checked before export.'
+                          : 'Bounded operations, explicit authorization, and reversible changes.'}
               </p>
             </div>
             <span className="badge">READ-ONLY PREVIEW</span>
@@ -581,7 +590,7 @@ export default function App() {
                     <div className="button-row">
                       <button
                         className="primary"
-                        disabled={!config || running || capturingBackup}
+                        disabled={!config || running || loadRunning || capturingBackup}
                         onClick={startBaseline}
                       >
                         Start baseline
@@ -718,6 +727,13 @@ export default function App() {
               </div>
             </>
           )}
+          <div hidden={view !== 'load'}>
+            <LoadPanel
+              config={config}
+              blocked={running || capturingBackup || managingService}
+              onRunningChange={setLoadRunning}
+            />
+          </div>
           {view === 'inventory' && (
             <section className="panel">
               <div className="panel-heading">
@@ -856,7 +872,7 @@ export default function App() {
                   <div className="button-row">
                     <button
                       className="primary"
-                      disabled={running || capturingBackup}
+                      disabled={running || loadRunning || capturingBackup}
                       onClick={captureBackup}
                     >
                       {capturingBackup ? 'Capturing settings...' : 'Capture backup'}
@@ -1016,7 +1032,7 @@ export default function App() {
                     </button>
                     {serviceReport?.state === 'notInstalled' && (
                       <button
-                        disabled={managingService || running || capturingBackup}
+                        disabled={managingService || running || loadRunning || capturingBackup}
                         onClick={() => void changeService('install')}
                       >
                         Install optional service

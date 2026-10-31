@@ -24,4 +24,4 @@ DNS latency affects name resolution. It does not measure or establish an improve
 
 Unit and loopback integration tests cover name/target validation, matching, compression errors, CNAME conflicts, A/AAAA answers, unrelated records, negative responses, UDP ID rejection, TCP fallback with fragmented writes, deadlines/cancellation, protocol-specific statistics, address changes, and exact SQLite/JSON round trips. Packaged desktop smoke tests use temporary loopback fixtures for IPv4 UDP and IPv6 TCP fallback; no public resolver is queried by the automated suite.
 
-Application database schema four adds DNS report semantics while preserving earlier TCP/ICMP history and backups. Older previews reject the newer database. The privileged recovery journal has an independent schema and is untouched by DNS measurements.
+Application database schema four introduced DNS report semantics; schema five adds separate transfer sessions. Both preserve earlier baseline history and backups. Older previews reject newer databases. The privileged recovery journal has an independent schema and is untouched by DNS measurements.

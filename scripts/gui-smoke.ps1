@@ -39,7 +39,7 @@ try {
         }
     } while (-not $ready -and [DateTime]::UtcNow -lt $deadline)
     if (-not $ready) { throw 'Test WebView2 debugging endpoint did not become ready within 45 seconds.' }
-    foreach ($script in @('desktop-smoke.mjs', 'backup-smoke.mjs')) {
+    foreach ($script in @('desktop-smoke.mjs', 'load-smoke.mjs', 'backup-smoke.mjs')) {
         & node.exe (Join-Path $PSScriptRoot $script)
         if ($LASTEXITCODE -ne 0) { throw "$script failed with exit code $LASTEXITCODE. Test data retained at $testDirectory" }
     }

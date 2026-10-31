@@ -131,6 +131,81 @@ pub struct BenchmarkRun {
     pub samples: Vec<Sample>,
 }
 
+fn probeTarget(
+    endpoint: &Endpoint,
+    target: &ParsedTarget,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+    echoProbe: &mut EchoProbe,
+) -> AppResult<Option<Sample>> {
+    let start = Instant::now();
+    let (connectMs, error, echo, dns) = match target {
+        ParsedTarget::Tcp(address) => match TcpStream::connect_timeout(address, timeout) {
+            Ok(stream) => {
+                let duration = start.elapsed().as_secs_f64() * 1000.0;
+                drop(stream);
+                (Some(duration), None, None, None)
+            }
+            Err(error) => (None, Some(error.to_string()), None, None),
+        },
+        ParsedTarget::Echo(target) => {
+            let result = echoProbe.measure(target, timeout, cancelled)?;
+            if result.status == EchoStatus::Cancelled {
+                return Ok(None);
+            }
+            let error = if result.status == EchoStatus::Reply {
+                None
+            } else {
+                Some(format!(
+                    "ICMP {:?}; native status {:?}",
+                    result.status, result.nativeCode
+                ))
+            };
+            (None, error, Some(result), None)
+        }
+        ParsedTarget::Dns(resolver) => {
+            let query = endpoint.dnsQuery.as_ref().expect("validated DNS query");
+            let result = dns::measure(*resolver, query, timeout, cancelled)?;
+            if result.status == DnsStatus::Cancelled {
+                return Ok(None);
+            }
+            let error = if result.status == DnsStatus::Resolved {
+                None
+            } else {
+                Some(result.error.clone().unwrap_or_else(|| {
+                    format!(
+                        "DNS {:?}; response code {:?}",
+                        result.status, result.responseCode
+                    )
+                }))
+            };
+            (None, error, None, Some(result))
+        }
+    };
+    let sample = Sample {
+        endpointId: endpoint.id.clone(),
+        address: endpoint.address.clone(),
+        timestamp: Utc::now().to_rfc3339(),
+        connectMs,
+        error,
+        echo,
+        dns,
+    };
+
+    Ok(Some(sample))
+}
+
+pub(crate) fn measureOnce(
+    endpoint: &Endpoint,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+    echoProbe: &mut EchoProbe,
+) -> AppResult<Option<Sample>> {
+    if cancelled.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
+    probeTarget(endpoint, &endpoint.target()?, timeout, cancelled, echoProbe)
+}
 pub fn validateEndpoints(endpoints: &[Endpoint]) -> AppResult<()> {
     if !(2..=8).contains(&endpoints.len()) {
         return Err("Select between 2 and 8 independent endpoints".into());
@@ -204,57 +279,9 @@ pub fn runBenchmark(
             if timeout.as_millis() == 0 {
                 break 'measurements;
             }
-            let (connectMs, error, echo, dns) = match target {
-                ParsedTarget::Tcp(address) => match TcpStream::connect_timeout(address, timeout) {
-                    Ok(stream) => {
-                        let duration = start.elapsed().as_secs_f64() * 1000.0;
-                        drop(stream);
-                        (Some(duration), None, None, None)
-                    }
-                    Err(error) => (None, Some(error.to_string()), None, None),
-                },
-                ParsedTarget::Echo(target) => {
-                    let result = echoProbe.measure(target, timeout, cancelled)?;
-                    if result.status == EchoStatus::Cancelled {
-                        break 'measurements;
-                    }
-                    let error = if result.status == EchoStatus::Reply {
-                        None
-                    } else {
-                        Some(format!(
-                            "ICMP {:?}; native status {:?}",
-                            result.status, result.nativeCode
-                        ))
-                    };
-                    (None, error, Some(result), None)
-                }
-                ParsedTarget::Dns(resolver) => {
-                    let query = endpoint.dnsQuery.as_ref().expect("validated DNS query");
-                    let result = dns::measure(*resolver, query, timeout, cancelled)?;
-                    if result.status == DnsStatus::Cancelled {
-                        break 'measurements;
-                    }
-                    let error = if result.status == DnsStatus::Resolved {
-                        None
-                    } else {
-                        Some(result.error.clone().unwrap_or_else(|| {
-                            format!(
-                                "DNS {:?}; response code {:?}",
-                                result.status, result.responseCode
-                            )
-                        }))
-                    };
-                    (None, error, None, Some(result))
-                }
-            };
-            let sample = Sample {
-                endpointId: endpoint.id.clone(),
-                address: endpoint.address.clone(),
-                timestamp: Utc::now().to_rfc3339(),
-                connectMs,
-                error,
-                echo,
-                dns,
+            let Some(sample) = probeTarget(endpoint, target, timeout, cancelled, &mut echoProbe)?
+            else {
+                break 'measurements;
             };
             samples.push(sample);
             onSample(
@@ -300,7 +327,7 @@ pub fn runBenchmark(
     })
 }
 
-fn summarizeEndpoint(endpoint: Endpoint, samples: &[Sample]) -> EndpointResult {
+pub(crate) fn summarizeEndpoint(endpoint: Endpoint, samples: &[Sample]) -> EndpointResult {
     let values: Vec<_> = samples
         .iter()
         .filter(|sample| sample.endpointId == endpoint.id)

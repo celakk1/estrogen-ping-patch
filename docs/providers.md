@@ -1,0 +1,32 @@
+# Transfer providers and methodology
+
+The **Throughput & load** workflow runs an idle latency baseline, bounded download, bounded upload, and a recovery baseline for each selected provider. Two to eight fixed numeric latency targets use one protocol, TCP connect or native ICMP echo. They need not share the transfer server's route. A transfer request and a latency probe are separate measurements.
+
+The provider abstraction currently implements Cloudflare's documented transfer endpoints and [user-owned EPP HTTP servers](transfer-protocol.md). The core accepts one to four distinct server origins. The desktop form exposes Cloudflare plus one owned origin. One provider is useful for a baseline but does not satisfy provider diversity. It does not enable autonomous optimization.
+
+Distinct origins alone do not prove administrative or topological diversity. Future comparisons must validate server identity, route/context drift, provider eligibility, and matched repeated sessions rather than treating multiple URL strings as independent paths.
+
+## Cloudflare
+
+Checked on 2026-10-31 against the [official SDK API documentation](https://github.com/cloudflare/speedtest#api-reference), [configuration](https://github.com/cloudflare/speedtest/blob/main/src/config/defaultConfig.ts), [bandwidth engine](https://github.com/cloudflare/speedtest/blob/main/src/engines/BandwidthEngine/BandwidthEngine.ts), and [methodology/privacy description](https://speed.cloudflare.com/about). The download request is GET `https://speed.cloudflare.com/__down?bytes=N`; upload is POST `https://speed.cloudflare.com/__up?bytes=N` with a matching body, following the SDK's query construction for both directions. The edge is selected by anycast routing, not a claimed fixed geographic server. Peer socket addresses are retained when exposed by the HTTP client.
+
+The provider sees the client's IP address and test traffic under its privacy policy. The application does not instantiate the SDK or send its separate results, AIM, trace, TURN, credential, or logging requests. A documented transfer API does not imply an unlimited request quota: there are no automatic retries, periodic tests, or provider selection changes. HTTP 429 and Retry-After remain visible; a failed direction stops further loading of that provider in the session. A missing published fixed rate limit is not treated as permission for unlimited autonomous testing.
+
+This implementation measures its own HTTP application payload goodput. It does not reproduce the website's ramp-up, browser Resource Timing, server-time correction, percentile selection, AIM score, or packet-loss methodology. Results must not be presented as Cloudflare's website score. Public endpoint operation, TLS/proxy behavior, provider-side interception, and performance remain live-validation gates; automated tests use loopback servers only.
+
+## What is recorded
+
+- Each stream retains its requested payload, actual downloaded body bytes, upload bytes provided to the HTTP client, HTTP-accepted payload, elapsed duration, status, peer address, Retry-After, and bounded error. Queued upload bytes are not evidence of wire delivery. An incomplete or failed transfer produces no successful goodput value.
+- Accepted upload requires a successful HTTP response after the full body was provided. Owned servers additionally acknowledge the received byte count. Cloudflare's documented API does not provide the application's owned-server acknowledgement, so its success is HTTP-level evidence rather than an independently measured server byte counter.
+- Aggregate application goodput uses all successfully accepted payload divided by the whole parallel phase duration. It includes DNS resolution, TCP/TLS setup, response processing, and server time. It excludes HTTP/TLS/TCP overhead from the byte numerator. It is not a raw TCP rate or link-capacity estimate.
+- Payload limits exclude headers, handshakes, acknowledgement bodies, retransmissions, OS resolver traffic, and concurrent probes. They are not a hard on-the-wire byte budget. Downloads require an exact declared Content-Length and no content decoding; uploads stream a reused random 32 KiB block without allocating the complete requested body.
+- Each latency sample records phase, provider index, raw protocol result, active requests at the probe's start/end, and observed application payload progress. Concurrent summaries include probes overlapping active requests at both boundaries or observing payload progress. Other phase samples remain in raw history. If no qualifying probe exists, latency stays unavailable.
+- Request overlap does not establish saturation. Small payloads, fast links, slow servers, background traffic, and endpoints on different routes can make loaded-latency interpretation inconclusive. No bufferbloat score or statistical improvement is inferred. Idle/recovery phases mean no intentional application transfer, not proof that the rest of the machine is idle.
+
+Clients use HTTP/1.1 without application proxies, redirects, automatic retries, cookie storage, or transparent compression. Windows uses native TLS certificate validation. Cancellation drops active HTTP futures; overall session time and per-direction deadlines bound work. Native latency probes can take their configured timeout, at most one second here. A short runtime shutdown deadline avoids waiting indefinitely for an OS DNS lookup; already-started system resolver work may finish separately.
+
+The desktop, dedicated service, and MCP retain their existing trust boundaries. Transfers run unelevated. They never change network settings or install a server.
+
+## Remaining scope
+
+Independent public provider discovery, NDT7, permitted iperf3 integration, provider eligibility policies for automatic sessions, bidirectional load, sustained/ramp-up methodology, retransmission/CPU/adapter utilization, metered/managed-network detection, drift checks, repeated-session comparisons, confidence intervals, and automatic optimization remain unfinished. M-Lab's [NDT documentation](https://www.measurementlab.net/tests/ndt/) describes published measurement data and IP collection; any future adapter requires a clear opt-in privacy decision. No M-Lab or Ookla traffic is enabled.

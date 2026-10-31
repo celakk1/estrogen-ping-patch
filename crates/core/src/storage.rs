@@ -18,7 +18,7 @@ pub fn openDatabase(path: &Path) -> AppResult<Connection> {
 
 fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 4 {
+    if version > 5 {
         return Err("Database is newer than this application; refusing to downgrade it".into());
     }
     if version == 0 {
@@ -41,6 +41,9 @@ fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     }
     if version < 4 {
         connection.execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 4; COMMIT;")?;
+    }
+    if version < 5 {
+        connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE load_sessions(id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, status TEXT NOT NULL, report_json TEXT NOT NULL); PRAGMA user_version = 5; COMMIT;")?;
     }
     Ok(())
 }
@@ -146,6 +149,34 @@ pub fn history(connection: &Connection, limit: u32) -> AppResult<Vec<BenchmarkRu
     rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
 }
 
+pub fn saveLoadSession(
+    connection: &mut Connection,
+    run: &mut crate::transfer::session::SessionRun,
+) -> AppResult<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "INSERT INTO load_sessions(started_at,status,report_json) VALUES(?1,?2,'{}')",
+        params![run.startedAt, run.status],
+    )?;
+    run.id = transaction.last_insert_rowid();
+    transaction.execute(
+        "UPDATE load_sessions SET report_json=?1 WHERE id=?2",
+        params![serde_json::to_string(run)?, run.id],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn loadSessionHistory(
+    connection: &Connection,
+    limit: u32,
+) -> AppResult<Vec<crate::transfer::session::SessionRun>> {
+    let mut statement =
+        connection.prepare("SELECT report_json FROM load_sessions ORDER BY id DESC LIMIT ?1")?;
+    let rows = statement.query_map([limit.min(100)], |row| row.get::<_, String>(0))?;
+    rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,7 +206,7 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            4
+            5
         );
     }
 
@@ -221,6 +252,9 @@ mod tests {
                 "UPDATE benchmark_runs SET report_json=?1 WHERE id=1",
                 [legacy.to_string()],
             )
+            .unwrap();
+        connection
+            .execute_batch("DROP TABLE load_sessions")
             .unwrap();
         connection.pragma_update(None, "user_version", 2).unwrap();
         migrateDatabase(&connection).unwrap();
