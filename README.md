@@ -57,16 +57,18 @@ Under **Network tests**, choose **Speed test**, review **Test size**, the provid
 
 The form supports Cloudflare's documented transfer endpoints plus an optional user-owned server, with one to four parallel HTTP/1.1 streams. Starting explicitly sends synthetic traffic and shares your IP with selected providers. Payload and time limits are enforced, and raw stream outcomes, peer addresses, and concurrent TCP/ICMP samples are saved separately from unloaded baselines. Goodput includes connection setup and server time; it is not a link-capacity estimate or the provider website score. Short transfers may provide insufficient concurrent samples, and saturation is not guaranteed. See [providers and methodology](docs/providers.md) and the [owned-server protocol](docs/transfer-protocol.md). Independent public discovery, NDT7/iperf3, sustained/bidirectional testing, utilization, and repeated-session comparisons remain unfinished.
 
-Application database version five supports protocol-specific reports and separate load sessions while retaining earlier baseline history and configuration snapshots. Older previews refuse this newer database. Use the current application to read it; do not downgrade the database version manually. The dedicated service journal has its own independent schema.
+Application database version six supports separate packet checks and load sessions while retaining earlier baseline history and configuration snapshots. Older previews refuse this newer database. Use the current application to read it; do not downgrade the database version manually. The dedicated service journal has its own independent schema.
+
+Under **Network tests**, choose **Large packet check** to investigate whether larger IPv4 requests can reach one destination. It compares small and large requests, keeps timeouts inconclusive, and saves native route and adapter evidence. It never changes MTU or enables optimization. See [packet-size diagnosis](docs/packet-size.md).
 
 ## Privacy and safety
 
 - No telemetry, advertising, or automatic cloud inference.
-- No network measurement traffic until the user starts a baseline or load session.
+- No network measurement traffic until the user starts a connection test, speed test, or packet check.
 - AI is disabled with a zero cloud budget. MCP exposes an explicit read-only tool allowlist.
 - Inventory and raw measurements are stored in `%LOCALAPPDATA%/estrogen-ping-patch`, outside the source checkout.
 - Use `.env.example` as documentation only. No `.env` loader is installed and no credentials are required.
-- JSON and HTML exports may contain endpoint addresses; JSON connection-test exports also include local route, source-address, and adapter identifiers. Review exports before sharing.
+- JSON and HTML exports may contain endpoint addresses; JSON connection-test and packet-check exports also include local route, source-address, and adapter identifiers. Review exports before sharing.
 
 ## Documentation
 
@@ -84,6 +86,7 @@ Application database version five supports protocol-specific reports and separat
 - [Durable repeated trials](docs/repeated-trials.md)
 - [Repeated-session comparisons](docs/comparisons.md)
 - [Local route evidence](docs/routing.md)
+- [IPv4 packet-size diagnosis](docs/packet-size.md)
 - [Research sources](docs/research.md)
 - [Direct DNS benchmarks](docs/dns.md)
 - [Transfer providers and methodology](docs/providers.md)

@@ -2,6 +2,7 @@
 #![allow(non_snake_case)]
 
 mod backups;
+mod packet_size;
 mod routing;
 
 use epp_core::{
@@ -279,6 +280,41 @@ async fn runLoadSession(
 }
 
 #[tauri::command]
+async fn runPacketCheck(
+    app: tauri::AppHandle,
+    service: State<'_, LocalService>,
+    destination: String,
+) -> Result<packet_size::Check, String> {
+    let guard = beginJob(&service)?;
+    let cancelled = service.cancelled.clone();
+    let directory = service.directory.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        let mut check = packet_size::run(&destination, &cancelled, |sample| {
+            let _ = app.emit("packet-progress", sample);
+        })
+        .map_err(|error| error.to_string())?;
+        packet_size::save(&directory, &mut check)
+            .map_err(|error| format!("Packet measurements finished but saving failed: {error}"))?;
+        Ok(check)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn getPacketHistory(
+    service: State<'_, LocalService>,
+) -> Result<Vec<packet_size::Check>, String> {
+    let directory = service.directory.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        packet_size::history(&directory).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn cancelBaseline(service: State<'_, LocalService>) {
     service.cancelled.store(true, Ordering::SeqCst);
 }
@@ -327,7 +363,7 @@ fn main() {
             app.manage(LocalService { directory, busy: Arc::new(AtomicBool::new(false)), cancelled: Arc::new(AtomicBool::new(false)) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, getPrivilegedService, manageService, getInventory, getHistory, getBackups, captureBackup, exportBackup, runBaseline, cancelBaseline, getLoadHistory, runLoadSession])
+        .invoke_handler(tauri::generate_handler![status, getPrivilegedService, manageService, getInventory, getHistory, getBackups, captureBackup, exportBackup, runBaseline, cancelBaseline, getLoadHistory, runLoadSession, runPacketCheck, getPacketHistory])
         .build(tauri::generate_context!());
     let app = match app {
         Ok(app) => app,

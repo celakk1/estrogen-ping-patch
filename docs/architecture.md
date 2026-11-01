@@ -12,6 +12,8 @@ The transfer worker runs a bounded per-phase asynchronous HTTP client on a separ
 
 Connection tests additionally capture [native local route evidence](routing.md) around measurement. The unelevated desktop uses the existing service library's read-only Windows APIs, preserving GUID/LUID/source/prefix/next-hop evidence in optional baseline metadata. This does not add a service pipe operation or establish complete environment/configuration coverage for the experiment engine.
 
+The separate [IPv4 packet-size diagnostic](packet-size.md) binds do-not-fragment requests to the source chosen by Windows, saves native route/adapter evidence before and after, and requires controlled explicit size errors before confirming a boundary. It adds no privileged operation or enabled optimization candidate.
+
 ## Runtime paths
 
 `launch.bat -> scripts/dev.ps1 -> epp-check -> tauri dev -> Vite + desktop`
@@ -51,6 +53,6 @@ ICMP uses synchronous Windows echo APIs with a fixed application-owned payload a
 
 Direct DNS uses a bounded codec and connected UDP sockets, with one TCP fallback when a matching response is truncated. Each resolver receives the same explicit A/AAAA question. Only validated address resolution contributes to `lookupMs`; negative response arrival time remains separate. Answer TTLs, CNAME chains, response codes, transport, and resolver-reported AD are retained. Resolver cache state is unknown, and address-set changes are informational. See [DNS behavior](dns.md) for limits and remaining cache/DNSSEC validation gates.
 
-Report database version five prevents older previews from misreading newer data and adds a separate load-session table. New endpoint protocol metadata defaults to TCP when reading older records, and legacy socket address strings and TCP timing fields retain their meaning. ICMP and DNS records never populate `connectMs` or a TCP connection-failure percentage.
+Report database version six prevents older previews from misreading newer data and retains separate load-session and packet-check tables. New endpoint protocol metadata defaults to TCP when reading older records, and legacy socket address strings and TCP timing fields retain their meaning. ICMP and DNS records never populate `connectMs` or a TCP connection-failure percentage.
 
 The [comparison library](comparisons.md) analyzes repeated matched session blocks with stable cohort/context binding, explicit practical and regression limits, baseline drift refusal, and paired resampling. Its reports are exploratory and cannot retain a setting. A separate [repeated-trial runner](repeated-trials.md) coordinates bounded matched sessions through a trusted host. Complete trusted environment capture, production experiment integration, load-session conversion, independent confirmation, and production policies remain unfinished. Server tuning recommendations are hypotheses, not consumer Windows defaults.

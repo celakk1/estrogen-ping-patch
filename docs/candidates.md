@@ -12,3 +12,5 @@ These are research candidates, not enabled setting mutations. No candidate may r
 | `ip.pathMtu` | Diagnose a measured PMTU/fragmentation problem | Diagnosis first; family and interface capability; service write | Connectivity loss; family-specific behavior | Verify path and effective MTU, independent watchdog, exact prior-value rollback |
 
 The initial enabled catalog is empty. Unsupported values, arbitrary registry paths, forced duplex, security-service changes, global Nagle tweaks, adapter disablement, and undocumented settings are not allowed. DNS performance must never be marketed as an established-session gaming RTT improvement.
+
+The [read-only IPv4 packet-size diagnostic](packet-size.md) now collects controlled size-error evidence for MTU investigation. It does not establish a performance problem, generate an enabled candidate, or grant permission to change a setting.

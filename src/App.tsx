@@ -32,9 +32,10 @@ import type {
 import { downloadBackup, downloadReport } from './report';
 import BenchmarkOverview from './BenchmarkOverview';
 import LoadPanel from './LoadPanel';
+import PacketPanel from './PacketPanel';
 import { testGuide } from './benchmark-guide';
 
-type View = 'overview' | 'load' | 'inventory' | 'history' | 'backups' | 'policy';
+type View = 'overview' | 'load' | 'packets' | 'inventory' | 'history' | 'backups' | 'policy';
 
 export default function App() {
   const [view, setView] = useState<View>('overview');
@@ -53,6 +54,7 @@ export default function App() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [running, setRunning] = useState(false);
   const [loadRunning, setLoadRunning] = useState(false);
+  const [packetRunning, setPacketRunning] = useState(false);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [error, setError] = useState('');
   const [protocol, setProtocol] = useState<ProbeProtocol>('icmpEcho');
@@ -72,13 +74,14 @@ export default function App() {
   }
   const [light, setLight] = useState(false);
   const runRef = useRef(false);
+  const networkTaskRunning = running || loadRunning || packetRunning || capturingBackup;
 
   async function refreshService() {
     setServiceReport(await invoke<ServiceReport>('getPrivilegedService'));
   }
 
   async function changeService(action: 'install' | 'start' | 'stop' | 'uninstall') {
-    if (managingService) return;
+    if (managingService || networkTaskRunning) return;
     setManagingService(true);
     setError('');
     try {
@@ -103,7 +106,7 @@ export default function App() {
   }
 
   async function captureBackup() {
-    if (running || loadRunning || capturingBackup) return;
+    if (running || loadRunning || packetRunning || capturingBackup || managingService) return;
     setCapturingBackup(true);
     setBackupNotice('');
     setError('');
@@ -176,7 +179,8 @@ export default function App() {
   }, []);
 
   async function startBaseline() {
-    if (!config || running || loadRunning || capturingBackup) return;
+    if (!config || running || loadRunning || packetRunning || capturingBackup || managingService)
+      return;
     setError('');
     setSamples([]);
     setProgress(null);
@@ -222,7 +226,7 @@ export default function App() {
     () => (selectedBackup ? JSON.parse(selectedBackup.payloadJson) : null),
     [selectedBackup],
   );
-  const showingBenchmarks = view === 'overview' || view === 'load';
+  const showingBenchmarks = view === 'overview' || view === 'load' || view === 'packets';
 
   return (
     <div className={`app ${light ? 'light' : ''}`}>
@@ -310,7 +314,7 @@ export default function App() {
                   : view === 'inventory'
                     ? 'See the network connections and settings reported by Windows.'
                     : view === 'history'
-                      ? 'Reopen your connection test results. Speed tests have their own history on the Speed test screen.'
+                      ? 'Reopen connection test results. Speed tests and packet checks each have history on their own screen.'
                       : view === 'backups'
                         ? 'Save a copy of your current settings to view or download later.'
                         : 'See what this version can do and where it saves your data.'}
@@ -330,6 +334,10 @@ export default function App() {
                 <strong>Speed test</strong>
                 <span>Check speed and delay while downloading or uploading.</span>
               </button>
+              <button aria-pressed={view === 'packets'} onClick={() => setView('packets')}>
+                <strong>Large packet check</strong>
+                <span>Look for packet-size errors on one network route.</span>
+              </button>
             </div>
           )}
           {view === 'overview' && (
@@ -344,7 +352,7 @@ export default function App() {
               dnsQuery={dnsQuery}
               onDnsQueryChange={setDnsQuery}
               running={running}
-              blocked={loadRunning || capturingBackup || managingService}
+              blocked={loadRunning || packetRunning || capturingBackup || managingService}
               selected={selected}
               samples={samples}
               progress={progress}
@@ -355,8 +363,14 @@ export default function App() {
           <div hidden={view !== 'load'}>
             <LoadPanel
               config={config}
-              blocked={running || capturingBackup || managingService}
+              blocked={running || packetRunning || capturingBackup || managingService}
               onRunningChange={setLoadRunning}
+            />
+          </div>
+          <div hidden={view !== 'packets'}>
+            <PacketPanel
+              blocked={running || loadRunning || capturingBackup || managingService}
+              onRunningChange={setPacketRunning}
             />
           </div>
           {view === 'inventory' && (
@@ -511,7 +525,13 @@ export default function App() {
                   <div className="button-row">
                     <button
                       className="primary"
-                      disabled={running || loadRunning || capturingBackup}
+                      disabled={
+                        running ||
+                        loadRunning ||
+                        packetRunning ||
+                        capturingBackup ||
+                        managingService
+                      }
                       onClick={captureBackup}
                     >
                       <FloppyDisk />
@@ -683,7 +703,7 @@ export default function App() {
                     </button>
                     {serviceReport?.state === 'notInstalled' && (
                       <button
-                        disabled={managingService || running || loadRunning || capturingBackup}
+                        disabled={managingService || networkTaskRunning}
                         onClick={() => void changeService('install')}
                       >
                         Install optional service
@@ -691,7 +711,7 @@ export default function App() {
                     )}
                     {serviceReport?.state === 'stopped' && (
                       <button
-                        disabled={managingService}
+                        disabled={managingService || networkTaskRunning}
                         onClick={() => void changeService('start')}
                       >
                         Start service
@@ -700,7 +720,7 @@ export default function App() {
                     {serviceReport &&
                       ['ready', 'recoveryRequired'].includes(serviceReport.state) && (
                         <button
-                          disabled={managingService}
+                          disabled={managingService || networkTaskRunning}
                           onClick={() => void changeService('stop')}
                         >
                           Stop service
@@ -711,7 +731,7 @@ export default function App() {
                         serviceReport.state,
                       ) && (
                         <button
-                          disabled={managingService}
+                          disabled={managingService || networkTaskRunning}
                           onClick={() => void changeService('uninstall')}
                         >
                           Uninstall service

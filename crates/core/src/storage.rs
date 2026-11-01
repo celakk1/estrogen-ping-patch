@@ -18,7 +18,7 @@ pub fn openDatabase(path: &Path) -> AppResult<Connection> {
 
 fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > 5 {
+    if version > 6 {
         return Err("Database is newer than this application; refusing to downgrade it".into());
     }
     if version == 0 {
@@ -44,6 +44,9 @@ fn migrateDatabase(connection: &Connection) -> AppResult<()> {
     }
     if version < 5 {
         connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE load_sessions(id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, status TEXT NOT NULL, report_json TEXT NOT NULL); PRAGMA user_version = 5; COMMIT;")?;
+    }
+    if version < 6 {
+        connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE packet_checks(id INTEGER PRIMARY KEY, report_json TEXT NOT NULL, sha256 TEXT NOT NULL); PRAGMA user_version = 6; COMMIT;")?;
     }
     Ok(())
 }
@@ -206,7 +209,7 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),
-            5
+            6
         );
     }
 
@@ -254,7 +257,7 @@ mod tests {
             )
             .unwrap();
         connection
-            .execute_batch("DROP TABLE load_sessions")
+            .execute_batch("DROP TABLE load_sessions; DROP TABLE packet_checks")
             .unwrap();
         connection.pragma_update(None, "user_version", 2).unwrap();
         migrateDatabase(&connection).unwrap();

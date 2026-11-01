@@ -80,7 +80,7 @@ pub struct EchoOutcome {
 }
 
 impl EchoOutcome {
-    fn unavailable(status: EchoStatus) -> Self {
+    pub(crate) fn unavailable(status: EchoStatus) -> Self {
         Self {
             status,
             rttMs: None,

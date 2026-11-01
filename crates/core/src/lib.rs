@@ -10,6 +10,7 @@ pub mod experiment;
 pub mod icmp;
 pub mod mcp;
 mod native_dns;
+pub mod packet_size;
 pub mod statistics;
 pub mod storage;
 pub mod transfer;

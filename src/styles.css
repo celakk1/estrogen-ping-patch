@@ -633,7 +633,7 @@ summary:focus-visible {
 }
 .benchmark-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 24px;
 }
@@ -969,6 +969,9 @@ summary {
   .test-facts {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .packet-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .test-facts > div {
     display: block;
   }
@@ -990,6 +993,10 @@ summary {
   }
 }
 @media (max-height: 800px) and (min-width: 761px) {
+  .benchmark-tabs button {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
   .page-heading .eyebrow {
     display: none;
   }
