@@ -8,6 +8,7 @@ struct PolicyBackend {
     failAt: Option<usize>,
     expireAt: Option<usize>,
     reads: usize,
+    exitOnVerification: bool,
 }
 
 fn setup(fixture: &Fixture) -> (MtuCheckpoint, PolicyBackend) {
@@ -29,6 +30,7 @@ fn setup(fixture: &Fixture) -> (MtuCheckpoint, PolicyBackend) {
         failAt: None,
         expireAt: None,
         reads: 0,
+        exitOnVerification: false,
     };
     (document, backend)
 }
@@ -64,6 +66,11 @@ impl MtuBackend for PolicyBackend {
         native.capturedAtUnixMs = self.inner.clock.load(Ordering::SeqCst);
         if purpose == PolicyPurpose::VerifyRestored {
             assert_eq!(native.settings.nlMtu, 1500);
+            if self.exitOnVerification {
+                println!("MTU_RESTORED_BEFORE_POLICY_RECEIPT");
+                std::io::stdout().flush().unwrap();
+                std::process::exit(0);
+            }
         }
         if self.unavailable || self.failAt == Some(self.reads) {
             return Err("Simulated IP policy provider unavailable".into());
@@ -95,6 +102,9 @@ impl MtuBackend for PolicyBackend {
             .writeMtu(document, expected, value, purpose, register)
     }
 }
+
+#[path = "policy_receipt_tests.rs"]
+mod receipt_tests;
 
 #[test]
 fn missingOrUnavailablePolicyBlocksPreparationAndVerifiedOriginalSurvivesReopen() {

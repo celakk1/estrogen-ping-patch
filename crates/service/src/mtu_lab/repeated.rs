@@ -38,7 +38,8 @@ fn hash(value: &impl Serialize) -> ServiceResult<String> {
 }
 
 pub(super) fn recover(journal: &mut Journal, backend: &mut Backend<'_>) -> ServiceResult<()> {
-    let pending = journal.pendingRecovery()?;
+    let mut pending = journal.pendingRecovery()?;
+    pending.extend(journal.pendingPolicyVerification()?);
     for checkpoint in &pending {
         let document = checkpoint.document();
         if !backend.checkpointIds.contains(&document.id)
@@ -630,12 +631,20 @@ pub(super) fn run(
     }
     listeners.finish(216)?;
     let mut mutators = Vec::new();
+    let mut policyVerifications = 0;
     let checkpointIds = backend.checkpointIds.clone();
     for id in checkpointIds {
         let checkpoint = journal.load(id)?;
-        if checkpoint.state() != State::Restored {
+        if checkpoint.state() != State::Restored
+            || checkpoint.policyVerifications().len() != 1
+            || checkpoint
+                .policyVerifications()
+                .last()
+                .is_none_or(|record| !record.matchesOriginal)
+        {
             return Err("Repeated native checkpoint is not restored".into());
         }
+        policyVerifications += checkpoint.policyVerifications().len();
         let records = journal.mutators(id)?;
         if records.len() != 2 {
             return Err("Repeated native checkpoint has unexpected mutator records".into());
@@ -688,7 +697,7 @@ pub(super) fn run(
         json!({"phase":"repeatedExperimentComplete","trialId":parentId,"state":report.snapshot.state,"blockCount":12,"measurementCount":36,"rawRunIds":ids,"checkpoints":report.snapshot.checkpoints,"comparisonOutcome":comparison.outcome,"exploratory":comparison.exploratory,"acceptedConnections":listeners.accepted.load(Ordering::SeqCst),"reservedProbeAttempts":traffic.totals.probeAttempts}),
     )?;
     event(
-        json!({"phase":"complete","trialId":parentId,"state":"restored","checkpointSchemaVersion":template.schemaVersion,"policyOriginal":template.policyOriginal,"original":original,"after":after,"writesThisProcess":backend.writes,"pendingRecoveryCount":0,"mutators":mutators,"processId":std::process::id()}),
+        json!({"phase":"complete","trialId":parentId,"state":"restored","checkpointSchemaVersion":template.schemaVersion,"policyOriginal":template.policyOriginal,"policyVerificationCount":policyVerifications,"policyOriginalVerified":true,"pendingPolicyVerificationCount":journal.pendingPolicyVerification()?.len(),"original":original,"after":after,"writesThisProcess":backend.writes,"pendingRecoveryCount":0,"mutators":mutators,"processId":std::process::id()}),
     )
 }
 

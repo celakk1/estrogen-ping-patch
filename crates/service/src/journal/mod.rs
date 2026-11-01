@@ -1,8 +1,10 @@
 mod mutators;
+mod policy;
 mod store;
 pub use mutators::{MutatorIdentity, MutatorRecord};
+pub use policy::{PolicyReadback, PolicyRecord};
 pub use store::Journal;
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 use crate::ServiceResult;
 use serde::{Deserialize, Serialize};
@@ -179,6 +181,7 @@ pub struct Checkpoint {
     documentSha256: String,
     events: Vec<Event>,
     lastEventSha256: String,
+    policyVerifications: Vec<PolicyRecord>,
 }
 
 impl Checkpoint {
@@ -190,6 +193,9 @@ impl Checkpoint {
     }
     pub fn events(&self) -> &[Event] {
         &self.events
+    }
+    pub fn policyVerifications(&self) -> &[PolicyRecord] {
+        &self.policyVerifications
     }
     pub fn state(&self) -> State {
         self.events

@@ -98,7 +98,9 @@ where
     }
 
     fn original(&mut self) -> ServiceResult<Snapshot> {
-        if !self.journal.pendingRecovery()?.is_empty() {
+        if !self.journal.pendingRecovery()?.is_empty()
+            || !self.journal.pendingPolicyVerification()?.is_empty()
+        {
             return Err("Unresolved native recovery blocks the repeated experiment".into());
         }
         if let Some(id) = self.lastCheckpoint {

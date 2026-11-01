@@ -218,7 +218,7 @@ try {
         $original = captureNative $guid $family
         if ($original.driver.status -ne 'captured' -or $original.driver.identity.infPath -ine 'netloop.inf' -or $original.driver.identity.deviceInstanceId -ine $instanceId) { throw 'Native evidence does not match the newly created loopback device.' }
         Write-Host "Native pre-trial evidence: family=$family; MTU=$($original.settings.nlMtu); SitePrefixLength=$($original.settings.sitePrefixLength)."
-        foreach ($phase in @('complete', 'apply', 'restore', 'revoke', 'authorization-unavailable', 'registered', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop', 'watchdog-crash', 'repeated')) {
+        foreach ($phase in @('complete', 'apply', 'restore', 'policy-commit', 'revoke', 'authorization-unavailable', 'registered', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop', 'watchdog-crash', 'repeated')) {
             $trialId = [Guid]::NewGuid().ToString('D')
             $imagePath = "`"$installedExe`" --native-mtu-lab-service $ownerSid $($guid.ToString('D')) $family $phase $trialId"
             if ($phase -eq 'watchdog-crash') {
@@ -254,12 +254,12 @@ try {
                 if ($phase -eq 'watchdog-stop') { invokeSc -arguments @('stop', $serviceName) }
             }
             if ($phase -notin @('complete', 'repeated', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) {
-                $purpose = $(if ($phase -eq 'restore') { 'Restore' } else { 'Apply' })
-                $marker = $(if ($phase -eq 'registered') { 'mutatorRegistered' } else { 'nativeWriteReturned' })
+                $purpose = $(if ($phase -eq 'policy-commit') { '' } elseif ($phase -eq 'restore') { 'Restore' } else { 'Apply' })
+                $marker = $(if ($phase -eq 'policy-commit') { 'policyVerificationPending' } elseif ($phase -eq 'registered') { 'mutatorRegistered' } else { 'nativeWriteReturned' })
                 $written = waitEvent $startedAt $trialId $marker $purpose
                 if ($phase -eq 'revoke') { $null = waitEvent $startedAt $trialId 'grantRevoked' '' }
                 $live = captureNative $guid $family
-                $expected = $(if ($phase -in @('restore', 'registered')) { $original.settings.nlMtu } else { 1400 })
+                $expected = $(if ($phase -in @('restore', 'policy-commit', 'registered')) { $original.settings.nlMtu } else { 1400 })
                 if ($live.settings.nlMtu -ne $expected) { throw 'Native write marker does not match independently read effective MTU.' }
                 if ((persistentPolicy $interfaceIndex) -cne $policyBefore) { throw 'Native setter changed persistent policy during the interrupted trial.' }
                 $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -312,6 +312,8 @@ try {
             }
             if ($phase -eq 'watchdog-crash' -and $complete.processId -eq $watchdogProcessId) { throw 'SCM did not automatically restart the crashed watchdog service.' }
             $current = captureNative $guid $family
+            $expectedPolicyChecks = $(if ($phase -eq 'repeated') { 12 } else { 1 })
+            if ($complete.policyVerificationCount -ne $expectedPolicyChecks -or -not $complete.policyOriginalVerified -or $complete.pendingPolicyVerificationCount -ne 0) { throw 'Native completion lacks durable matched policy verification.' }
             if ($complete.checkpointSchemaVersion -ne 4 -or $null -eq $complete.policyOriginal -or (ipPolicyEvidence $interfaceIndex $family) -cne (orderedJsonValue $complete.policyOriginal | ConvertTo-Json -Depth 16 -Compress)) { throw 'Exact active/persistent IP policy differs from the durable original after restoration.' }
             if ($current.schemaVersion -ne 2 -or $original.schemaVersion -ne 2 -or $current.registryOrigins.status -ne 'captured' -or $original.registryOrigins.status -ne 'captured') { throw 'Service-owned fixed registry origin capture was unavailable.' }
             $originsBefore = originsJson $original.registryOrigins
@@ -319,7 +321,7 @@ try {
             if ($complete.state -ne 'restored' -or $complete.pendingRecoveryCount -ne 0 -or $current.settings.nlMtu -ne $original.settings.nlMtu -or (settingsJson $current.settings) -cne (settingsJson $original.settings)) { throw 'Native recovery failed exact MTU/unrelated-settings verification.' }
             if ((settingsJson $complete.original.settings) -cne (settingsJson $original.settings)) { throw 'Durable native original does not match the independent pre-trial capture.' }
             if ((persistentPolicy $interfaceIndex) -cne $policyBefore -or (dnsPolicy $guid $interfaceIndex) -cne $dnsBefore) { throw 'Native trial changed persistent interface or automatic/static DNS origin values.' }
-            $expectedWrites = $(if ($phase -eq 'repeated') { 24 } elseif ($phase -in @('complete', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) { 2 } elseif ($phase -in @('restore', 'registered')) { 0 } else { 1 })
+            $expectedWrites = $(if ($phase -eq 'repeated') { 24 } elseif ($phase -in @('complete', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) { 2 } elseif ($phase -in @('restore', 'policy-commit', 'registered')) { 0 } else { 1 })
             if ($complete.writesThisProcess -ne $expectedWrites) { throw 'Restart recovery wrote an unexpected number of MTU values.' }
             $mutators = @($complete.mutators)
             $expectedMutators = $(if ($phase -eq 'repeated') { 24 } elseif ($phase -eq 'registered') { 1 } else { 2 })

@@ -111,7 +111,10 @@ pub fn execute<T, B: MtuBackend + Send>(
                 .into(),
         );
     }
-    if serviceStop.load(Ordering::SeqCst) || !journal.pendingRecovery()?.is_empty() {
+    if serviceStop.load(Ordering::SeqCst)
+        || !journal.pendingRecovery()?.is_empty()
+        || !journal.pendingPolicyVerification()?.is_empty()
+    {
         return Err(
             "Automatic trials require a running service with no unresolved checkpoints".into(),
         );

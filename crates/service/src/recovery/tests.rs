@@ -681,7 +681,7 @@ fn nativeCheckpointSchemaGuardsContextFreshnessAndPreservesLegacyHistory() {
     drop(journal);
     let connection = Connection::open(&fixture.journal).unwrap();
     connection
-        .execute_batch("DROP TABLE checkpoint_mutators; DROP TABLE mutator_heads;")
+        .execute_batch("DROP TABLE checkpoint_policy_checks; DROP TABLE policy_heads; DROP TABLE checkpoint_mutators; DROP TABLE mutator_heads;")
         .unwrap();
     connection.pragma_update(None, "user_version", 1).unwrap();
     drop(connection);

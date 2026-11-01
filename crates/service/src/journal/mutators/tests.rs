@@ -279,7 +279,7 @@ fn migrationPreservesOriginalDocumentsAndEventsAndRejectsLegacyNativeRegistratio
         .unwrap();
     connection
         .execute_batch(
-            "DROP TABLE checkpoint_mutators; DROP TABLE mutator_heads; PRAGMA user_version=2;",
+            "DROP TABLE checkpoint_policy_checks; DROP TABLE policy_heads; DROP TABLE checkpoint_mutators; DROP TABLE mutator_heads; PRAGMA user_version=2;",
         )
         .unwrap();
     drop(connection);

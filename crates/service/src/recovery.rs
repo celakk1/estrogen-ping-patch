@@ -1,7 +1,8 @@
 use crate::{
     ServiceResult,
     journal::{
-        Checkpoint, Journal, MtuCheckpoint, MutatorIdentity, MutatorRecord, Observation, State,
+        Checkpoint, Journal, MtuCheckpoint, MutatorIdentity, MutatorRecord, Observation,
+        PolicyReadback, State,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -68,6 +69,10 @@ pub struct RecoveryResult {
     pub originalMtuVerified: bool,
     pub journalFinalized: bool,
     pub unrelatedSettingsDrifted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policyOriginalVerified: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policyVerificationRecorded: Option<bool>,
     pub error: Option<String>,
 }
 
@@ -141,6 +146,27 @@ fn bounded(error: impl std::fmt::Display) -> String {
     error.to_string().chars().take(1024).collect()
 }
 
+pub(crate) fn policyObservationMatches(
+    document: &MtuCheckpoint,
+    current: &crate::mtu::policy::Capture,
+    expectedMtu: u32,
+    now: u64,
+) -> ServiceResult<()> {
+    current.validate()?;
+    let observed = Observation {
+        context: current.native.journalContext()?,
+        addressFamily: current.native.addressFamily,
+        mtu: current.native.settings.nlMtu,
+        native: Some(current.native.clone()),
+    };
+    observationMatches(document, &observed, expectedMtu, now, true)?;
+    document
+        .policyOriginal
+        .as_ref()
+        .ok_or("Checkpoint IP policy original is missing")?
+        .validateMtuObservation(document.nativeOriginal.as_ref().unwrap(), current)
+}
+
 impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, C> {
     fn verifyPolicy(
         &mut self,
@@ -152,18 +178,67 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
             return Ok(());
         }
         let current = self.backend.observePolicy(document, purpose)?;
-        let observed = Observation {
-            context: current.native.journalContext()?,
-            addressFamily: current.native.addressFamily,
-            mtu: current.native.settings.nlMtu,
-            native: Some(current.native.clone()),
+        policyObservationMatches(document, &current, expectedMtu, (self.now)()?)
+    }
+
+    fn restoredPolicyReadback(&mut self, document: &MtuCheckpoint) -> PolicyReadback {
+        match self
+            .backend
+            .observePolicy(document, PolicyPurpose::VerifyRestored)
+        {
+            Ok(capture) => match capture.validate() {
+                Ok(()) => PolicyReadback::Captured {
+                    capture: Box::new(capture),
+                },
+                Err(error) => PolicyReadback::Unavailable {
+                    error: bounded(error),
+                },
+            },
+            Err(error) => PolicyReadback::Unavailable {
+                error: bounded(error),
+            },
+        }
+    }
+
+    fn saveRestoredPolicy(
+        &mut self,
+        document: &MtuCheckpoint,
+        readback: PolicyReadback,
+    ) -> (bool, bool, Option<String>) {
+        let now = match (self.now)() {
+            Ok(now) => now,
+            Err(error) => {
+                return (
+                    false,
+                    false,
+                    Some(bounded(format!(
+                        "Policy verification time unavailable: {error}"
+                    ))),
+                );
+            }
         };
-        observationMatches(document, &observed, expectedMtu, (self.now)()?, true)?;
-        document
-            .policyOriginal
-            .as_ref()
-            .ok_or("Checkpoint IP policy original is missing")?
-            .validateMtuObservation(document.nativeOriginal.as_ref().unwrap(), &current)
+        let comparison = readback.compare(document, now);
+        let verified = comparison.is_ok();
+        let mut error = comparison.err().map(|error| {
+            bounded(format!(
+                "Post-restoration check: exact IP policy readback failed: {error}"
+            ))
+        });
+        match self
+            .journal
+            .recordPolicyVerification(document.id, readback, now)
+        {
+            Ok(_) => (verified, true, error),
+            Err(storageError) => {
+                let storageError =
+                    format!("Policy verification was not durably recorded: {storageError}");
+                error = Some(bounded(match error {
+                    Some(previous) => format!("{previous}; {storageError}"),
+                    None => storageError,
+                }));
+                (verified, false, error)
+            }
+        }
     }
 
     fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation> {
@@ -343,6 +418,8 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
                 originalMtuVerified: false,
                 journalFinalized: true,
                 unrelatedSettingsDrifted: false,
+                policyOriginalVerified: None,
+                policyVerificationRecorded: None,
                 error: None,
             });
         }
@@ -431,21 +508,28 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
                 Some(bounded(error))
             }
         };
-        if originalMtuVerified
-            && document.schemaVersion == 4
-            && let Err(policyError) = self.verifyPolicy(
-                &document,
-                document.originalMtu,
-                PolicyPurpose::VerifyRestored,
-            )
-        {
-            unrelatedSettingsDrifted = true;
-            let policyError =
-                format!("Original MTU verified; exact IP policy readback failed: {policyError}");
-            error = Some(bounded(match error {
-                Some(previous) => format!("{previous}; {policyError}"),
-                None => policyError,
-            }));
+        let mut policyOriginalVerified = None;
+        let mut policyVerificationRecorded = None;
+        if originalMtuVerified && document.schemaVersion == 4 {
+            let (verified, recorded, policyError) = if state == State::Restored {
+                let readback = self.restoredPolicyReadback(&document);
+                self.saveRestoredPolicy(&document, readback)
+            } else {
+                (
+                    false,
+                    false,
+                    Some("Policy verification awaits durable MTU recovery finalization".into()),
+                )
+            };
+            policyOriginalVerified = Some(verified);
+            policyVerificationRecorded = Some(recorded);
+            unrelatedSettingsDrifted |= !verified;
+            if let Some(policyError) = policyError {
+                error = Some(bounded(match error {
+                    Some(previous) => format!("{previous}; {policyError}"),
+                    None => policyError,
+                }));
+            }
         }
         Ok(RecoveryResult {
             checkpointId: id,
@@ -453,6 +537,52 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
             originalMtuVerified,
             journalFinalized: state == State::Restored,
             unrelatedSettingsDrifted,
+            policyOriginalVerified,
+            policyVerificationRecorded,
+            error,
+        })
+    }
+
+    pub fn verifyRestoredPolicy(&mut self, id: Uuid) -> ServiceResult<RecoveryResult> {
+        let checkpoint = self.journal.load(id)?;
+        let document = checkpoint.document().clone();
+        if document.schemaVersion != 4 || checkpoint.state() != State::Restored {
+            return Err(
+                "Policy-only verification requires a restored version-four checkpoint".into(),
+            );
+        }
+        if checkpoint
+            .policyVerifications()
+            .last()
+            .is_some_and(|record| record.matchesOriginal)
+        {
+            return Err("This checkpoint has no pending policy verification".into());
+        }
+        let original = self.observe(&document).and_then(|observed| {
+            observationMatches(
+                &document,
+                &observed,
+                document.originalMtu,
+                (self.now)()?,
+                false,
+            )
+        });
+        let originalMtuVerified = original.is_ok();
+        let readback = match original {
+            Ok(()) => self.restoredPolicyReadback(&document),
+            Err(error) => PolicyReadback::Unavailable {
+                error: bounded(error),
+            },
+        };
+        let (verified, recorded, error) = self.saveRestoredPolicy(&document, readback);
+        Ok(RecoveryResult {
+            checkpointId: id,
+            durableState: State::Restored,
+            originalMtuVerified,
+            journalFinalized: true,
+            unrelatedSettingsDrifted: !verified,
+            policyOriginalVerified: Some(verified),
+            policyVerificationRecorded: Some(recorded),
             error,
         })
     }
@@ -463,6 +593,14 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         for checkpoint in pending {
             if matches!(checkpoint.document().schemaVersion, 2..=4) {
                 results.push(self.restore(checkpoint.document().id)?);
+            }
+        }
+        for checkpoint in self.journal.pendingPolicyVerification()? {
+            if !results
+                .iter()
+                .any(|result| result.checkpointId == checkpoint.document().id)
+            {
+                results.push(self.verifyRestoredPolicy(checkpoint.document().id)?);
             }
         }
         Ok(results)

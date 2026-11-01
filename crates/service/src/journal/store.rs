@@ -1,6 +1,6 @@
 use super::{
-    Checkpoint, Event, MtuCheckpoint, MutatorIdentity, MutatorRecord, Observation, State, mutators,
-    validateEvent,
+    Checkpoint, Event, MtuCheckpoint, MutatorIdentity, MutatorRecord, Observation, PolicyReadback,
+    PolicyRecord, State, mutators, policy, validateEvent,
 };
 use crate::ServiceResult;
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -39,6 +39,7 @@ impl Journal {
             transaction.execute_batch("CREATE TABLE checkpoints(id TEXT PRIMARY KEY, document_json TEXT NOT NULL, sha256 TEXT NOT NULL);
                 CREATE TABLE checkpoint_events(checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id), sequence INTEGER NOT NULL, event_json TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(checkpoint_id,sequence));")?;
             mutators::initialize(&transaction)?;
+            policy::initialize(&transaction)?;
             transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
             transaction.pragma_update(None, "user_version", super::SCHEMA_VERSION)?;
         }
@@ -53,12 +54,15 @@ impl Journal {
         }
         let mut journal = Self { connection };
         journal.pendingRecovery()?;
-        if matches!(validateDatabaseIdentity(&journal.connection)?, 1 | 2) {
+        if matches!(validateDatabaseIdentity(&journal.connection)?, 1..=3) {
             let transaction = journal
                 .connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
             pending(&transaction)?;
-            mutators::initialize(&transaction)?;
+            if matches!(validateDatabaseIdentity(&transaction)?, 1 | 2) {
+                mutators::initialize(&transaction)?;
+            }
+            policy::initialize(&transaction)?;
             transaction.pragma_update(None, "user_version", super::SCHEMA_VERSION)?;
             transaction.commit()?;
             journal.pendingRecovery()?;
@@ -94,6 +98,9 @@ impl Journal {
         if !pending(&transaction)?.is_empty() {
             return Err("An unresolved checkpoint blocks a new experiment".into());
         }
+        if !pendingPolicy(&transaction)?.is_empty() {
+            return Err("Unverified restored IP policy blocks a new experiment".into());
+        }
         let count: u32 =
             transaction.query_row("SELECT COUNT(*) FROM checkpoints", [], |row| row.get(0))?;
         if count >= MAX_CHECKPOINTS {
@@ -104,6 +111,7 @@ impl Journal {
             params![document.id.to_string(), payload, digest],
         )?;
         mutators::insertHead(&transaction, document.id, &digest)?;
+        policy::insertHead(&transaction, document.id, &digest)?;
         insertEvent(&transaction, document.id, &initial)?;
         transaction.commit()?;
         self.load(document.id)
@@ -115,6 +123,27 @@ impl Journal {
 
     pub fn pendingRecovery(&self) -> ServiceResult<Vec<Checkpoint>> {
         pending(&self.connection)
+    }
+    pub fn pendingPolicyVerification(&self) -> ServiceResult<Vec<Checkpoint>> {
+        pendingPolicy(&self.connection)
+    }
+
+    pub fn recordPolicyVerification(
+        &mut self,
+        id: Uuid,
+        readback: PolicyReadback,
+        now: u64,
+    ) -> ServiceResult<PolicyRecord> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = load(&transaction, id)?;
+        let record = policy::append(&transaction, &checkpoint, readback, now)?;
+        transaction.commit()?;
+        if self.load(id)?.policyVerifications().last() != Some(&record) {
+            return Err("Committed policy verification failed readback".into());
+        }
+        Ok(record)
     }
 
     pub fn mutators(&self, id: Uuid) -> ServiceResult<Vec<MutatorRecord>> {
@@ -178,7 +207,7 @@ fn validateDatabaseIdentity(connection: &Connection) -> ServiceResult<u32> {
     let applicationId: u32 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if applicationId == APPLICATION_ID && matches!(version, 1..=3) {
+    if applicationId == APPLICATION_ID && matches!(version, 1..=4) {
         return Ok(version);
     }
     if applicationId == 0 && version == 0 {
@@ -247,19 +276,27 @@ fn load(connection: &Connection, id: Uuid) -> ServiceResult<Checkpoint> {
     if events.is_empty() {
         return Err("Checkpoint has no durable prepared event".into());
     }
-    let checkpoint = Checkpoint {
+    let mut checkpoint = Checkpoint {
         document,
         documentSha256: digest,
         events,
         lastEventSha256: previousDigest,
+        policyVerifications: Vec::new(),
     };
-    if validateDatabaseIdentity(connection)? == super::SCHEMA_VERSION {
+    let version = validateDatabaseIdentity(connection)?;
+    if version >= 3 {
         mutators::load(connection, &checkpoint)?;
+    }
+    if version >= 4 {
+        checkpoint.policyVerifications = policy::load(connection, &checkpoint)?;
     }
     Ok(checkpoint)
 }
 
-fn pending(connection: &Connection) -> ServiceResult<Vec<Checkpoint>> {
+fn selectedCheckpoints(
+    connection: &Connection,
+    mut select: impl FnMut(&Checkpoint) -> bool,
+) -> ServiceResult<Vec<Checkpoint>> {
     let mut statement = connection.prepare("SELECT id FROM checkpoints ORDER BY id LIMIT 2001")?;
     let ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
@@ -270,9 +307,24 @@ fn pending(connection: &Connection) -> ServiceResult<Vec<Checkpoint>> {
     let mut unresolved = Vec::new();
     for id in ids {
         let checkpoint = load(connection, Uuid::parse_str(&id)?)?;
-        if !checkpoint.state().terminal() {
+        if select(&checkpoint) {
             unresolved.push(checkpoint);
         }
     }
     Ok(unresolved)
+}
+
+fn pending(connection: &Connection) -> ServiceResult<Vec<Checkpoint>> {
+    selectedCheckpoints(connection, |checkpoint| !checkpoint.state().terminal())
+}
+
+fn pendingPolicy(connection: &Connection) -> ServiceResult<Vec<Checkpoint>> {
+    selectedCheckpoints(connection, |checkpoint| {
+        checkpoint.document().schemaVersion == 4
+            && checkpoint.state() == State::Restored
+            && checkpoint
+                .policyVerifications()
+                .last()
+                .is_none_or(|record| !record.matchesOriginal)
+    })
 }

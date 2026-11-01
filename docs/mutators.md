@@ -18,7 +18,7 @@ The journal binds each record to its predecessor hash and a transactionally upda
 
 | Component | Version | Behavior |
 | --- | --- | --- |
-| Service recovery SQLite | 3 | Adds process records and heads; validates old history before migration |
+| Service recovery SQLite | 4 | Preserves process records/heads and adds policy verification receipts; validates old history before migration |
 | Tracked native checkpoint document | 3 or 4 | Requires durable process registration and exit barriers; four additionally binds exact IP policy originals |
 | Legacy checkpoint document | 1 or 2 | Original bytes and event history remain unchanged; no fabricated process evidence |
 | Authorization SQLite | 1 | Independent grants remain bound to exact checkpoint bytes |

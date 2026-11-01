@@ -386,6 +386,41 @@ try {
       previous = row.sha256;
     }
     assert.equal(JSON.parse(events.at(-1).event_json).state, 'restored');
+    const policyRows = recovery
+      .prepare(
+        'SELECT sequence,document_json,sha256 FROM checkpoint_policy_checks WHERE checkpoint_id=? ORDER BY sequence',
+      )
+      .all(checkpointId);
+    assert.equal(policyRows.length, 1);
+    const policy = checkedPayload(policyRows[0], 'document_json');
+    assert.equal(policy.schemaVersion, 1);
+    assert.equal(policy.checkpointId, checkpointId);
+    assert.equal(policy.checkpointSha256, documentRow.sha256);
+    assert.equal(policy.restoredEventSha256, events.at(-1).sha256);
+    assert.equal(policy.previousSha256, documentRow.sha256);
+    assert.equal(policy.sequence, 0);
+    assert.equal(policy.matchesOriginal, true);
+    assert.equal(policy.readback.status, 'captured');
+    const captured = policy.readback.capture;
+    assert.equal(captured.schemaVersion, 1);
+    verifyOrigins(captured.native);
+    assert.equal(captured.native.adapterGuid, adapterGuid);
+    assert.equal(captured.native.addressFamily, family);
+    assert.deepEqual(captured.native.os, document.nativeOriginal.os);
+    assert.deepEqual(captured.native.driver, document.nativeOriginal.driver);
+    assert.deepEqual(captured.native.settings, document.nativeOriginal.settings);
+    assert.deepEqual(captured.active, document.policyOriginal.active);
+    assert.deepEqual(captured.persistent, document.policyOriginal.persistent);
+    assert.ok(
+      policy.recordedAtUnixMs > 0 &&
+        captured.native.capturedAtUnixMs <= policy.recordedAtUnixMs + 250 &&
+        policy.recordedAtUnixMs - captured.native.capturedAtUnixMs <= 5000,
+    );
+    const policyHead = recovery
+      .prepare('SELECT count,sha256 FROM policy_heads WHERE checkpoint_id=?')
+      .get(checkpointId);
+    assert.equal(policyHead.count, 1);
+    assert.equal(policyHead.sha256, policyRows[0].sha256);
     const commands = recovery
       .prepare(
         'SELECT sequence,document_json,sha256 FROM checkpoint_mutators WHERE checkpoint_id=? ORDER BY sequence',
@@ -435,6 +470,7 @@ try {
       rawSessions: 36,
       successfulConnections: 216,
       restoredCheckpoints: 12,
+      policyVerifications: 12,
       mutators,
       retainedSettings: false,
     }),

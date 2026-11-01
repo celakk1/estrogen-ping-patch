@@ -36,6 +36,7 @@ const LAB_DEADLINE: Duration = Duration::from_secs(120);
 enum Phase {
     Apply,
     Restore,
+    PolicyCommit,
     Complete,
     Repeated,
     Revoke,
@@ -146,6 +147,7 @@ fn config(arguments: &[String]) -> ServiceResult<Config> {
         phase: match phase.as_str() {
             "apply" => Phase::Apply,
             "restore" => Phase::Restore,
+            "policy-commit" => Phase::PolicyCommit,
             "complete" => Phase::Complete,
             "repeated" => Phase::Repeated,
             "revoke" => Phase::Revoke,
@@ -346,6 +348,19 @@ impl MtuBackend for Backend<'_> {
         document: &MtuCheckpoint,
         purpose: crate::recovery::PolicyPurpose,
     ) -> ServiceResult<mtu::policy::Capture> {
+        if purpose == crate::recovery::PolicyPurpose::VerifyRestored
+            && self.config.phase == Phase::PolicyCommit
+            && self.writes > 0
+        {
+            event(
+                json!({"phase":"policyVerificationPending", "trialId":document.id, "processId":std::process::id()}),
+            )?;
+            while !self.stop.load(Ordering::SeqCst)
+                && self.started.elapsed() < self.config.deadline()
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
         mtu::ensureLabCommandStopped()?;
         if document.context.adapterGuid != self.config.guid
             || document.addressFamily != self.config.family
@@ -529,6 +544,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     let serviceSid = security::serviceSidForName(LAB_SERVICE_NAME)?;
     let mut owned = storage::openMtuLab(&serviceSid)?;
     let needsAuthorization = owned.journal().pendingRecovery()?.is_empty()
+        && owned.journal().pendingPolicyVerification()?.is_empty()
         && owned.journal().load(config.trialId).is_err();
     let mut authorization = if needsAuthorization {
         Some(owned.authorization()?)
@@ -552,7 +568,8 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         let mut experiments = owned.experiments()?;
         return repeated::run(owned.journal(), &mut backend, &mut experiments);
     }
-    let pending = journal.pendingRecovery()?;
+    let mut pending = journal.pendingRecovery()?;
+    pending.extend(journal.pendingPolicyVerification()?);
     if !pending.is_empty() {
         if pending.iter().any(|checkpoint| {
             checkpoint.document().id != config.trialId
@@ -652,6 +669,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
                 }
                 Phase::Restore => Some(WritePurpose::Restore),
                 Phase::Complete
+                | Phase::PolicyCommit
                 | Phase::Repeated
                 | Phase::Registered
                 | Phase::WatchdogDeadline
@@ -732,13 +750,20 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         .as_ref()
         .unwrap()
         .validateMtuObservation(original)?;
-    if checkpoint.state() != crate::journal::State::Restored || after.mtu != original.settings.nlMtu
+    if checkpoint.state() != crate::journal::State::Restored
+        || after.mtu != original.settings.nlMtu
+        || !journal.pendingPolicyVerification()?.is_empty()
+        || checkpoint
+            .policyVerifications()
+            .last()
+            .is_none_or(|record| !record.matchesOriginal)
     {
         return Err("Native lab trial did not finish in a verified restored state".into());
     }
     event(
         json!({"phase":"complete", "trialId":config.trialId, "state":checkpoint.state(), "original":original,
         "checkpointSchemaVersion":checkpoint.document().schemaVersion, "policyOriginal":checkpoint.document().policyOriginal,
+        "policyVerificationCount":checkpoint.policyVerifications().len(), "policyOriginalVerified":checkpoint.policyVerifications().last().is_some_and(|record| record.matchesOriginal), "pendingPolicyVerificationCount":journal.pendingPolicyVerification()?.len(),
         "after":after.native, "writesThisProcess":backend.writes, "pendingRecoveryCount":journal.pendingRecovery()?.len(), "mutators":mutators, "processId":std::process::id()}),
     )
 }
