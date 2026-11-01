@@ -1,0 +1,29 @@
+# Service-owned experiment watchdog
+
+The service library now owns the lifetime of a temporary, tracked MTU experiment. The watchdog runs in the service, independently of the desktop and AI. It always restores at the end of a trial; it cannot retain a setting or grant permission. It is integrated into the disabled native MTU lab. The normal installed LocalService still exposes only status and cannot change settings.
+
+## Lifetime and checks
+
+One control is bound to one schema-three checkpoint. Controls cannot be reused, target a different checkpoint, or receive heartbeats after closing. A late heartbeat cannot revive a session that already missed its timeout, including while a verification call was busy. Callers can request normal trial completion, stop, or rollback after a connectivity failure. Those requests are sticky and cannot cancel recovery.
+
+The monitor checks an absolute journal lease and a fixed monotonic deadline. Heartbeats renew only the heartbeat timeout; they never extend the operation lease. The maximum supported lease is thirty minutes. Default heartbeat timeout is five seconds, native verification runs every second, and polling is bounded to 100 milliseconds by default, at most 250 milliseconds. A backwards wall-clock or monotonic-clock observation triggers recovery. A forward wall-clock change cannot prolong the lease. [Rust documents the platform-specific limitations of Instant](https://doc.rust-lang.org/std/time/struct.Instant.html); this implementation also checks the wall-clock lease and does not infer reboot continuity from an Instant.
+
+Periodic verification waits for registered setting processes to exit, reads the exact native value/context, requires an up and connected interface, and rechecks the existing permission without appending a new authorization claim. Revocation, unavailable authorization, changed settings, or failed native readback trigger restoration. Verification is not an internet-connectivity test. A caller can report connectivity failure earlier; absence of desktop heartbeats also triggers recovery.
+
+The monitor checks deadlines again after a failed verification. A shutdown or expiry occurring inside a native check keeps its actual trigger rather than becoming a generic verification failure. Monitoring/setup notification errors also attempt restoration. Native backend calls must remain bounded; this loop does not preempt a blocked Windows API or survive its own process being killed.
+
+## Restoration and reporting
+
+Recovery uses the protected, verified journal and original native snapshot. It does not need an unexpired apply grant or an accessible authorization database. It preserves unrelated settings and refuses to overwrite an unexpected third MTU. It retains the existing durable process-registration and termination barriers.
+
+The report separates the trigger, monitoring error, recovery result, and recovery error. Exact original verification requires a finalized Restored state, exact original MTU, no unrelated-settings drift, and no recovery error. Restoring the MTU does not prove that an unplugged link or an upstream outage has recovered. A failed native write, unusable journal, changed identity, or storage failure remains explicit; none is converted into a successful rollback claim. The journal and checkpoint schemas remain three.
+
+## Native verification
+
+The extended disposable Windows matrix contains twenty trials: ten each for IPv4 and IPv6. The original six cases per family remain. Four new cases exercise a twenty-second lease with no desktop, a five-second missing heartbeat, SCM shutdown while applied, and automatic SCM restart after killing the watchdog service. The lab refuses development-machine execution and targets only its newly owned Microsoft loopback adapter.
+
+The crash case recreates only its owned, stopped SCM registration so an earlier injected crash cannot consume its restart allowance. It preserves the protected binary, recovery data, and service SID. The service validates its own SCM identity before configuring one restart after one second, followed by no action. All other lab cases configure no restart. No shell command or reboot action is configured. The harness does not manually start the service after the new crash injection; completion must come from a different process. [Microsoft documents SCM failure actions](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actionsw) and the [separate non-crash failure flag](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actions_flag).
+
+Every native trial must verify original MTU, all unrelated captured interface settings, persistent policy, automatic/static DNS origin values, expected setting-process records, and no pending recovery. New native runs are pending for this revision. Nine local watchdog tests passed, including failing-then-passing regressions for late heartbeats and shutdown during readback. The complete local suite passed 156 Rust tests, fifteen frontend tests, twelve script tests, formatting, TypeScript, and workspace Clippy. The feature suite passed 92 tests with ten explicit subprocess helpers ignored, plus feature Clippy. All five safe harness tests passed. These local tests use simulated settings and change no development-machine network configuration.
+
+Production consent, service privileges/backend, complete environment capture, controlled benchmark orchestration, retention confirmation, reboot and physical-adapter validation, and desktop optimization controls remain unfinished. This component alone does not enable automatic optimization.

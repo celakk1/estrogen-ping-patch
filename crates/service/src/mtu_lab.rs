@@ -18,7 +18,10 @@ use std::{
 use uuid::Uuid;
 use windows_service::{
     define_windows_service,
-    service::{ServiceAccess, ServiceControl, ServiceState, ServiceType},
+    service::{
+        ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceFailureActions,
+        ServiceFailureResetPeriod, ServiceState, ServiceType,
+    },
     service_control_handler::{self, ServiceControlHandlerResult},
     service_dispatcher,
     service_manager::{ServiceManager, ServiceManagerAccess},
@@ -35,6 +38,10 @@ enum Phase {
     Revoke,
     AuthorizationUnavailable,
     Registered,
+    WatchdogDeadline,
+    WatchdogHeartbeat,
+    WatchdogStop,
+    WatchdogCrash,
 }
 
 struct Config {
@@ -43,6 +50,26 @@ struct Config {
     family: AddressFamily,
     phase: Phase,
     trialId: Uuid,
+}
+
+impl Config {
+    fn leaseMs(&self) -> u64 {
+        if self.phase == Phase::WatchdogDeadline {
+            20_000
+        } else {
+            120_000
+        }
+    }
+
+    fn usesWatchdog(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::WatchdogDeadline
+                | Phase::WatchdogHeartbeat
+                | Phase::WatchdogStop
+                | Phase::WatchdogCrash
+        )
+    }
 }
 static CONFIG: OnceLock<Config> = OnceLock::new();
 define_windows_service!(labEntry, labMain);
@@ -77,9 +104,7 @@ impl ServicePermit {
 
 fn config(arguments: &[String]) -> ServiceResult<Config> {
     let [ownerSid, guid, family, phase, trialId] = arguments else {
-        return Err(
-            "Native lab service requires SID GUID ipv4|ipv6 complete|apply|restore|revoke|authorization-unavailable|registered TRIAL_ID".into(),
-        );
+        return Err("Native lab service requires SID GUID ipv4|ipv6 PHASE TRIAL_ID".into());
     };
     let guid = Uuid::parse_str(guid)?;
     let trialId = Uuid::parse_str(trialId)?;
@@ -102,6 +127,10 @@ fn config(arguments: &[String]) -> ServiceResult<Config> {
             "revoke" => Phase::Revoke,
             "authorization-unavailable" => Phase::AuthorizationUnavailable,
             "registered" => Phase::Registered,
+            "watchdog-deadline" => Phase::WatchdogDeadline,
+            "watchdog-heartbeat" => Phase::WatchdogHeartbeat,
+            "watchdog-stop" => Phase::WatchdogStop,
+            "watchdog-crash" => Phase::WatchdogCrash,
             _ => return Err("Unsupported native lab interruption phase".into()),
         },
     })
@@ -172,7 +201,10 @@ fn servicePermit(config: &Config) -> ServiceResult<ServicePermit> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service = manager.open_service(
         LAB_SERVICE_NAME,
-        ServiceAccess::QUERY_CONFIG | ServiceAccess::QUERY_STATUS,
+        ServiceAccess::QUERY_CONFIG
+            | ServiceAccess::QUERY_STATUS
+            | ServiceAccess::CHANGE_CONFIG
+            | ServiceAccess::START,
     )?;
     let registered = service.query_config()?;
     let status = service.query_status()?;
@@ -185,6 +217,42 @@ fn servicePermit(config: &Config) -> ServiceResult<ServicePermit> {
         })
     {
         return Err("Native MTU lab process does not match its SCM registration".into());
+    }
+    let actions = if config.phase == Phase::WatchdogCrash {
+        vec![
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(1),
+            },
+            ServiceAction {
+                action_type: ServiceActionType::None,
+                delay: Duration::ZERO,
+            },
+        ]
+    } else {
+        vec![ServiceAction {
+            action_type: ServiceActionType::None,
+            delay: Duration::ZERO,
+        }]
+    };
+    if service.get_failure_actions_on_non_crash_failures()? {
+        return Err("Native lab refuses unexpected non-crash restart policy".into());
+    }
+    service.update_failure_actions(ServiceFailureActions {
+        reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(60)),
+        reboot_msg: Some(OsString::new()),
+        command: Some(OsString::new()),
+        actions: Some(actions.clone()),
+    })?;
+    let actual = service.get_failure_actions()?;
+    if actual.actions != Some(actions)
+        || actual.command.is_some_and(|value| !value.is_empty())
+        || actual.reboot_msg.is_some_and(|value| !value.is_empty())
+    {
+        return Err(
+            "Native lab recovery policy did not match its bounded restart-only configuration"
+                .into(),
+        );
     }
     Ok(ServicePermit {
         guid: config.guid,
@@ -203,9 +271,9 @@ struct Backend<'a> {
     grantId: Option<Uuid>,
 }
 
-impl MtuBackend for Backend<'_> {
-    fn authorize(
-        &mut self,
+impl Backend<'_> {
+    fn validateAuthorizationScope(
+        &self,
         document: &MtuCheckpoint,
         action: AuthorizationAction,
         now: u64,
@@ -216,7 +284,7 @@ impl MtuBackend for Backend<'_> {
             || document.context.adapterGuid != self.config.guid
             || document.addressFamily != self.config.family
             || document.proposedMtu != 1400
-            || document.leaseExpiresAtUnixMs - document.createdAtUnixMs != 120_000
+            || document.leaseExpiresAtUnixMs - document.createdAtUnixMs != self.config.leaseMs()
             || action == AuthorizationAction::Retain
             || now < document.createdAtUnixMs
             || now >= document.leaseExpiresAtUnixMs
@@ -230,7 +298,33 @@ impl MtuBackend for Backend<'_> {
                 .nativeOriginal
                 .as_ref()
                 .ok_or("Native lab original is missing")?,
-        )?;
+        )
+    }
+}
+
+impl MtuBackend for Backend<'_> {
+    fn checkAuthorization(&mut self, document: &MtuCheckpoint, now: u64) -> ServiceResult<()> {
+        self.validateAuthorizationScope(document, AuthorizationAction::Apply, now)?;
+        self.authorization
+            .as_deref_mut()
+            .ok_or("Native operation has no authorization store")?
+            .check(
+                self.grantId
+                    .ok_or("Native operation has no authorization grant")?,
+                document,
+                &self.config.ownerSid,
+                AuthorizationAction::Apply,
+                now,
+            )
+    }
+
+    fn authorize(
+        &mut self,
+        document: &MtuCheckpoint,
+        action: AuthorizationAction,
+        now: u64,
+    ) -> ServiceResult<()> {
+        self.validateAuthorizationScope(document, action, now)?;
         self.authorization
             .as_deref_mut()
             .ok_or("Native application requires the protected authorization store")?
@@ -420,7 +514,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
             id: config.trialId,
             createdAtUnixMs: now,
             leaseExpiresAtUnixMs: now
-                .checked_add(120_000)
+                .checked_add(config.leaseMs())
                 .ok_or("Native lab lease overflow")?,
             authorizedUserSid: config.ownerSid.clone(),
             context: original.journalContext()?,
@@ -444,15 +538,55 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
                 Some(WritePurpose::Apply)
             }
             Phase::Restore => Some(WritePurpose::Restore),
-            Phase::Complete | Phase::Registered => None,
+            Phase::Complete
+            | Phase::Registered
+            | Phase::WatchdogDeadline
+            | Phase::WatchdogHeartbeat
+            | Phase::WatchdogStop
+            | Phase::WatchdogCrash => None,
         };
         let applied = MtuCoordinator::new(journal, &mut backend, nowUnixMs).apply(document.id)?;
         match applied {
             ApplyResult::Applied { .. } => {
-                let recovered =
-                    MtuCoordinator::new(journal, &mut backend, nowUnixMs).restore(document.id)?;
-                if !recovered.originalMtuVerified || !recovered.journalFinalized {
-                    return Err("Native lab could not finish exact original restoration".into());
+                if config.usesWatchdog() {
+                    let control = crate::watchdog::Control::new(document.id)?;
+                    let serviceStop = backend.stop.clone();
+                    let report = crate::watchdog::watch(
+                        journal,
+                        &mut backend,
+                        document.id,
+                        &control,
+                        &serviceStop,
+                        crate::watchdog::Policy {
+                            heartbeatTimeout: Duration::from_secs(
+                                if config.phase == Phase::WatchdogHeartbeat {
+                                    5
+                                } else {
+                                    30
+                                },
+                            ),
+                            ..Default::default()
+                        },
+                        || {
+                            event(
+                                json!({"phase":"watchdogArmed", "trialId":document.id, "processId":std::process::id()}),
+                            )
+                        },
+                    )?;
+                    event(
+                        json!({"phase":"watchdogReturned", "trialId":document.id, "report":report}),
+                    )?;
+                    if !report.originalVerified() {
+                        return Err(
+                            "Native watchdog did not verify complete original restoration".into(),
+                        );
+                    }
+                } else {
+                    let recovered = MtuCoordinator::new(journal, &mut backend, nowUnixMs)
+                        .restore(document.id)?;
+                    if !recovered.originalMtuVerified || !recovered.journalFinalized {
+                        return Err("Native lab could not finish exact original restoration".into());
+                    }
                 }
             }
             ApplyResult::Failed { recovery, error } => {
@@ -485,7 +619,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     }
     event(
         json!({"phase":"complete", "trialId":config.trialId, "state":checkpoint.state(), "original":original,
-        "after":after.native, "writesThisProcess":backend.writes, "pendingRecoveryCount":journal.pendingRecovery()?.len(), "mutators":mutators}),
+        "after":after.native, "writesThisProcess":backend.writes, "pendingRecoveryCount":journal.pendingRecovery()?.len(), "mutators":mutators, "processId":std::process::id()}),
     )
 }
 

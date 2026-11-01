@@ -24,6 +24,9 @@ pub enum WritePurpose {
 pub type MutatorRegistrar<'a> = dyn FnMut(MutatorIdentity) -> ServiceResult<()> + 'a;
 
 pub trait MtuBackend {
+    fn checkAuthorization(&mut self, _: &MtuCheckpoint, _: u64) -> ServiceResult<()> {
+        Err("This backend cannot recheck an active operation's authorization".into())
+    }
     fn authorize(
         &mut self,
         document: &MtuCheckpoint,
@@ -245,6 +248,24 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
             .authorize(&document, AuthorizationAction::Retain, now)?;
         self.journal
             .transition(id, State::Applied, State::Retained, now, Some(observed))
+    }
+
+    pub fn verifyApplied(&mut self, id: Uuid) -> ServiceResult<Observation> {
+        let checkpoint = self.journal.load(id)?;
+        let document = nativeDocument(&checkpoint)?.clone();
+        if checkpoint.state() != State::Applied {
+            return Err("Only a verified applied MTU can be monitored".into());
+        }
+        self.backend.checkAuthorization(&document, (self.now)()?)?;
+        let observed = self.observe(&document)?;
+        let now = (self.now)()?;
+        observationMatches(&document, &observed, document.proposedMtu, now, true)?;
+        let native = observed.native.as_ref().unwrap();
+        if native.operationalStatus != 1 || native.mediaConnectState != 1 {
+            return Err("The monitored network interface is no longer up and connected".into());
+        }
+        self.backend.checkAuthorization(&document, now)?;
+        Ok(observed)
     }
 
     pub fn restore(&mut self, id: Uuid) -> ServiceResult<RecoveryResult> {

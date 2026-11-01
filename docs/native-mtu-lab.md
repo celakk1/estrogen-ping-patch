@@ -32,6 +32,8 @@ The Windows operation provides no compare-and-set transaction with the GUID vali
 
 ## CI matrix and limits
 
+The [experiment watchdog](watchdog.md) extends the current harness with deadline, missing-heartbeat, service-stop, and automatic SCM crash-restart trials for each family. The new twenty-trial matrix is pending verification; the twelve-trial results below describe the earlier revision.
+
 At `91ff236`, the [native Windows run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41243474601) passed the four safe harness tests, 49 feature-enabled Rust tests, feature Clippy, the isolated release build, and all six native trials. The original MTU was 1500 and the candidate was 1400 for both families. Each completed trial verified MTU 1500, exact unrelated settings, unchanged persistent rows and DNS origin values, a finalized restored checkpoint, and zero pending recovery work.
 
 At `e375d26`, the [expanded native run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41246725980) passed five safe harness tests, 59 feature tests, Clippy, and ten native trials with durable grants. All ten ended at the original 1500 MTU with the same preservation checks. Each family adds a revoked-grant crash case and an unavailable-authorization-path case, both with one restoration write in the restarted process.

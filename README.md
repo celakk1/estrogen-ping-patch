@@ -12,6 +12,8 @@ Backup exports additionally preserve native IPv4/IPv6 interface fields with GUID
 
 The service recovery library now coordinates native-evidence MTU checkpoints, write intent, readback, and exact-value recovery through a typed backend contract. Simulated-adapter tests cover interrupted writes, authorization revocation, outside changes, and failed journal writes. The running service has no native setter/backend or recovery watchdog yet; these tests do not establish native adapter restoration.
 
+A [service-owned experiment watchdog](docs/watchdog.md) now monitors temporary MTU trials in the disabled native lab. Missing heartbeats, deadlines, shutdown, revoked permission, and failed readback trigger exact-value recovery. The expanded native verification matrix is pending. This does not add write operations to the installed application service.
+
 A separate, disabled-by-default [native MTU lab](docs/native-mtu-lab.md) passed twelve owned-loopback trials on a disposable hosted Windows runner: normal apply/restore, process termination after apply/restore, a crash after durable command registration before execution, revoked permission, and unavailable authorization storage, for IPv4 and IPv6. Exact original MTU, unrelated fields, persistent policy, and DNS origin values were verified afterward. The lab is excluded from ordinary launch/build/package workflows and does not enable optimization in the application.
 
 ## Quick start
@@ -77,6 +79,7 @@ Application database version five supports protocol-specific reports and separat
 - [Dedicated Windows service](docs/service.md)
 - [Operation authorization](docs/authorization.md)
 - [Settings-command recovery barrier](docs/mutators.md)
+- [Experiment watchdog](docs/watchdog.md)
 - [Repeated-session comparisons](docs/comparisons.md)
 - [Local route evidence](docs/routing.md)
 - [Research sources](docs/research.md)

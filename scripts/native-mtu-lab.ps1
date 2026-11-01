@@ -166,9 +166,23 @@ try {
         $original = captureNative $guid $family
         if ($original.driver.status -ne 'captured' -or $original.driver.identity.infPath -ine 'netloop.inf' -or $original.driver.identity.deviceInstanceId -ine $instanceId) { throw 'Native evidence does not match the newly created loopback device.' }
         Write-Host "Native pre-trial evidence: family=$family; MTU=$($original.settings.nlMtu); SitePrefixLength=$($original.settings.sitePrefixLength)."
-        foreach ($phase in @('complete', 'apply', 'restore', 'revoke', 'authorization-unavailable', 'registered')) {
+        foreach ($phase in @('complete', 'apply', 'restore', 'revoke', 'authorization-unavailable', 'registered', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop', 'watchdog-crash')) {
             $trialId = [Guid]::NewGuid().ToString('D')
             $imagePath = "`"$installedExe`" --native-mtu-lab-service $ownerSid $($guid.ToString('D')) $family $phase $trialId"
+            if ($phase -eq 'watchdog-crash') {
+                waitStopped
+                $existing = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+                if ($existing.StartName -ne 'LocalSystem' -or -not $existing.PathName.StartsWith("`"$installedExe`" --native-mtu-lab-service ", [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing to recreate an unexpected lab service.' }
+                invokeSc -arguments @('delete', $serviceName)
+                $deleteDeadline = [DateTime]::UtcNow.AddSeconds(10)
+                while (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+                    if ([DateTime]::UtcNow -ge $deleteDeadline) { throw 'Owned lab service deletion did not finish.' }
+                    Start-Sleep -Milliseconds 100
+                }
+                New-Service -Name $serviceName -DisplayName 'estrogen ping patch native MTU lab' -BinaryPathName $imagePath -StartupType Manual | Out-Null
+                invokeSc -arguments @('sidtype', $serviceName, 'unrestricted')
+                invokeSc -arguments @('privs', $serviceName, 'SeChangeNotifyPrivilege')
+            }
             $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
             $configured = Invoke-CimMethod -InputObject $registered -MethodName Change -Arguments @{ PathName = $imagePath }
             if ($configured.ReturnValue -ne 0) { throw "SCM lab configuration failed: $($configured.ReturnValue)" }
@@ -176,7 +190,18 @@ try {
             if ($registered.PathName -cne $imagePath) { throw 'SCM did not preserve the quoted, fixed lab executable path.' }
             $startedAt = Get-Date
             invokeSc -arguments @('start', $serviceName)
-            if ($phase -ne 'complete') {
+            $watchdog = $phase.StartsWith('watchdog-', [StringComparison]::Ordinal)
+            $watchdogProcessId = $null
+            if ($watchdog) {
+                $armed = waitEvent $startedAt $trialId 'watchdogArmed' ''
+                $watchdogProcessId = [int]$armed.processId
+                if ($phase -ne 'watchdog-crash') {
+                    $active = captureNative $guid $family
+                    if ($active.settings.nlMtu -ne 1400) { throw 'Watchdog was not independently observed with its candidate MTU active.' }
+                }
+                if ($phase -eq 'watchdog-stop') { invokeSc -arguments @('stop', $serviceName) }
+            }
+            if ($phase -notin @('complete', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) {
                 $purpose = $(if ($phase -eq 'restore') { 'Restore' } else { 'Apply' })
                 $marker = $(if ($phase -eq 'registered') { 'mutatorRegistered' } else { 'nativeWriteReturned' })
                 $written = waitEvent $startedAt $trialId $marker $purpose
@@ -205,17 +230,25 @@ try {
                     if ($command) { $command.Dispose() }
                     if ($owner) { $owner.Dispose() }
                 }
-                waitStopped
-                if ($phase -eq 'authorization-unavailable') { $blockedAuthorization = blockAuthorization }
-                invokeSc -arguments @('start', $serviceName)
+                if ($phase -ne 'watchdog-crash') {
+                    waitStopped
+                    if ($phase -eq 'authorization-unavailable') { $blockedAuthorization = blockAuthorization }
+                    invokeSc -arguments @('start', $serviceName)
+                }
             }
             $complete = waitEvent $startedAt $trialId 'complete' ''
             waitStopped
+            if ($watchdog -and $phase -ne 'watchdog-crash') {
+                $returned = waitEvent $startedAt $trialId 'watchdogReturned' ''
+                $expectedTrigger = $(if ($phase -eq 'watchdog-deadline') { 'leaseExpired' } elseif ($phase -eq 'watchdog-heartbeat') { 'heartbeatLost' } else { 'serviceStopping' })
+                if ($returned.report.trigger -ne $expectedTrigger -or -not $returned.report.recovery.originalMtuVerified -or -not $returned.report.recovery.journalFinalized -or $returned.report.recovery.unrelatedSettingsDrifted -or $returned.report.recovery.error -or $returned.report.recoveryError -or $complete.processId -ne $watchdogProcessId) { throw 'Watchdog did not independently restore the exact original in its own service process.' }
+            }
+            if ($phase -eq 'watchdog-crash' -and $complete.processId -eq $watchdogProcessId) { throw 'SCM did not automatically restart the crashed watchdog service.' }
             $current = captureNative $guid $family
             if ($complete.state -ne 'restored' -or $complete.pendingRecoveryCount -ne 0 -or $current.settings.nlMtu -ne $original.settings.nlMtu -or (settingsJson $current.settings) -cne (settingsJson $original.settings)) { throw 'Native recovery failed exact MTU/unrelated-settings verification.' }
             if ((settingsJson $complete.original.settings) -cne (settingsJson $original.settings)) { throw 'Durable native original does not match the independent pre-trial capture.' }
             if ((persistentPolicy $interfaceIndex) -cne $policyBefore -or (dnsPolicy $guid $interfaceIndex) -cne $dnsBefore) { throw 'Native trial changed persistent interface or automatic/static DNS origin values.' }
-            $expectedWrites = $(if ($phase -eq 'complete') { 2 } elseif ($phase -in @('restore', 'registered')) { 0 } else { 1 })
+            $expectedWrites = $(if ($phase -in @('complete', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) { 2 } elseif ($phase -in @('restore', 'registered')) { 0 } else { 1 })
             if ($complete.writesThisProcess -ne $expectedWrites) { throw 'Restart recovery wrote an unexpected number of MTU values.' }
             $mutators = @($complete.mutators)
             $expectedMutators = $(if ($phase -eq 'registered') { 1 } else { 2 })
@@ -233,7 +266,7 @@ try {
             if ($blockedAuthorization) { restoreAuthorization $blockedAuthorization; $blockedAuthorization = $null }
         }
     }
-    Write-Host 'Native MTU lab passed: exact IPv4/IPv6 restore, registered-process crash barrier, process termination during apply/restore, revoked/unavailable authorization, preserved unrelated fields, persistent policy, and DNS origin values on an owned Microsoft loopback adapter.'
+    Write-Host 'Native MTU lab passed: exact IPv4/IPv6 restore, deadline/heartbeat/shutdown watchdog, automatic SCM crash restart, registered-process barrier, revoked/unavailable authorization, preserved unrelated fields, persistent policy, and DNS origin values on an owned Microsoft loopback adapter.'
     $evidence | ConvertTo-Json -Depth 5
 } finally {
     if ($serviceCreated) {
