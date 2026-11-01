@@ -131,3 +131,69 @@ pub fn inspectWorker(
         Err("IP policy evidence requires Windows".into())
     }
 }
+
+#[cfg(windows)]
+fn decode(
+    bytes: &[u8],
+    adapterGuid: uuid::Uuid,
+    family: crate::journal::AddressFamily,
+) -> ServiceResult<Capture> {
+    let capture: Capture = serde_json::from_slice(bytes)?;
+    capture.validate()?;
+    if capture.native.adapterGuid != adapterGuid || capture.native.addressFamily != family {
+        return Err("IP policy worker returned a different adapter or family".into());
+    }
+    Ok(capture)
+}
+
+pub fn inspect(
+    adapterGuid: uuid::Uuid,
+    family: crate::journal::AddressFamily,
+    cancelled: &AtomicBool,
+) -> ServiceResult<Capture> {
+    #[cfg(windows)]
+    {
+        use std::{
+            sync::atomic::Ordering,
+            time::{Duration, Instant},
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let check = || -> ServiceResult<()> {
+            if cancelled.load(Ordering::SeqCst) || Instant::now() >= deadline {
+                Err(
+                    "IP policy worker cancelled or its fifteen-second process allowance expired"
+                        .into(),
+                )
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let executable = std::env::current_exe()?;
+        if !executable
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("epp-network-service.exe"))
+        {
+            return Err("IP policy isolation requires the dedicated service executable".into());
+        }
+        let arguments = [
+            "--ip-policy-worker".into(),
+            adapterGuid.to_string(),
+            match family {
+                crate::journal::AddressFamily::Ipv4 => "ipv4".into(),
+                crate::journal::AddressFamily::Ipv6 => "ipv6".into(),
+            },
+        ];
+        let bytes = crate::owned_process::CommandJob::spawnReader(&executable, &arguments)?
+            .collect(65536, check)?;
+        check()?;
+        let capture = decode(&bytes, adapterGuid, family)?;
+        check()?;
+        Ok(capture)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (adapterGuid, family, cancelled);
+        Err("IP policy evidence requires Windows".into())
+    }
+}

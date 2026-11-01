@@ -20,7 +20,7 @@ foreach ($family in @('ipv4', 'ipv6')) {
         $process = Start-Process -FilePath $executablePath -ArgumentList @('--inspect-ip-policy', $guid, $family) -PassThru -WindowStyle Hidden -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath
         # retain the handle before a fast worker exits so windows powershell can read its exit code.
         $null = $process.Handle
-        if (-not $process.WaitForExit(15000)) { throw 'The read-only policy worker exceeded its fifteen-second process allowance.' }
+        if (-not $process.WaitForExit(25000)) { throw 'The isolated policy reader exceeded its twenty-five-second outer allowance, including worker cleanup.' }
         if ($process.ExitCode -ne 0) { throw "The read-only policy worker failed: $(Get-Content -LiteralPath $errorPath -Raw)" }
         if ((Get-Item -LiteralPath $outputPath).Length -gt 65536) { throw 'The read-only policy worker exceeded its 64-KiB evidence bound.' }
         $capture = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json

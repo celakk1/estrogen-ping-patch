@@ -150,3 +150,29 @@ fn unsupportedCimTypesAndTruncatedScalarRangesAreRefusedWithoutGuessingDefaults(
         .unwrap();
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn isolatedResponseMustBeCompleteAndMatchTheRequestedTarget() {
+    let capture = fixture();
+    let bytes = serde_json::to_vec(&capture).unwrap();
+    let guid = capture.native.adapterGuid;
+    let family = capture.native.addressFamily;
+    assert_eq!(decode(&bytes, guid, family).unwrap(), capture);
+    assert!(decode(&bytes, uuid::Uuid::new_v4(), family).is_err());
+    assert!(decode(&bytes, guid, crate::journal::AddressFamily::Ipv6).is_err());
+    assert!(decode(&bytes[..bytes.len() - 1], guid, family).is_err());
+    let mut unknown = serde_json::to_value(&capture).unwrap();
+    unknown["unknownField"] = true.into();
+    assert!(decode(&serde_json::to_vec(&unknown).unwrap(), guid, family).is_err());
+    let mut extra = bytes;
+    extra.extend_from_slice(b"{}");
+    assert!(decode(&extra, guid, family).is_err());
+    assert!(inspect(guid, family, &AtomicBool::new(true)).is_err());
+    assert!(
+        inspect(guid, family, &AtomicBool::new(false))
+            .unwrap_err()
+            .to_string()
+            .contains("dedicated service executable")
+    );
+}

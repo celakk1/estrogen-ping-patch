@@ -6,6 +6,8 @@ This library and disabled-by-default native MTU lab record each setting process 
 
 The service creates the fixed system `netsh.exe` command suspended inside an anonymous kill-on-close job. Its job allows one active process and no breakaway. Only null input/output is inherited. Before resuming, the coordinator commits and reads back a record bound to the exact checkpoint bytes, write purpose, PID, and Windows process creation time. Creation time remains an exact decimal string of 100-nanosecond ticks. A PID alone is insufficient because Windows can reuse it.
 
+The process ownership implementation is also used by the [read-only IP policy reader](backups.md#read-only-ip-policy-worker). That reader has a bounded output pipe instead of null output. Sharing job creation and verified termination does not bypass the setting command's registration, authorization, or fresh-target checks; those remain mandatory before its initial thread resumes.
+
 Registration failure prevents execution. Permission, deadline, and fresh adapter/context/value checks run again after the commit, immediately before resume. Local process fixtures verify that failed registration or failed target revalidation cannot execute a marker-writing child; a successful control does execute it. A separate read-only test checks that the single-process limit permits the fixed system command to inspect interface status.
 
 Handled cleanup requires both a signaled primary process handle and zero active job processes. A failure latches the instance against subsequent writes or recovery observations. After restart, the coordinator verifies all saved process identities before observing the adapter. It opens only query/synchronization rights, compares creation time, and waits up to five seconds for an exact predecessor. It never terminates a process using a saved PID. A reused PID is left untouched; access failures or an exact predecessor that remains alive block recovery observation and restoration.
@@ -21,7 +23,7 @@ The journal binds each record to its predecessor hash and a transactionally upda
 | Legacy checkpoint document | 1 or 2 | Original bytes and event history remain unchanged; no fabricated process evidence |
 | Authorization SQLite | 1 | Independent grants remain bound to exact checkpoint bytes |
 | Service pipe | 2 | Status only; no new operations |
-| Desktop application SQLite | 5 | Independent measurement and snapshot history |
+| Desktop application SQLite | 6 | Independent measurement and snapshot history |
 
 The native lab refuses unresolved legacy checkpoints rather than inferring process proof. Older service binaries refuse the upgraded recovery database. Keep the current binary and preserve recovery storage; do not manually lower its version.
 
