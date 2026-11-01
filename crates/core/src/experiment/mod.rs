@@ -432,6 +432,7 @@ fn advance<H: Host>(
     while snapshot.blocks.len() < snapshot.plan.blockCount {
         control.check()?;
         guarded(|| host.verifyOriginal(&snapshot.plan))?;
+        control.check()?;
         let nextReservation = snapshot
             .reservedBlocks
             .checked_add(1)
@@ -452,6 +453,7 @@ fn advance<H: Host>(
         // reserve the full bracket durably before the first measurement; failures do not refund it.
         snapshot.reservedBlocks = nextReservation;
         persist(store, snapshot, State::BaselineBefore)?;
+        control.check()?;
         let before = guarded(|| host.measureOriginal(control))?;
         validateNext(
             snapshot,
@@ -461,7 +463,9 @@ fn advance<H: Host>(
         snapshot.pendingBefore = Some(before);
         control.check()?;
         guarded(|| host.verifyOriginal(&snapshot.plan))?;
+        control.check()?;
         persist(store, snapshot, State::Candidate)?;
+        control.check()?;
         // the host must not return completed until its independent recovery verifies the original.
         let mut candidate = guarded(|| host.measureCandidate(control))?;
         candidate.error = candidate.error.take().map(bounded);
@@ -506,6 +510,7 @@ fn advance<H: Host>(
         guarded(|| host.verifyOriginal(&snapshot.plan))?;
         control.check()?;
         persist(store, snapshot, State::BaselineAfter)?;
+        control.check()?;
         let after = guarded(|| host.measureOriginal(control))?;
         validateNext(
             snapshot,

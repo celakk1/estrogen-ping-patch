@@ -90,6 +90,7 @@ struct HostFixture {
     candidateOutcome: Option<TrialOutcome>,
     cancel: Option<Arc<AtomicBool>>,
     cancelOnFinalVerification: Option<Arc<AtomicBool>>,
+    cancelAtVerification: Option<(usize, Arc<AtomicBool>)>,
     expireDuringCandidate: bool,
     initialVerificationDelay: Duration,
     traffic: Option<std::collections::BTreeMap<String, budget::Resources>>,
@@ -176,6 +177,11 @@ impl Host for HostFixture {
             std::thread::sleep(self.initialVerificationDelay);
         }
         self.verifications += 1;
+        if let Some((verification, cancel)) = &self.cancelAtVerification
+            && self.verifications == *verification
+        {
+            cancel.store(true, Ordering::SeqCst);
+        }
         self.plan = Some(plan.clone());
         if self.candidates == 12
             && self.originals == 24
@@ -336,6 +342,27 @@ fn cancellationAndDeadlineAfterCandidateCannotStartAnotherMeasurement() {
         assert_eq!(host.candidates, 1);
         assert_eq!(host.originals, 1);
         assert!(report.snapshot.blocks.is_empty());
+        assert!(!host.changed);
+    }
+}
+
+#[test]
+fn cancellationDuringOriginalVerificationCannotEnterAnotherMeasurement() {
+    for verification in [1, 2] {
+        let temporary = Temporary::new();
+        let mut store = Store::open(&temporary.0).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut host = HostFixture {
+            cancelAtVerification: Some((verification, cancel.clone())),
+            ..Default::default()
+        };
+        let report = execute(&mut store, plan(), &mut host, &cancel).unwrap();
+        assert_eq!(report.snapshot.state, State::Cancelled);
+        assert_eq!(host.originals, verification - 1);
+        assert_eq!(host.candidates, 0);
+        assert_eq!(report.snapshot.reservedBlocks as usize, verification - 1);
+        assert!(report.snapshot.blocks.is_empty());
+        assert!(store.pending().unwrap().is_empty());
         assert!(!host.changed);
     }
 }
