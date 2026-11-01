@@ -7,6 +7,7 @@ on:
       - 'crates/service/**'
       - 'crates/core/**'
       - 'scripts/native-mtu-lab*'
+      - 'scripts/native-repeated-evidence.mjs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/native-mtu.yml'
@@ -25,6 +26,9 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Guard and device helper tests
         run: node --test scripts/native-mtu-lab.test.mjs
       - name: Format and automatic trial tests

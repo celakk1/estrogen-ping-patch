@@ -27,6 +27,8 @@ use windows_service::{
     service_manager::{ServiceManager, ServiceManagerAccess},
 };
 
+mod repeated;
+
 pub const LAB_SERVICE_NAME: &str = "EstrogenPingPatchMtuLab";
 const LAB_DEADLINE: Duration = Duration::from_secs(120);
 
@@ -35,6 +37,7 @@ enum Phase {
     Apply,
     Restore,
     Complete,
+    Repeated,
     Revoke,
     AuthorizationUnavailable,
     Registered,
@@ -54,10 +57,30 @@ struct Config {
 
 impl Config {
     fn leaseMs(&self) -> u64 {
-        if self.phase == Phase::WatchdogDeadline {
+        if self.phase == Phase::Repeated {
+            30_000
+        } else if self.phase == Phase::WatchdogDeadline {
             20_000
         } else {
             120_000
+        }
+    }
+
+    fn deadline(&self) -> Duration {
+        if self.phase == Phase::Repeated {
+            Duration::from_secs(300)
+        } else {
+            LAB_DEADLINE
+        }
+    }
+
+    fn checkpointIds(&self) -> Vec<Uuid> {
+        if self.phase == Phase::Repeated {
+            (0..12)
+                .map(|index| repeated::checkpointId(self.trialId, index))
+                .collect()
+        } else {
+            vec![self.trialId]
         }
     }
 
@@ -124,6 +147,7 @@ fn config(arguments: &[String]) -> ServiceResult<Config> {
             "apply" => Phase::Apply,
             "restore" => Phase::Restore,
             "complete" => Phase::Complete,
+            "repeated" => Phase::Repeated,
             "revoke" => Phase::Revoke,
             "authorization-unavailable" => Phase::AuthorizationUnavailable,
             "registered" => Phase::Registered,
@@ -269,6 +293,7 @@ struct Backend<'a> {
     writes: usize,
     authorization: Option<&'a mut crate::authorization::AuthorizationStore>,
     grantId: Option<Uuid>,
+    checkpointIds: Vec<Uuid>,
 }
 
 impl Backend<'_> {
@@ -279,7 +304,7 @@ impl Backend<'_> {
         now: u64,
     ) -> ServiceResult<()> {
         document.validate()?;
-        if document.id != self.config.trialId
+        if !self.checkpointIds.contains(&document.id)
             || document.authorizedUserSid != self.config.ownerSid
             || document.context.adapterGuid != self.config.guid
             || document.addressFamily != self.config.family
@@ -288,7 +313,7 @@ impl Backend<'_> {
             || action == AuthorizationAction::Retain
             || now < document.createdAtUnixMs
             || now >= document.leaseExpiresAtUnixMs
-            || self.started.elapsed() >= LAB_DEADLINE
+            || self.started.elapsed() >= self.config.deadline()
             || self.stop.load(Ordering::SeqCst)
         {
             return Err("Native lab authorization is out of scope, revoked, or expired; retention is never allowed".into());
@@ -358,7 +383,7 @@ impl MtuBackend for Backend<'_> {
         })
     }
     fn waitForMutator(&mut self, record: &crate::journal::MutatorRecord) -> ServiceResult<()> {
-        if record.checkpointId != self.config.trialId {
+        if !self.checkpointIds.contains(&record.checkpointId) {
             return Err("Mutator is outside this native trial".into());
         }
         mtu::waitForLabMutator(&record.identity)?;
@@ -392,7 +417,7 @@ impl MtuBackend for Backend<'_> {
             let ownerSid = &self.config.ownerSid;
             let stop = &self.stop;
             let deadline = if purpose == WritePurpose::Apply {
-                (Instant::now() + Duration::from_secs(5)).min(self.started + LAB_DEADLINE)
+                (Instant::now() + Duration::from_secs(5)).min(self.started + self.config.deadline())
             } else {
                 Instant::now() + Duration::from_secs(5)
             };
@@ -454,7 +479,9 @@ impl MtuBackend for Backend<'_> {
             "purpose":format!("{purpose:?}"), "value":value, "processId":std::process::id()}),
         )?;
         if self.pause == Some(purpose) {
-            while !self.stop.load(Ordering::SeqCst) && self.started.elapsed() < LAB_DEADLINE {
+            while !self.stop.load(Ordering::SeqCst)
+                && self.started.elapsed() < self.config.deadline()
+            {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
@@ -483,7 +510,13 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         writes: 0,
         authorization: authorization.as_mut().map(|owned| &mut owned.store),
         grantId: None,
+        checkpointIds: config.checkpointIds(),
     };
+    if config.phase == Phase::Repeated {
+        repeated::recover(journal, &mut backend)?;
+        let mut experiments = owned.experiments()?;
+        return repeated::run(owned.journal(), &mut backend, &mut experiments);
+    }
     let pending = journal.pendingRecovery()?;
     if !pending.is_empty() {
         if pending.iter().any(|checkpoint| {
@@ -580,6 +613,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
                 }
                 Phase::Restore => Some(WritePurpose::Restore),
                 Phase::Complete
+                | Phase::Repeated
                 | Phase::Registered
                 | Phase::WatchdogDeadline
                 | Phase::WatchdogHeartbeat
@@ -773,6 +807,7 @@ mod tests {
             writes: 0,
             authorization: Some(&mut authorization),
             grantId: Some(grant.id),
+            checkpointIds: config.checkpointIds(),
         };
         assert!(
             backend

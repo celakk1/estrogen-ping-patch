@@ -32,6 +32,14 @@ pub(crate) struct OwnedAuthorization {
     _parent: File,
 }
 
+#[cfg(feature = "native-mtu-lab")]
+pub(crate) struct OwnedExperiments {
+    pub(crate) store: epp_core::experiment::Store,
+    pub(crate) measurements: rusqlite::Connection,
+    _directory: File,
+    _parent: File,
+}
+
 fn programData() -> ServiceResult<PathBuf> {
     let mut path = std::ptr::null_mut();
     let result =
@@ -126,6 +134,30 @@ impl OwnedJournal {
         verifyStateFiles(&self.directoryPath, &self.serviceSid, &names)?;
         Ok(OwnedAuthorization {
             store,
+            _directory: self._directory.try_clone()?,
+            _parent: self._parent.try_clone()?,
+        })
+    }
+
+    pub(crate) fn experiments(&self) -> ServiceResult<OwnedExperiments> {
+        let names = [
+            "experiments.sqlite3",
+            "experiments.sqlite3-wal",
+            "experiments.sqlite3-shm",
+            "experiments.sqlite3-journal",
+            "measurements.sqlite3",
+            "measurements.sqlite3-wal",
+            "measurements.sqlite3-shm",
+            "measurements.sqlite3-journal",
+        ];
+        verifyStateFiles(&self.directoryPath, &self.serviceSid, &names)?;
+        let store = epp_core::experiment::Store::open(&self.directoryPath.join(names[0]))?;
+        let measurements = epp_core::storage::openDatabase(&self.directoryPath.join(names[4]))?;
+        measurements.execute_batch("CREATE TABLE IF NOT EXISTS native_measurements(run_id INTEGER PRIMARY KEY REFERENCES benchmark_runs(id), experiment_id TEXT NOT NULL, payload_json TEXT NOT NULL, sha256 TEXT NOT NULL)")?;
+        verifyStateFiles(&self.directoryPath, &self.serviceSid, &names)?;
+        Ok(OwnedExperiments {
+            store,
+            measurements,
             _directory: self._directory.try_clone()?,
             _parent: self._parent.try_clone()?,
         })
