@@ -28,11 +28,15 @@ The command-lifetime revision uses an anonymous Windows job with kill-on-close, 
 
 The Windows operation provides no compare-and-set transaction with the GUID validation. The unique lab alias avoids targeting a recycled numeric interface index, but checking immediately before a write and comparing afterward cannot eliminate races with an administrator renaming or replacing devices. Production policy/concurrency guards remain necessary.
 
+[Process termination is asynchronous](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) and pending I/O must finish or cancel before the process exits. Handled command cleanup therefore requires its process handle to signal, in addition to zero active job processes. Production restart recovery still needs a durable pre-resume mutator identity and an independent exit barrier before reading or restoring settings after a service crash; anonymous kill-on-close ownership alone does not establish that barrier. These are required production gates, not implemented crash-recovery claims.
+
 ## CI matrix and limits
 
 At `91ff236`, the [native Windows run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41243474601) passed the four safe harness tests, 49 feature-enabled Rust tests, feature Clippy, the isolated release build, and all six native trials. The original MTU was 1500 and the candidate was 1400 for both families. Each completed trial verified MTU 1500, exact unrelated settings, unchanged persistent rows and DNS origin values, a finalized restored checkpoint, and zero pending recovery work.
 
 At `e375d26`, the [expanded native run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41246725980) passed five safe harness tests, 59 feature tests, Clippy, and ten native trials with durable grants. All ten ended at the original 1500 MTU with the same preservation checks. Each family adds a revoked-grant crash case and an unavailable-authorization-path case, both with one restoration write in the restarted process.
+
+At `b20306f`, the [job-owned command run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41262038560) passed 62 feature tests, Clippy, the isolated release build, and the same ten native trials. This confirms that atomically job-owned, suspended-and-resumed `netsh` commands work under the lab service account and preserve the same original-state checks. A follow-up adds explicit primary-process signaling to handled cleanup; its native rerun remains pending.
 
 | Family | Interruption | Writes in final process | Final state |
 | --- | --- | --- | --- |

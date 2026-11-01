@@ -274,7 +274,12 @@ impl CommandJob {
                         null_mut(),
                     )
                 })?;
-                if accounting.ActiveProcesses == 0 {
+                // process signaling also confirms that pending process io has finished or canceled.
+                let processState = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) };
+                if processState != WAIT_OBJECT_0 && processState != WAIT_TIMEOUT {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                if accounting.ActiveProcesses == 0 && processState == WAIT_OBJECT_0 {
                     return Ok(());
                 }
                 if terminated == 0 {
