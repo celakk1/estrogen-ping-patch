@@ -5,6 +5,7 @@ on:
     branches: [main, codex/native-mtu-lab, codex/authorization-grants, codex/mutator-journal]
     paths:
       - 'crates/service/**'
+      - 'crates/core/**'
       - 'scripts/native-mtu-lab*'
       - 'Cargo.toml'
       - 'Cargo.lock'

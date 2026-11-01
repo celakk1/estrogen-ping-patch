@@ -342,23 +342,57 @@ fn restartPreservesIntentAndNeverAutomaticallyRepeatsTheCandidate() {
 }
 
 #[test]
-fn progressWriteFailureBeforeOrAfterCandidatePreservesRecoveryIntent() {
+fn failedPhaseWriteStopsTrialsAndCanFinalizeOnlyAfterOriginalVerification() {
     for phase in ["candidate", "baselineAfter"] {
         let temporary = Temporary::new();
         let mut store = Store::open(&temporary.0).unwrap();
         let connection = rusqlite::Connection::open(&temporary.0).unwrap();
         connection.execute_batch(&format!("CREATE TRIGGER refuse_progress BEFORE UPDATE ON experiments WHEN json_extract(NEW.payload_json,'$.state')='{phase}' BEGIN SELECT RAISE(FAIL,'fixture progress storage unavailable'); END;")).unwrap();
         let mut host = HostFixture::default();
-        assert!(execute(&mut store, plan(), &mut host, &AtomicBool::new(false)).is_err());
+        let report = execute(&mut store, plan(), &mut host, &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.snapshot.state, State::Failed);
+        assert!(
+            report
+                .snapshot
+                .error
+                .unwrap()
+                .contains("fixture progress storage unavailable")
+        );
         assert_eq!(host.candidates, usize::from(phase == "baselineAfter"));
         assert_eq!(host.originals, 1);
         assert!(!host.changed);
-        assert_eq!(store.pending().unwrap().len(), 1);
+        assert!(store.pending().unwrap().is_empty());
         connection
             .execute_batch("DROP TRIGGER refuse_progress")
             .unwrap();
-        acknowledgeRecovery(&mut store, "repeated-test", &mut host).unwrap();
     }
+}
+
+#[test]
+fn unavailableProgressAndFinalizationStoragePreserveIntentAndBothErrors() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let connection = rusqlite::Connection::open(&temporary.0).unwrap();
+    connection.execute_batch("CREATE TRIGGER refuse_progress BEFORE UPDATE ON experiments BEGIN SELECT RAISE(FAIL,'fixture storage unavailable'); END;").unwrap();
+    let mut host = HostFixture::default();
+    let error = execute(&mut store, plan(), &mut host, &AtomicBool::new(false))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.starts_with("fixture storage unavailable"), "{error}");
+    assert!(
+        error.contains("durable finalization failed: fixture storage unavailable"),
+        "{error}"
+    );
+    assert_eq!(host.candidates, 0);
+    assert_eq!(host.originals, 0);
+    assert!(!host.changed);
+    assert_eq!(store.pending().unwrap()[0].state, State::Ready);
+    connection
+        .execute_batch("DROP TRIGGER refuse_progress")
+        .unwrap();
+    acknowledgeRecovery(&mut store, "repeated-test", &mut host).unwrap();
+    assert!(store.pending().unwrap().is_empty());
 }
 
 #[test]

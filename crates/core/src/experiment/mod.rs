@@ -273,10 +273,15 @@ fn guarded<T>(callback: impl FnOnce() -> AppResult<T>) -> AppResult<T> {
 }
 
 fn persist(store: &mut Store, snapshot: &mut Snapshot, state: State) -> AppResult<()> {
+    let previousRevision = snapshot.revision;
     snapshot.revision += 1;
     snapshot.updatedAtUnixMs = nowUnixMs()?.max(snapshot.updatedAtUnixMs);
     snapshot.state = state;
-    store.save(snapshot)
+    if let Err(error) = store.save(snapshot) {
+        snapshot.revision = previousRevision;
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn finish<H: Host>(
@@ -468,7 +473,14 @@ pub fn execute<H: Host>(
             Some(bounded(error)),
         ),
     };
-    finish(store, &mut snapshot, host, state, error, &control)?;
+    let primaryError = error.clone();
+    if let Err(error) = finish(store, &mut snapshot, host, state, error, &control) {
+        return Err(match primaryError {
+            Some(primary) => format!("{primary}; durable finalization failed: {error}"),
+            None => format!("Durable finalization failed: {error}"),
+        }
+        .into());
+    }
     let comparison = if snapshot.blocks.is_empty() {
         None
     } else {

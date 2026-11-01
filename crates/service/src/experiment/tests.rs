@@ -128,7 +128,8 @@ impl Measurements for Collector {
             self.observed.load(Ordering::SeqCst),
             if candidate { 1400 } else { 1500 }
         );
-        timings.sort_by(f64::total_cmp);
+        let summary =
+            epp_core::statistics::summarize(&timings.into_iter().map(Some).collect::<Vec<_>>());
         Ok(Session {
             id: uuid::Uuid::new_v4().to_string(),
             startedAtUnixMs: start,
@@ -142,7 +143,12 @@ impl Measurements for Collector {
                 &self.plan.comparison.originalConfigurationSha256
             }
             .clone(),
-            values: vec![timings[timings.len() / 2], 0.0],
+            values: vec![
+                summary.medianMs.ok_or("Missing TCP median")?,
+                summary
+                    .connectionFailurePercent
+                    .ok_or("Missing TCP outcomes")?,
+            ],
         })
     }
 }
