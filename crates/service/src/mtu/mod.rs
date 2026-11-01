@@ -199,6 +199,11 @@ mod tests {
 }
 
 #[cfg(all(windows, feature = "native-mtu-lab"))]
+pub(crate) fn ensureLabCommandStopped() -> ServiceResult<()> {
+    windows::ensureLabCommandStopped()
+}
+
+#[cfg(all(windows, feature = "native-mtu-lab"))]
 pub(crate) fn writeLabMtu(
     permit: &crate::mtu_lab::ServicePermit,
     original: &Snapshot,

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-native-mtu-lab = ["windows-sys/Win32_System_RemoteDesktop"]
+native-mtu-lab = ["windows-sys/Win32_System_RemoteDesktop", "windows-sys/Win32_System_JobObjects"]
 
 [dependencies]
 serde.workspace = true

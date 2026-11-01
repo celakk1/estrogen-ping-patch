@@ -242,6 +242,7 @@ impl MtuBackend for Backend<'_> {
             )
     }
     fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation> {
+        mtu::ensureLabCommandStopped()?;
         if document.context.adapterGuid != self.config.guid
             || document.addressFamily != self.config.family
         {

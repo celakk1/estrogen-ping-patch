@@ -2,7 +2,7 @@
 
 The `native-mtu-lab` Cargo feature adds a separate, narrowly scoped Windows service for testing real Windows MTU writes and recovery. Default development, build, and packaging commands do not enable it. The normal LocalService service and desktop still expose no setters and report `rollbackAvailable: false`.
 
-The lab is not an optimization feature or a production authorization mechanism. Its purpose is to establish native MTU behavior before enabling application-owned experiments. The six-trial native matrix passed on a disposable Windows Server 2022 runner. This establishes the bounded loopback cases below, not production readiness or physical-adapter recovery.
+The lab is not an optimization feature or a production authorization mechanism. Its purpose is to establish native MTU behavior before enabling application-owned experiments. The expanded ten-trial native matrix passed on a disposable Windows Server 2022 runner. This establishes the bounded loopback cases below, not production readiness or physical-adapter recovery.
 
 ## Isolation and authority
 
@@ -22,13 +22,17 @@ The whole-row `SetIpInterfaceEntry` approach failed the preservation gate on the
 
 Each trial has a 120-second wall-clock lease and monotonic deadline. Stopping the lab service releases an intentional pause and permits restoration. Startup processes its matching unresolved trial before considering new work, with recovery independent of an expired apply lease. A terminal trial ID cannot be replayed to apply a candidate again. Phase markers in the Application event log indicate that the native call returned; they do not themselves prove readback or durable completion. Only the verified journal and fresh observations establish the final result.
 
-New trials now require a [durable operation grant](authorization.md) before checkpoint preparation and application. Admission and the running command check the same exact scope. Restart recovery skips opening the separate grant database. The expanded matrix adds `revoke` and `authorization-unavailable` phases: revoke commits the grant's terminal event before the forced crash; the unavailable case temporarily replaces the closed grant database path with an empty directory while preserving its file and sidecars. Both must still restore through the intact recovery journal. This expanded matrix remains pending until its CI run passes.
+New trials require a [durable operation grant](authorization.md) before checkpoint preparation and application. Admission and the running command check the same exact scope. Restart recovery skips opening the separate grant database. The expanded matrix adds `revoke` and `authorization-unavailable` phases: revoke commits the grant's terminal event before the forced crash; the unavailable case temporarily replaces the closed grant database path with an empty directory while preserving its file and sidecars. Both restored through the intact recovery journal in the ten-trial run.
+
+The command-lifetime revision uses an anonymous Windows job with kill-on-close, [assigned atomically through the process attribute list](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute). The child starts suspended, and permission/deadline checks precede its resume. An explicit inherited-handle list contains only null input/output; the job handle cannot be retained by the child. Neither breakaway option is enabled, so ordinary descendants remain in the job. [Windows closes the job and terminates its processes when the last job handle closes](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects), including on service-process death. Handled exits explicitly terminate the job and verify zero active processes before allowing coordinator readback or another write. If that verification fails, the instance blocks both new writes and recovery observations rather than finalizing a checkpoint from a potentially transient value. The command-lifetime revision has local process-test evidence; its native rerun is still pending.
 
 The Windows operation provides no compare-and-set transaction with the GUID validation. The unique lab alias avoids targeting a recycled numeric interface index, but checking immediately before a write and comparing afterward cannot eliminate races with an administrator renaming or replacing devices. Production policy/concurrency guards remain necessary.
 
 ## CI matrix and limits
 
 At `91ff236`, the [native Windows run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41243474601) passed the four safe harness tests, 49 feature-enabled Rust tests, feature Clippy, the isolated release build, and all six native trials. The original MTU was 1500 and the candidate was 1400 for both families. Each completed trial verified MTU 1500, exact unrelated settings, unchanged persistent rows and DNS origin values, a finalized restored checkpoint, and zero pending recovery work.
+
+At `e375d26`, the [expanded native run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41246725980) passed five safe harness tests, 59 feature tests, Clippy, and ten native trials with durable grants. All ten ended at the original 1500 MTU with the same preservation checks. Each family adds a revoked-grant crash case and an unavailable-authorization-path case, both with one restoration write in the restarted process.
 
 | Family | Interruption | Writes in final process | Final state |
 | --- | --- | --- | --- |
@@ -38,9 +42,13 @@ At `91ff236`, the [native Windows run](https://github.com/celakk1/estrogen-ping-
 | IPv6 | None | 2 | Restored |
 | IPv6 | After apply returned | 1 | Restored |
 | IPv6 | After restore returned | 0 | Restored |
+| IPv4 | After grant revocation | 1 | Restored |
+| IPv4 | Authorization path unavailable during recovery | 1 | Restored |
+| IPv6 | After grant revocation | 1 | Restored |
+| IPv6 | Authorization path unavailable during recovery | 1 | Restored |
 
 JSON object-key order differs between the CLI snapshot and structured events. The harness compares settings after ordering their property names, preserving exact values, types, array order, and missing fields. Its safe regression test reproduces the earlier textual-order mismatch and rejects actual setting changes.
 
-The workflow builds the feature into `target/native-mtu-lab`, outside normal packaged service output. It first runs feature tests and Clippy, then performs six owned-adapter trials: normal apply/restore, forced process termination after the apply call, and forced termination after the restore call, for both IPv4 and IPv6. Restart must verify the exact original MTU, unchanged unrelated configurable fields, a finalized restored journal state, and no pending recovery work. The harness independently checks native readback, both persistent policy rows, and DNS values including absence/type and automatic/static configuration evidence before and after trials. It refuses persistent-store drift during an interrupted trial.
+The workflow builds the feature into `target/native-mtu-lab`, outside normal packaged service output. It first runs feature tests and Clippy, then performs ten owned-adapter trials: normal apply/restore, forced process termination after apply or restore, grant revocation, and unavailable authorization storage, for both IPv4 and IPv6. Restart must verify the exact original MTU, unchanged unrelated configurable fields, a finalized restored journal state, and no pending recovery work. The harness independently checks native readback, both persistent policy rows, and DNS values including absence/type and automatic/static configuration evidence before and after trials. It refuses persistent-store drift during an interrupted trial.
 
 This matrix does not validate other original/candidate MTU pairs, physical Ethernet or Wi-Fi, the Windows 10/11 client matrix, active traffic, VPN/policy interaction, performance improvement, native power-loss/reboot recovery, full-disk behavior, or production grants/watchdog integration. It does not justify restoring DNS/addressing from diagnostic snapshots or enabling automatic optimization. Those remain separate product gates.

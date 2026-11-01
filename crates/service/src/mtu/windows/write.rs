@@ -1,15 +1,9 @@
+mod command;
 use super::*;
 use crate::mtu_lab::ServicePermit;
-use std::{
-    ffi::OsString,
-    os::windows::{ffi::OsStringExt, process::CommandExt},
-    path::PathBuf,
-    process::{Child, Command, Stdio},
-    time::{Duration, Instant},
-};
-use windows_sys::Win32::System::{
-    SystemInformation::GetSystemDirectoryW, Threading::CREATE_NO_WINDOW,
-};
+use command::CommandJob;
+use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, time::Instant};
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 
 fn validateRow(row: &MIB_IPINTERFACE_ROW, expected: &Snapshot) -> ServiceResult<()> {
     if row.Family != family(expected.addressFamily)
@@ -48,26 +42,8 @@ fn executable() -> ServiceResult<PathBuf> {
     Ok(PathBuf::from(OsString::from_wide(&buffer[..length])).join("netsh.exe"))
 }
 
-fn finishCommand(
-    mut child: Child,
-    mut check: impl FnMut() -> ServiceResult<()>,
-) -> ServiceResult<()> {
-    let outcome = loop {
-        if let Err(error) = check() {
-            break Err(error);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break Ok(()),
-            Ok(Some(status)) => break Err(format!("Windows MTU command failed: {status}").into()),
-            Err(error) => break Err(error.into()),
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-        }
-    };
-    if outcome.is_err() && child.try_wait()?.is_none() {
-        child.kill()?;
-        child.wait()?;
-    }
-    outcome
+pub(crate) fn ensureLabCommandStopped() -> ServiceResult<()> {
+    command::ensureStopped()
 }
 
 pub(crate) fn writeLabMtu(
@@ -78,6 +54,7 @@ pub(crate) fn writeLabMtu(
     deadline: Instant,
     mut authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
 ) -> ServiceResult<()> {
+    ensureLabCommandStopped()?;
     permit.validateTarget(original)?;
     if value != original.settings.nlMtu && (value != 1400 || authorize.is_none()) {
         return Err("Native lab permits only its fixed candidate or exact original MTU".into());
@@ -125,19 +102,31 @@ pub(crate) fn writeLabMtu(
     })?;
     validateRow(&row, &fresh)?;
     check()?;
-    let child = Command::new(executable()?)
-        .args(arguments(original, value))
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    finishCommand(child, check)
+    CommandJob::spawn(&executable()?, &arguments(original, value))?.finish(check)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        os::windows::process::CommandExt,
+        process::{Child, Command, Stdio},
+        time::Duration,
+    };
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    fn ownedCommand(arguments: &[&str]) -> CommandJob {
+        let child = CommandJob::spawn(
+            &std::env::current_exe().unwrap(),
+            &arguments
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(child.assigned());
+        child
+    }
 
     #[test]
     fn mtuArgumentsHaveNoCallerSelectedProgramTargetOrPolicyStore() {
@@ -196,42 +185,193 @@ mod tests {
     #[test]
     #[ignore]
     fn waitingChild() {
-        std::thread::sleep(Duration::from_secs(60));
-    }
-
-    #[test]
-    fn commandWaitTerminatesItsOwnChildOnDeadlineOrRevocation() {
-        for revoked in [false, true] {
-            let child = Command::new(std::env::current_exe().unwrap())
+        if let Some(marker) = std::env::var_os("EPP_MTU_COMMAND_TEST_MARKER") {
+            let mut descendant = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--ignored",
                     "--exact",
-                    "mtu::windows::write::tests::waitingChild",
+                    "mtu::windows::write::tests::waitingDescendant",
                 ])
                 .creation_flags(CREATE_NO_WINDOW)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap();
-            let started = Instant::now();
-            let error = finishCommand(child, || {
-                if revoked || started.elapsed() > Duration::from_millis(80) {
-                    Err("test revocation or deadline".into())
-                } else {
-                    Ok(())
+            std::fs::write(
+                PathBuf::from(marker).with_extension("ready"),
+                descendant.id().to_string(),
+            )
+            .unwrap();
+            descendant.wait().unwrap();
+        }
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore]
+    fn waitingDescendant() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore]
+    fn commandOwner() {
+        let marker = std::env::var_os("EPP_MTU_COMMAND_TEST_MARKER").unwrap();
+        let child = ownedCommand(&[
+            "--ignored",
+            "--exact",
+            "mtu::windows::write::tests::waitingChild",
+        ]);
+        std::fs::write(marker, child.id().to_string()).unwrap();
+        if std::env::var("EPP_MTU_COMMAND_TEST_STAGE").unwrap() == "suspended" {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+        child.finish(|| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn commandCannotOutliveItsOwner() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::{
+            Foundation::WAIT_OBJECT_0,
+            System::Threading::{
+                OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+                WaitForSingleObject,
+            },
+        };
+
+        struct Owner(Child);
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        struct CommandProcess(OwnedHandle);
+        impl Drop for CommandProcess {
+            fn drop(&mut self) {
+                if unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) } != WAIT_OBJECT_0 {
+                    unsafe {
+                        TerminateProcess(self.0.as_raw_handle(), 1);
+                        WaitForSingleObject(self.0.as_raw_handle(), 5_000);
+                    }
                 }
-            })
-            .unwrap_err();
+            }
+        }
+
+        for suspended in [true, false] {
+            let directory = std::env::temp_dir().join(format!("epp-command-{}", Uuid::new_v4()));
+            std::fs::create_dir(&directory).unwrap();
+            let marker = directory.join("child.pid");
+            let mut owner = Owner(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "mtu::windows::write::tests::commandOwner",
+                    ])
+                    .env("EPP_MTU_COMMAND_TEST_MARKER", &marker)
+                    .env(
+                        "EPP_MTU_COMMAND_TEST_STAGE",
+                        if suspended { "suspended" } else { "running" },
+                    )
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let childId = loop {
+                if let Ok(value) = std::fs::read_to_string(&marker)
+                    && let Ok(pid) = value.parse::<u32>()
+                    && (suspended || marker.with_extension("ready").is_file())
+                {
+                    break pid;
+                }
+                assert!(
+                    owner.0.try_wait().unwrap().is_none(),
+                    "Command owner exited early"
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "Command owner did not publish its child"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let mut processIds = vec![childId];
+            if !suspended {
+                processIds.push(
+                    std::fs::read_to_string(marker.with_extension("ready"))
+                        .unwrap()
+                        .parse::<u32>()
+                        .unwrap(),
+                );
+            }
+            let children: Vec<_> = processIds
+                .into_iter()
+                .map(|childId| {
+                    let handle =
+                        unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, childId) };
+                    assert!(
+                        !handle.is_null(),
+                        "Cannot open the exact test command process"
+                    );
+                    let child = CommandProcess(unsafe { OwnedHandle::from_raw_handle(handle) });
+                    assert_ne!(
+                        unsafe { WaitForSingleObject(child.0.as_raw_handle(), 0) },
+                        WAIT_OBJECT_0
+                    );
+                    child
+                })
+                .collect();
+            owner.0.kill().unwrap();
+            owner.0.wait().unwrap();
+            let stopped: Vec<_> = children
+                .iter()
+                .map(|child| unsafe { WaitForSingleObject(child.0.as_raw_handle(), 2_000) })
+                .collect();
+            drop(children);
+            drop(owner);
+            std::fs::remove_file(marker).unwrap();
+            if !suspended {
+                std::fs::remove_file(directory.join("child.ready")).unwrap();
+            }
+            std::fs::remove_dir(directory).unwrap();
+            assert_eq!(
+                stopped,
+                if suspended {
+                    vec![WAIT_OBJECT_0]
+                } else {
+                    vec![WAIT_OBJECT_0, WAIT_OBJECT_0]
+                },
+                "Command survived the death of its owner"
+            );
+        }
+    }
+
+    #[test]
+    fn commandWaitTerminatesItsOwnChildOnDeadlineOrRevocation() {
+        for revoked in [false, true] {
+            let child = ownedCommand(&[
+                "--ignored",
+                "--exact",
+                "mtu::windows::write::tests::waitingChild",
+            ]);
+            let started = Instant::now();
+            let error = child
+                .finish(|| {
+                    if revoked || started.elapsed() > Duration::from_millis(80) {
+                        Err("test revocation or deadline".into())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
             assert!(error.to_string().contains("revocation or deadline"));
             assert!(started.elapsed() < Duration::from_secs(5));
         }
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args(["--list"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        finishCommand(child, || Ok(())).unwrap();
+        let child = ownedCommand(&["--list"]);
+        child.finish(|| Ok(())).unwrap();
     }
 }

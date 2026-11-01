@@ -20,7 +20,7 @@ use windows_sys::{
     core::GUID,
 };
 #[cfg(feature = "native-mtu-lab")]
-pub(super) use write::writeLabMtu;
+pub(super) use write::{ensureLabCommandStopped, writeLabMtu};
 
 fn checkCancellation(cancelled: &AtomicBool) -> ServiceResult<()> {
     if cancelled.load(Ordering::SeqCst) {
