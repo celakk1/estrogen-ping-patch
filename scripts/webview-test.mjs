@@ -1,4 +1,33 @@
 import { setTimeout } from 'node:timers/promises';
+import assert from 'node:assert/strict';
+
+export async function verifyTestActionFits(page, label, screenshotPrefix) {
+  const originalFont = await page.evaluate(() => document.documentElement.style.fontFamily);
+  try {
+    for (const [name, font] of [
+      ['default', originalFont],
+      ['windows-font', "'Segoe UI', sans-serif"],
+    ]) {
+      await page.evaluate((font) => {
+        document.documentElement.style.fontFamily = font;
+      }, font);
+      await page.screenshot({ path: `${screenshotPrefix}-${name}.png`, fullPage: true });
+      const bounds = await page.getByRole('button', { name: label, exact: true }).boundingBox();
+      assert.ok(
+        bounds && bounds.y >= 0 && bounds.y + bounds.height <= 744,
+        `${label} must fit with 24 pixels to spare at 1024 by 768 (${name}): ${JSON.stringify(bounds)}`,
+      );
+      assert.ok(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        'Narrow layout must not overflow horizontally',
+      );
+    }
+  } finally {
+    await page.evaluate((font) => {
+      document.documentElement.style.fontFamily = font;
+    }, originalFont);
+  }
+}
 
 export async function waitForDesktopPage(browser, timeoutMs = 15_000) {
   const deadline = performance.now() + timeoutMs;

@@ -3,7 +3,7 @@ import { createServer } from 'node:net';
 import { chromium } from 'playwright-core';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { waitForDesktopPage } from './webview-test.mjs';
+import { verifyTestActionFits, waitForDesktopPage } from './webview-test.mjs';
 import { dnsFixture } from './dns-fixture.mjs';
 
 const endpoint = process.env.EPP_CDP_URL;
@@ -80,18 +80,7 @@ try {
     height: window.innerHeight,
   }));
   await page.setViewportSize({ width: 1024, height: 768 });
-  await page.screenshot({ path: 'artifacts/desktop-beginner-narrow.png', fullPage: true });
-  const startBounds = await page
-    .getByRole('button', { name: 'Start test', exact: true })
-    .boundingBox();
-  assert.ok(
-    startBounds && startBounds.y >= 0 && startBounds.y + startBounds.height <= 744,
-    `Start test must fit with 24 pixels to spare at 1024 by 768: ${JSON.stringify(startBounds)}`,
-  );
-  assert.ok(
-    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    'Narrow layout must not overflow horizontally',
-  );
+  await verifyTestActionFits(page, 'Start test', 'artifacts/desktop-beginner-narrow');
   await page.setViewportSize(viewport);
   await page.getByRole('button', { name: 'Switch to light theme', exact: true }).click();
   await page.screenshot({ path: 'artifacts/desktop-beginner-light.png', animations: 'disabled' });

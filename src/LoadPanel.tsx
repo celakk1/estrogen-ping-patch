@@ -132,9 +132,7 @@ export default function LoadPanel({
           <div className="panel-heading">
             <div>
               <h2>Check your speed</h2>
-              <p>
-                See how fast data moves and whether your connection slows down during transfers.
-              </p>
+              <p>Measure speed and delay during downloads and uploads.</p>
             </div>
           </div>
           <div className="form-body">

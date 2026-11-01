@@ -3,7 +3,7 @@ import { chromium } from 'playwright-core';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createBenchmarkServer } from './benchmark-server.mjs';
-import { waitForDesktopPage } from './webview-test.mjs';
+import { verifyTestActionFits, waitForDesktopPage } from './webview-test.mjs';
 
 const endpoint = process.env.EPP_CDP_URL;
 if (!endpoint || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint))
@@ -36,15 +36,7 @@ try {
     height: window.innerHeight,
   }));
   await page.setViewportSize({ width: 1024, height: 768 });
-  await page.screenshot({ path: 'artifacts/desktop-beginner-load-narrow.png', fullPage: true });
-  const startBounds = await page
-    .getByRole('button', { name: 'Start speed test', exact: true })
-    .boundingBox();
-  assert.ok(
-    startBounds && startBounds.y >= 0 && startBounds.y + startBounds.height <= 744,
-    `Start speed test must fit with 24 pixels to spare at 1024 by 768: ${JSON.stringify(startBounds)}`,
-  );
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+  await verifyTestActionFits(page, 'Start speed test', 'artifacts/desktop-beginner-load-narrow');
   await page.setViewportSize(viewport);
   async function configure() {
     const advanced = page
