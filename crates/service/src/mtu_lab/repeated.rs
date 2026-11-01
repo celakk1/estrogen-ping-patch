@@ -223,7 +223,7 @@ fn plan(
         },
         resolution: 0.1,
         minimumImprovement: comparison::Threshold {
-            absolute: 1000.0,
+            absolute: if failure { 0.1 } else { 1000.0 },
             relativeFraction: 0.0,
         },
         maximumRegression: comparison::Threshold {
@@ -652,6 +652,45 @@ mod tests {
         assert_ne!(ids[0], checkpointId(Uuid::new_v4(), 0));
         assert_eq!(config.leaseMs(), 30_000);
         assert_eq!(config.deadline(), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn repeatedPlanUsesValidUnitsAndConservativeLifecycleThresholds() {
+        let original = crate::recovery::tests::nativeFixture();
+        let config = Config {
+            ownerSid: "S-1-5-21-1-2-3-1000".into(),
+            guid: original.adapterGuid,
+            family: original.addressFamily,
+            phase: Phase::Repeated,
+            trialId: Uuid::new_v4(),
+        };
+        let listeners = Listeners::new().unwrap();
+        let benchmarkConfig = BenchmarkConfig {
+            sampleCount: 3,
+            intervalMs: 250,
+            timeoutMs: 100,
+            sessionMinutes: 1,
+            ..Default::default()
+        };
+        let seed = benchmark::runBenchmark(
+            benchmarkConfig,
+            listeners.endpoints.clone(),
+            &AtomicBool::new(true),
+            |_, _, _| {},
+        )
+        .unwrap();
+        let plan = plan(&config, &original, &seed, &"a".repeat(64)).unwrap();
+        plan.validate().unwrap();
+        assert_eq!(plan.blockCount, 12);
+        assert_eq!(plan.comparison.metrics.len(), 4);
+        for metric in plan.comparison.metrics {
+            if metric.unit == comparison::Unit::Percent {
+                assert_eq!(metric.minimumImprovement.absolute, 0.1);
+                assert_eq!(metric.maximumRegression.absolute, 0.0);
+            } else {
+                assert_eq!(metric.minimumImprovement.absolute, 1000.0);
+            }
+        }
     }
 
     #[test]
