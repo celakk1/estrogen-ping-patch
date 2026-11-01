@@ -11,6 +11,7 @@ pub(crate) struct Backend {
     pub(crate) failRestore: bool,
     pub(crate) panicAfterApply: bool,
     pub(crate) externalOriginal: Option<Arc<AtomicBool>>,
+    pub(crate) observedMtu: Option<Arc<std::sync::atomic::AtomicU32>>,
     checks: usize,
     stopDuringVerification: Option<Arc<AtomicBool>>,
     pub(crate) writes: Vec<WritePurpose>,
@@ -76,6 +77,9 @@ impl MtuBackend for Backend {
         })?;
         self.writes.push(purpose);
         self.native.settings.nlMtu = value;
+        if let Some(observed) = &self.observedMtu {
+            observed.store(value, Ordering::SeqCst);
+        }
         if self.panicAfterApply && purpose == WritePurpose::Apply {
             panic!("fixture setting worker panic after application");
         }
@@ -129,6 +133,7 @@ pub(crate) fn fixture() -> Fixture {
         failRestore: false,
         panicAfterApply: false,
         externalOriginal: None,
+        observedMtu: None,
         checks: 0,
         stopDuringVerification: None,
         writes: Vec::new(),

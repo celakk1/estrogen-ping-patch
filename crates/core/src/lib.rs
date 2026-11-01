@@ -6,6 +6,7 @@ pub mod comparison;
 pub mod config;
 pub mod discovery;
 pub mod dns;
+pub mod experiment;
 pub mod icmp;
 pub mod mcp;
 mod native_dns;

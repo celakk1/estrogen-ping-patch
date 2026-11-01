@@ -215,7 +215,40 @@ impl Plan {
     }
 }
 
-fn validateSessions(plan: &Plan, blocks: &[MatchedBlock]) -> AppResult<()> {
+pub(crate) fn validateSession(
+    plan: &Plan,
+    session: &Session,
+    configuration: &str,
+    identifiers: &mut BTreeSet<String>,
+    previousEnd: u64,
+) -> AppResult<()> {
+    if !identifier(&session.id)
+        || !identifiers.insert(session.id.clone())
+        || !session.completed
+        || session.startedAtUnixMs == 0
+        || session.startedAtUnixMs < previousEnd
+        || session.finishedAtUnixMs <= session.startedAtUnixMs
+        || session.finishedAtUnixMs > i64::MAX as u64
+        || session.cohortSha256 != plan.cohortSha256
+        || session.environmentSha256 != plan.environmentSha256
+        || session.configurationSha256 != configuration
+        || session.values.len() != plan.metrics.len()
+        || session
+            .values
+            .iter()
+            .zip(&plan.metrics)
+            .any(|(value, rule)| {
+                !value.is_finite()
+                    || !(0.0..=1e12).contains(value)
+                    || (rule.unit == Unit::Percent && *value > 100.0)
+            })
+    {
+        return Err("Comparison sessions must be completed, unique, ordered, nonoverlapping, and bound to the same cohort, environment, configuration, and metric order".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validateSessions(plan: &Plan, blocks: &[MatchedBlock]) -> AppResult<()> {
     if !(1..=MAX_BLOCKS).contains(&blocks.len()) {
         return Err("Comparison requires one to 128 complete matched blocks".into());
     }
@@ -227,29 +260,7 @@ fn validateSessions(plan: &Plan, blocks: &[MatchedBlock]) -> AppResult<()> {
             (&block.candidate, &plan.candidateConfigurationSha256),
             (&block.originalAfter, &plan.originalConfigurationSha256),
         ] {
-            if !identifier(&session.id)
-                || !identifiers.insert(&session.id)
-                || !session.completed
-                || session.startedAtUnixMs == 0
-                || session.startedAtUnixMs < previousEnd
-                || session.finishedAtUnixMs <= session.startedAtUnixMs
-                || session.finishedAtUnixMs > i64::MAX as u64
-                || session.cohortSha256 != plan.cohortSha256
-                || session.environmentSha256 != plan.environmentSha256
-                || &session.configurationSha256 != configuration
-                || session.values.len() != plan.metrics.len()
-                || session
-                    .values
-                    .iter()
-                    .zip(&plan.metrics)
-                    .any(|(value, rule)| {
-                        !value.is_finite()
-                            || !(0.0..=1e12).contains(value)
-                            || (rule.unit == Unit::Percent && *value > 100.0)
-                    })
-            {
-                return Err("Comparison sessions must be completed, unique, ordered, nonoverlapping, and bound to the same cohort, environment, configuration, and metric order".into());
-            }
+            validateSession(plan, session, configuration, &mut identifiers, previousEnd)?;
             previousEnd = session.finishedAtUnixMs;
         }
         if block.originalAfter.finishedAtUnixMs - block.originalBefore.startedAtUnixMs

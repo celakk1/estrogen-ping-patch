@@ -1,0 +1,35 @@
+# Durable repeated trials
+
+The core experiment runner executes a fixed twelve to thirty-two original/candidate/original measurement blocks for one candidate. The optional service `automatic-trials` feature connects it to the existing MTU trial controller. Neither component adds a desktop command, a production setter, a consent issuer, or settings retention. The installed service remains read-only.
+
+## Measurement lifecycle
+
+A plan fixes the comparison policy, server cohort, environment and configuration fingerprints, block count, and an absolute budget of at most four hours. Both wall-clock expiry and a fixed monotonic deadline stop further work. Each block verifies the original environment, collects the first baseline, verifies the original again, durably records candidate intent, runs the authorized temporary candidate, verifies restoration, and collects the final baseline. Complete blocks enter the existing comparison library with their exact native checkpoint references.
+
+The runner refuses invalid or incomplete measurements before proceeding. Reused session/checkpoint identities, changed context, invalid timestamps, and changed configurations cannot become completed candidate evidence. An observed hard regression or excessive surrounding-baseline drift stops subsequent trials. Promising exploratory results do not stop the search early as a successful optimization; all planned blocks must finish. A completed run can still have an inconclusive comparison. There is no retained-setting outcome.
+
+Cancellation and expiry are checked between phases and after final original verification. The service bridge independently relays cancellation, overall expiry, and service shutdown to the watchdog while collection runs. Collector progress renews only the bounded heartbeat, never the checkpoint lease. A collector that stalls can prevent the calling worker from returning, but cannot keep the temporary setting active past a functioning watchdog's stop/deadline trigger. A blocked native API and a dead service still require the previously documented independent recovery paths.
+
+## Durable state and interruption
+
+The experiment store is a separate schema-one SQLite database with a distinct application identity, verified WAL mode and FULL synchronization, bounded payloads, committed readback, checksums, and revision checks. It accepts an absolute path and refuses foreign/newer schemas. It preserves the fixed plan, matched metric sessions, checkpoint references, partial progress, and final state. The normal application database remains version five, the native recovery journal remains version three, and the status pipe remains version two.
+
+At most one unfinished experiment can own a store. Candidate intent must commit and read back before its host can apply anything. Failed progress storage blocks subsequent measurement/application. Existing service-owned native checkpoints remain the authority for restoration even if this separate experiment store becomes unavailable. This store is not a network backup, an authorization source, a raw-packet database, or proof of restorability. Its checksums detect accidental inconsistency, not malicious edits by its owner. A production service host must use service-protected storage and cannot trust a caller's edited database or supplied fingerprints.
+
+Reopening preserves an interrupted phase and blocks new experiments. It does not repeat or resume a candidate automatically. Recovery acknowledgement first requires the trusted host to verify the exact original and absence of unresolved native recovery; only then does it mark the experiment interrupted. A failed verification leaves it blocking new work. Preserve unresolved databases for recovery and investigation; deleting them is not recovery.
+
+## Service host contract
+
+The MTU host reads back the original adapter/OS/driver context, exact captured interface settings and MTU, live link state, readback freshness, pending recovery, and recorded mutator termination between trials. Its checkpoint factory must supply a newly authorized schema-three checkpoint bound to that fresh original, exact adapter/family/user/candidate, and the remaining overall budget. The existing trial controller separately enforces its thirty-minute lease maximum, durable native backup, apply authorization, candidate verification, and verified rollback.
+
+The trusted measurement collector must independently verify the complete experiment environment and configuration binding, implement bounded collection, preserve raw benchmark records, and return correctly bound metric sessions. The bridge does not invent full network context from its partial native MTU snapshot. These are internal Rust contracts; no caller-selected command, registry path, or write IPC was introduced.
+
+## Validation and limits
+
+Eleven focused core tests passed, including twelve complete brackets, first-block regression/drift rejection, invalid evidence, cancellation/expiry, restart without replay, failed progress writes before/after a candidate, stale writers, corruption/foreign-schema refusal, and blocked recovery acknowledgement. A regression test reproduced false completion when cancellation arrived during final original verification; it passed after the final stop check was added.
+
+Four service integration tests passed. They execute twelve verified temporary trials and thirty-six measurement sessions with actual IPv4/IPv6 loopback TCP connections over a simulated settings backend; verify independent restoration during a stalled collector after cancellation; reject an out-of-scope checkpoint before writing; and block further work after failed restoration until native-journal recovery is verified. These tests do not change development-machine network settings and cannot demonstrate a performance improvement.
+
+The single-trial controller and final candidate-readback fix passed twenty [owned-adapter native recovery trials](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41311739416). Those cases predate the repeated-trial runner; they do not establish repeated native trials, physical-adapter support, calibrated improvement claims, or production safety. The new runner passed the full local suite: 174 Rust tests, fifteen frontend tests, fifteen script tests, formatting, TypeScript, and workspace Clippy. Its native-feature suite passed 103 tests with ten explicit subprocess helpers ignored, plus feature Clippy. Hosted Windows validation of this runner revision is pending.
+
+Production consent/privilege integration, a complete trusted collector, diagnostic candidate generation, matched internet and loaded-responsiveness sessions, calibrated independent confirmation, retained-setting verification, offline user recovery, physical/client-OS/reboot validation, schedules, and desktop controls remain unfinished. The fixed MTU 1400 used by lab fixtures is not an optimization recommendation.

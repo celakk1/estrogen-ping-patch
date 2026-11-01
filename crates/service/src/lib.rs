@@ -1,6 +1,8 @@
 #![allow(non_snake_case)]
 
 pub mod authorization;
+#[cfg(feature = "automatic-trials")]
+pub mod experiment;
 pub mod journal;
 pub mod mtu;
 #[cfg(all(windows, feature = "native-mtu-lab"))]
