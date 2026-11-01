@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use uuid::Uuid;
 
 pub mod origins;
+pub mod policy;
 #[cfg(windows)]
 mod windows;
 

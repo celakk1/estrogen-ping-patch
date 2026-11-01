@@ -40,7 +40,12 @@ fn execute() -> epp_service::ServiceResult<()> {
             println!("{}",serde_json::to_string_pretty(&epp_service::mtu::capture(guid.parse()?,family,&std::sync::atomic::AtomicBool::new(false))?)?);
             Ok(())
         }
-        _ => Err("Expected --status, --identity, --mtu-inventory, --inspect-mtu GUID ipv4|ipv6, or SCM-owned --service --owner-sid SID".into()),
+        [mode,guid,family] if mode=="--inspect-ip-policy" => {
+            let family=match family.as_str(){"ipv4"=>epp_service::journal::AddressFamily::Ipv4,"ipv6"=>epp_service::journal::AddressFamily::Ipv6,_=>return Err("IP policy family must be ipv4 or ipv6".into())};
+            println!("{}",serde_json::to_string_pretty(&epp_service::mtu::policy::inspectWorker(guid.parse()?,family,&std::sync::atomic::AtomicBool::new(false))?)?);
+            Ok(())
+        }
+        _ => Err("Expected --status, --identity, --mtu-inventory, --inspect-mtu GUID ipv4|ipv6, --inspect-ip-policy GUID ipv4|ipv6, or SCM-owned --service --owner-sid SID".into()),
     }
 }
 

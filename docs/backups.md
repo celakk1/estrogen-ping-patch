@@ -58,6 +58,14 @@ This is fixed registry representation evidence, not a complete effective-policy 
 
 The reader uses [RegOpenKeyExW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regopenkeyexw) and [RegQueryValueExW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regqueryvalueexw). It deliberately retains raw bytes rather than interpreting potentially unterminated strings or adding terminators. No registry write API or caller-selected path/value name is exposed.
 
+### Read-only IP policy worker
+
+The service executable accepts `--inspect-ip-policy GUID ipv4|ipv6` for an explicitly selected local adapter. It queries eleven fixed `MSFT_NetIPInterface` fields from ActiveStore and PersistentStore: MTU, interface metric, automatic metric, DHCP, router discovery, forwarding, weak-host send/receive, advertising, and managed/other stateful configuration. The result preserves unsigned CIM types, null values, and missing persistent rows separately. It includes native schema-two identity, registry origins, and OS/driver context; unavailable originals, ambiguous rows, nondefault compartments, or disagreement between active and native MTU cause refusal.
+
+The worker uses local COM/WMI with current credentials and no setter, arbitrary query, remote namespace, or caller-selected field list. Native evidence must agree before and after enumeration. This is a standalone read-only command, not an added desktop/MCP operation or a complete DNS/addressing backup. It is not yet included in checkpoint preparation, mutation, or watchdog recovery.
+
+The four-second enumeration allowance is checked between provider calls; individual COM calls can block longer. Recovery must not call this reader synchronously. Production integration still requires a service-owned isolated child, enforced lifetime and verified exit, durable policy binding, and operation-specific restore verification. The smoke script independently checks both stores and families against `Get-NetIPInterface`, bounds its owned child to fifteen seconds, and verifies child exit before finishing. That test harness is not the production isolation mechanism.
+
 ### Production change requirements
 
 Before any setter is enabled, the privileged service must perform all of these steps:
