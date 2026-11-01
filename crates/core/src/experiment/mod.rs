@@ -97,6 +97,8 @@ pub struct CandidateResult {
     pub checkpointId: String,
     pub outcome: TrialOutcome,
     pub measurement: Option<Session>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -134,7 +136,11 @@ impl Snapshot {
         }
         if let Some(candidate) = &self.pendingCandidate
             && (!identifier(&candidate.checkpointId)
-                || self.checkpoints.contains(&candidate.checkpointId))
+                || self.checkpoints.contains(&candidate.checkpointId)
+                || candidate
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.len() > 4096))
         {
             return Err("Candidate result requires its exact recovery checkpoint identity".into());
         }
@@ -250,6 +256,8 @@ pub trait Host {
     fn measureCandidate(&mut self, control: &Control<'_>) -> AppResult<CandidateResult>;
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Report {
     pub snapshot: Snapshot,
     pub comparison: Option<comparison::Report>,
@@ -378,7 +386,8 @@ fn advance<H: Host>(
         guarded(|| host.verifyOriginal(&snapshot.plan))?;
         persist(store, snapshot, State::Candidate)?;
         // the host must not return completed until its independent recovery verifies the original.
-        let candidate = guarded(|| host.measureCandidate(control))?;
+        let mut candidate = guarded(|| host.measureCandidate(control))?;
+        candidate.error = candidate.error.take().map(bounded);
         let checkpointId = candidate.checkpointId.clone();
         if !identifier(&checkpointId) || snapshot.checkpoints.contains(&checkpointId) {
             return Err(
@@ -386,6 +395,14 @@ fn advance<H: Host>(
             );
         }
         if candidate.outcome != TrialOutcome::Completed {
+            snapshot.error = Some(candidate.error.as_ref().map_or_else(
+                || match candidate.outcome {
+                    TrialOutcome::RecoveryRequired => "Original settings could not be fully verified; recovery is required before another trial".into(),
+                    TrialOutcome::Interrupted => "The temporary trial stopped before all measurements finished".into(),
+                    _ => "The temporary trial failed before its measurements could be accepted".into(),
+                },
+                bounded,
+            ));
             let state = match candidate.outcome {
                 TrialOutcome::RecoveryRequired => State::RecoveryRequired,
                 TrialOutcome::Interrupted => control.reason()?.unwrap_or(State::Interrupted),
@@ -393,6 +410,11 @@ fn advance<H: Host>(
             };
             snapshot.pendingCandidate = Some(candidate);
             return Ok(state);
+        }
+        if candidate.error.is_some() {
+            return Err(
+                "A candidate with an unresolved error cannot supply completed measurements".into(),
+            );
         }
         let measured = candidate
             .measurement
@@ -467,7 +489,7 @@ pub fn execute<H: Host>(
     let mut snapshot = store.begin(plan, now)?;
     let result = advance(store, &mut snapshot, host, &control);
     let (state, error) = match result {
-        Ok(state) => (state, None),
+        Ok(state) => (state, snapshot.error.clone()),
         Err(error) => (
             control.reason()?.unwrap_or(State::Failed),
             Some(bounded(error)),

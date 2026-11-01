@@ -167,6 +167,9 @@ impl Host for HostFixture {
             ),
             outcome: self.candidateOutcome.unwrap_or(TrialOutcome::Completed),
             measurement: Some(measurement),
+            error: self
+                .candidateOutcome
+                .map(|_| "fixture candidate failure detail".into()),
         })
     }
 }
@@ -181,6 +184,9 @@ fn repeatedTrialsPersistAllBracketsAndNeverAuthorizeRetention() {
     assert_eq!(host.candidates, 12);
     assert_eq!(host.originals, 24);
     assert!(!host.changed);
+    let exported = serde_json::to_value(&report).unwrap();
+    assert_eq!(exported["snapshot"]["state"], "completed");
+    assert_eq!(exported["comparison"]["exploratory"], true);
     let comparison = report.comparison.unwrap();
     assert_eq!(comparison.outcome, comparison::Outcome::Promising);
     assert!(comparison.exploratory);
@@ -414,10 +420,42 @@ fn aReusedCheckpointAndInterruptedCandidateCannotSupplyCompletedBrackets() {
                 State::Failed
             }
         );
+        if interrupted {
+            assert_eq!(
+                report.snapshot.error.as_deref(),
+                Some("fixture candidate failure detail")
+            );
+            assert_eq!(
+                report
+                    .snapshot
+                    .pendingCandidate
+                    .as_ref()
+                    .unwrap()
+                    .error
+                    .as_deref(),
+                Some("fixture candidate failure detail")
+            );
+        }
         assert_eq!(report.snapshot.blocks.len(), usize::from(!interrupted));
         assert!(!host.changed);
         assert!(store.pending().unwrap().is_empty());
     }
+}
+
+#[test]
+fn aCompletedCandidateWithAnUnresolvedErrorCannotSupplyComparisonEvidence() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let mut host = HostFixture {
+        candidateOutcome: Some(TrialOutcome::Completed),
+        ..Default::default()
+    };
+    let report = execute(&mut store, plan(), &mut host, &AtomicBool::new(false)).unwrap();
+    assert_eq!(report.snapshot.state, State::Failed);
+    assert!(report.snapshot.blocks.is_empty());
+    assert!(report.comparison.is_none());
+    assert_eq!(host.candidates, 1);
+    assert!(!host.changed);
 }
 
 #[test]

@@ -227,6 +227,43 @@ where
         if result.watchdog.is_some() || result.recovery.is_some() {
             self.lastCheckpoint = Some(result.checkpointId);
         }
+        let error = if result.outcome == trial::Outcome::Completed {
+            None
+        } else {
+            let watched = result.watchdog.as_ref();
+            let details = [
+                watched.and_then(|report| report.recoveryError.as_deref()),
+                watched
+                    .and_then(|report| report.recovery.as_ref())
+                    .and_then(|recovery| recovery.error.as_deref()),
+                result
+                    .recovery
+                    .as_ref()
+                    .and_then(|recovery| recovery.error.as_deref()),
+                watched.and_then(|report| report.monitorError.as_deref()),
+                result.error.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+            let detail = if details.is_empty() {
+                match result.outcome {
+                    trial::Outcome::RecoveryRequired => "Original settings could not be fully verified; recover the recorded checkpoint before another trial".into(),
+                    trial::Outcome::Interrupted => match watched.map(|report| report.trigger) {
+                        Some(watchdog::Trigger::HeartbeatLost) => "Measurements stopped reporting progress, so the temporary trial was stopped",
+                        Some(watchdog::Trigger::LeaseExpired) => "The temporary trial reached its time limit",
+                        Some(watchdog::Trigger::ClockChanged) => "The system clock changed during the temporary trial",
+                        Some(watchdog::Trigger::ConnectivityLost) => "The connection stopped responding during the temporary trial",
+                        Some(watchdog::Trigger::VerificationFailed) => "The candidate setting or its permission changed during the temporary trial",
+                        _ => "The temporary trial stopped before all measurements finished",
+                    }.into(),
+                    _ => "Temporary trial failed before its measurements could be accepted".into(),
+                }
+            } else {
+                details.join("; ")
+            };
+            Some(detail.chars().take(1024).collect())
+        };
         Ok(CandidateResult {
             checkpointId: result.checkpointId.to_string(),
             outcome: match result.outcome {
@@ -236,6 +273,7 @@ where
                 _ => TrialOutcome::Failed,
             },
             measurement: result.measurement,
+            error,
         })
     }
 }

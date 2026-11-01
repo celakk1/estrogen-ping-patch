@@ -349,6 +349,23 @@ fn failedNativeRestorationBlocksMoreTrialsUntilServiceRecoveryIsVerified() {
     let report =
         experiment::execute(&mut store, plan.clone(), &mut host, &AtomicBool::new(false)).unwrap();
     assert_eq!(report.snapshot.state, State::RecoveryRequired);
+    assert!(
+        report
+            .snapshot
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("fixture restoration failed"))
+    );
+    assert!(
+        report
+            .snapshot
+            .pendingCandidate
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("fixture restoration failed"))
+    );
     assert!(report.snapshot.blocks.is_empty());
     assert_eq!(host.measurements.count, 2);
     assert!(experiment::acknowledgeRecovery(&mut store, &plan.id, &mut host).is_err());

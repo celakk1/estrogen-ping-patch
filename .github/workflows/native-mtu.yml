@@ -27,9 +27,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Guard and device helper tests
         run: node --test scripts/native-mtu-lab.test.mjs
-      - name: Format and native feature tests
+      - name: Format and automatic trial tests
         run: |
           cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p epp-core experiment::
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p epp-service --features native-mtu-lab
       - name: Native feature lint
