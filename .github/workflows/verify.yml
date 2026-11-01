@@ -59,3 +59,11 @@ jobs:
       - name: Dedicated service lifecycle in disposable runner
         shell: powershell
         run: ./scripts/service-smoke.ps1 -allowServiceInstallation
+      - name: UI failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-screenshots
+          path: artifacts/*.png
+          if-no-files-found: ignore
+          retention-days: 7

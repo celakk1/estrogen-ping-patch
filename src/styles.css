@@ -993,6 +993,18 @@ summary {
     display: none;
   }
 }
+@media (max-height: 800px) and (min-width: 761px) {
+  .page-heading .eyebrow {
+    display: none;
+  }
+  .page-heading {
+    margin-bottom: 20px;
+  }
+  .benchmark-tabs,
+  .load-stages {
+    margin-bottom: 16px;
+  }
+}
 @media (max-width: 760px) {
   .sidebar {
     position: static;
