@@ -2,7 +2,7 @@
 
 The `native-mtu-lab` Cargo feature adds a separate, narrowly scoped Windows service for testing real Windows MTU writes and recovery. Default development, build, and packaging commands do not enable it. The normal LocalService service and desktop still expose no setters and report `rollbackAvailable: false`.
 
-The lab is not an optimization feature or a production authorization mechanism. Its purpose is to establish native MTU behavior before enabling application-owned experiments. The expanded ten-trial native matrix passed on a disposable Windows Server 2022 runner. This establishes the bounded loopback cases below, not production readiness or physical-adapter recovery.
+The lab is not an optimization feature or a production authorization mechanism. Its purpose is to establish native MTU behavior before enabling application-owned experiments. The current twenty-trial native matrix passed on a disposable Windows Server 2022 runner. This establishes the bounded loopback cases below, not production readiness or physical-adapter recovery.
 
 ## Isolation and authority
 
@@ -32,7 +32,7 @@ The Windows operation provides no compare-and-set transaction with the GUID vali
 
 ## CI matrix and limits
 
-The [experiment watchdog](watchdog.md) extends the current harness with deadline, missing-heartbeat, service-stop, and automatic SCM crash-restart trials for each family. At `e0e6046`, the [twenty-trial matrix](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41306701964) passed with exact original MTU and expected process/write counts in every case. The newer [automatic trial controller](automatic-trials.md) integration into the Complete case is pending native verification; the twelve-trial results below describe the earlier revision.
+The [experiment watchdog](watchdog.md) extends the current harness with deadline, missing-heartbeat, service-stop, and automatic SCM crash-restart trials for each family. At `e0e6046`, the [twenty-trial matrix](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41306701964) passed with exact original MTU and expected process/write counts in every case. The [automatic trial controller](automatic-trials.md) integration and final candidate-readback gate also passed all twenty trials at `0db5979`. The [repeated-trial library revision](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41313776843) at `25dcbba` passed 103 native-feature tests, feature Clippy, the isolated release build, and the same twenty native cases. The final failure-detail revision at `2ea11d9` also passed all twenty cases, thirteen core experiment tests, 103 feature tests, feature Clippy, and the isolated release build: [native Windows run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41315791907). Its Complete case still exercises one native trial; repeated native brackets are not established by that matrix. The twelve-trial results below describe the earlier revision.
 
 At `91ff236`, the [native Windows run](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41243474601) passed the four safe harness tests, 49 feature-enabled Rust tests, feature Clippy, the isolated release build, and all six native trials. The original MTU was 1500 and the candidate was 1400 for both families. Each completed trial verified MTU 1500, exact unrelated settings, unchanged persistent rows and DNS origin values, a finalized restored checkpoint, and zero pending recovery work.
 
