@@ -1,6 +1,8 @@
+mod mutators;
 mod store;
+pub use mutators::{MutatorIdentity, MutatorRecord};
 pub use store::Journal;
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 use crate::ServiceResult;
 use serde::{Deserialize, Serialize};
@@ -39,7 +41,7 @@ pub struct MtuCheckpoint {
 
 impl MtuCheckpoint {
     pub fn validate(&self) -> ServiceResult<()> {
-        if !matches!(self.schemaVersion, 1 | 2)
+        if !matches!(self.schemaVersion, 1..=3)
             || self.id.is_nil()
             || self.context.adapterGuid.is_nil()
         {
@@ -82,7 +84,7 @@ impl MtuCheckpoint {
         }
         match (self.schemaVersion, &self.nativeOriginal) {
             (1, None) => {}
-            (2, Some(native)) => {
+            (2 | 3, Some(native)) => {
                 if native.journalContext()? != self.context
                     || native.addressFamily != self.addressFamily
                     || native.settings.nlMtu != self.originalMtu

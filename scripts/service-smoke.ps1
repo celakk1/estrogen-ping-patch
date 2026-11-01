@@ -54,7 +54,7 @@ try {
     }
     1..5 | ForEach-Object {
         $status = readStatus
-        if ($status.state -ne 'ready' -or $status.response.schemaVersion -ne 2 -or $status.response.servicePid -ne $configuration.ProcessId -or $status.response.mode -ne 'readOnly' -or $status.response.modificationsPermitted -ne $false -or $status.response.rollbackAvailable -ne $false -or $status.response.checkpointStore.pendingRecoveryCount -ne 0 -or $status.response.checkpointStore.verifiedAtUnixMs -le 0) { throw 'Service identity, storage, or safety response was unexpected.' }
+        if ($status.state -ne 'ready' -or $status.response.schemaVersion -ne 2 -or $status.response.servicePid -ne $configuration.ProcessId -or $status.response.mode -ne 'readOnly' -or $status.response.modificationsPermitted -ne $false -or $status.response.rollbackAvailable -ne $false -or $status.response.checkpointStore.schemaVersion -ne 3 -or $status.response.checkpointStore.pendingRecoveryCount -ne 0 -or $status.response.checkpointStore.verifiedAtUnixMs -le 0) { throw 'Service identity, storage, or safety response was unexpected.' }
     }
     if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) { throw 'The service did not initialize its recovery journal.' }
     $serviceSid = ([Security.Principal.NTAccount]::new('NT SERVICE', $serviceName)).Translate([Security.Principal.SecurityIdentifier]).Value

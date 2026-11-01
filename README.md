@@ -74,6 +74,7 @@ Application database version five supports protocol-specific reports and separat
 - [Network settings backups and recovery requirements](docs/backups.md)
 - [Dedicated Windows service](docs/service.md)
 - [Operation authorization](docs/authorization.md)
+- [Settings-command recovery barrier](docs/mutators.md)
 - [Research sources](docs/research.md)
 - [Direct DNS benchmarks](docs/dns.md)
 - [Transfer providers and methodology](docs/providers.md)

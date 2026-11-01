@@ -72,7 +72,7 @@ impl AuthorizationStore {
     ) -> ServiceResult<MtuGrant> {
         document.validate()?;
         validateSid(actorSid)?;
-        if document.schemaVersion != 2
+        if !matches!(document.schemaVersion, 2 | 3)
             || actorSid != document.authorizedUserSid
             || nowUnixMs < document.createdAtUnixMs
             || nowUnixMs >= document.leaseExpiresAtUnixMs

@@ -1,4 +1,5 @@
 use crate::ServiceResult;
+use crate::journal::MutatorIdentity;
 use std::{
     ffi::c_void,
     mem::size_of,
@@ -13,8 +14,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_INSUFFICIENT_BUFFER, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND, FILETIME,
+        GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Security::SECURITY_ATTRIBUTES,
     Storage::FileSystem::{
@@ -22,16 +23,17 @@ use windows_sys::Win32::{
     },
     System::{
         JobObjects::{
-            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
             JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
             QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         },
         Threading::{
             CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, DeleteProcThreadAttributeList,
-            EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-            LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, ResumeThread,
+            EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessTimes,
+            InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, ResumeThread,
             STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
         },
     },
@@ -61,9 +63,9 @@ struct Attributes {
 }
 
 impl Attributes {
-    fn new() -> ServiceResult<Self> {
+    fn new(count: u32) -> ServiceResult<Self> {
         let mut bytes = 0;
-        let sized = unsafe { InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut bytes) };
+        let sized = unsafe { InitializeProcThreadAttributeList(null_mut(), count, 0, &mut bytes) };
         let error = std::io::Error::last_os_error();
         if sized != 0
             || error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
@@ -76,7 +78,8 @@ impl Attributes {
             buffer: vec![0; bytes.div_ceil(size_of::<usize>())],
             initialized: false,
         };
-        if unsafe { InitializeProcThreadAttributeList(attributes.pointer(), 2, 0, &mut bytes) } == 0
+        if unsafe { InitializeProcThreadAttributeList(attributes.pointer(), count, 0, &mut bytes) }
+            == 0
         {
             let error = std::io::Error::last_os_error();
             return Err(format!("Cannot initialize the command attribute list: {error}").into());
@@ -89,11 +92,7 @@ impl Attributes {
         self.buffer.as_mut_ptr().cast()
     }
 
-    fn update(
-        &mut self,
-        attribute: u32,
-        values: &[windows_sys::Win32::Foundation::HANDLE],
-    ) -> ServiceResult<()> {
+    fn update<T>(&mut self, attribute: u32, values: &[T]) -> ServiceResult<()> {
         succeeded("UpdateProcThreadAttribute", unsafe {
             UpdateProcThreadAttribute(
                 self.pointer(),
@@ -155,13 +154,21 @@ pub(super) struct CommandJob {
     job: OwnedHandle,
     process: OwnedHandle,
     thread: OwnedHandle,
-    #[cfg(test)]
     processId: u32,
     cleanupAttempted: bool,
 }
 
 impl CommandJob {
     pub(super) fn spawn(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
+        Self::create(executable, arguments, false)
+    }
+
+    #[cfg(test)]
+    pub(super) fn spawnFixture(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
+        Self::create(executable, arguments, true)
+    }
+
+    fn create(executable: &Path, arguments: &[String], allowChildren: bool) -> ServiceResult<Self> {
         ensureStopped()?;
         let (application, mut line) = commandLine(executable, arguments)?;
         let job = unsafe { CreateJobObjectW(null(), null()) };
@@ -171,6 +178,10 @@ impl CommandJob {
         let job = unsafe { OwnedHandle::from_raw_handle(job) };
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if !allowChildren {
+            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            limits.BasicLimitInformation.ActiveProcessLimit = 1;
+        }
         succeeded("SetInformationJobObject", unsafe {
             SetInformationJobObject(
                 job.as_raw_handle(),
@@ -201,7 +212,7 @@ impl CommandJob {
         let nullFile = unsafe { OwnedHandle::from_raw_handle(nullFile) };
         let jobs = [job.as_raw_handle()];
         let inherited = [nullFile.as_raw_handle()];
-        let mut attributes = Attributes::new()?;
+        let mut attributes = Attributes::new(2)?;
         // assigning the job after spawning would leave a service-crash window.
         attributes.update(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
         // inheriting the job handle would keep it alive after the service exits.
@@ -232,7 +243,6 @@ impl CommandJob {
             job,
             process: unsafe { OwnedHandle::from_raw_handle(created.hProcess) },
             thread: unsafe { OwnedHandle::from_raw_handle(created.hThread) },
-            #[cfg(test)]
             processId: created.dwProcessId,
             cleanupAttempted: false,
         })
@@ -301,9 +311,18 @@ impl CommandJob {
 
     pub(super) fn finish(
         mut self,
+        register: &mut crate::recovery::MutatorRegistrar<'_>,
+        beforeResume: &mut dyn FnMut() -> ServiceResult<()>,
         mut check: impl FnMut() -> ServiceResult<()>,
     ) -> ServiceResult<()> {
         let outcome = (|| {
+            check()?;
+            register(processIdentity(
+                self.process.as_raw_handle(),
+                self.processId,
+            )?)?;
+            check()?;
+            beforeResume()?;
             check()?;
             if unsafe { ResumeThread(self.thread.as_raw_handle()) } != 1 {
                 return Err("Cannot resume the owned command thread exactly once".into());
@@ -332,6 +351,59 @@ impl CommandJob {
     }
 }
 
+fn processIdentity(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    processId: u32,
+) -> ServiceResult<MutatorIdentity> {
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    succeeded("GetProcessTimes", unsafe {
+        GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
+    })?;
+    let identity = MutatorIdentity {
+        processId,
+        creationTime100ns: ((u64::from(creation.dwHighDateTime) << 32)
+            | u64::from(creation.dwLowDateTime))
+        .to_string(),
+    };
+    identity.validate()?;
+    Ok(identity)
+}
+
+pub(super) fn waitForIdentity(identity: &MutatorIdentity, timeout: Duration) -> ServiceResult<()> {
+    identity.validate()?;
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            identity.processId,
+        )
+    };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if matches!(error.raw_os_error(), Some(value) if value == ERROR_INVALID_PARAMETER as i32 || value == ERROR_NOT_FOUND as i32)
+        {
+            Ok(())
+        } else {
+            Err(format!("Cannot verify predecessor mutator: {error}").into())
+        };
+    }
+    let process = unsafe { OwnedHandle::from_raw_handle(handle) };
+    if processIdentity(process.as_raw_handle(), identity.processId)? != *identity {
+        return Ok(());
+    }
+    let timeoutMs = timeout.as_millis().min(5_000) as u32;
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), timeoutMs) } {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_TIMEOUT => Err(
+            "Predecessor mutator has not exited; readback and restoration remain blocked".into(),
+        ),
+        _ => Err(std::io::Error::last_os_error().into()),
+    }
+}
+
 impl Drop for CommandJob {
     fn drop(&mut self) {
         if !self.cleanupAttempted {
@@ -343,6 +415,170 @@ impl Drop for CommandJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn predecessorWaitUsesCreationTimeAndNeverTerminatesAReusedPid() {
+        let child =
+            CommandJob::spawn(&std::env::current_exe().unwrap(), &["--list".into()]).unwrap();
+        let identity = processIdentity(child.process.as_raw_handle(), child.processId).unwrap();
+        assert!(waitForIdentity(&identity, Duration::from_millis(10)).is_err());
+        let mut reused = identity.clone();
+        reused.creationTime100ns =
+            (identity.creationTime100ns.parse::<u64>().unwrap() + 1).to_string();
+        waitForIdentity(&reused, Duration::from_millis(10)).unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(child.process.as_raw_handle(), 0) },
+            WAIT_TIMEOUT
+        );
+        drop(child);
+        waitForIdentity(&identity, Duration::from_millis(10)).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn jobProcessLimitFixture() {
+        let error = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .spawn()
+            .unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(windows_sys::Win32::Foundation::ERROR_NOT_ENOUGH_QUOTA as i32)
+        );
+    }
+
+    #[test]
+    fn settingCommandCannotCreateOrdinaryDescendants() {
+        let child = CommandJob::spawn(
+            &std::env::current_exe().unwrap(),
+            &[
+                "--ignored".into(),
+                "--exact".into(),
+                "mtu::windows::write::command::tests::jobProcessLimitFixture".into(),
+            ],
+        )
+        .unwrap();
+        let mut registered = None;
+        child
+            .finish(
+                &mut |identity| {
+                    registered = Some(identity);
+                    Ok(())
+                },
+                &mut || Ok(()),
+                || Ok(()),
+            )
+            .unwrap();
+        registered.unwrap().validate().unwrap();
+    }
+
+    #[test]
+    fn singleProcessCommandCanReadInterfaceStatus() {
+        let child = CommandJob::spawn(
+            &super::super::executable().unwrap(),
+            &[
+                "interface".into(),
+                "ipv4".into(),
+                "show".into(),
+                "subinterfaces".into(),
+            ],
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        child
+            .finish(&mut |_| Ok(()), &mut || Ok(()), || {
+                if Instant::now() < deadline {
+                    Ok(())
+                } else {
+                    Err("test read-only command deadline".into())
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn writesExecutionMarker() {
+        std::fs::write(
+            std::env::var_os("EPP_MUTATOR_START_MARKER").unwrap(),
+            "started",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn preExecutionFailureFixture() {
+        let marker = Path::new(&std::env::var_os("EPP_MUTATOR_START_MARKER").unwrap()).to_owned();
+        for failure in ["registration", "target", "none"] {
+            let child = CommandJob::spawn(
+                &std::env::current_exe().unwrap(),
+                &[
+                    "--ignored".into(),
+                    "--exact".into(),
+                    "mtu::windows::write::command::tests::writesExecutionMarker".into(),
+                ],
+            )
+            .unwrap();
+            let mut registered = false;
+            let result = child.finish(
+                &mut |_| {
+                    if failure == "registration" {
+                        return Err("test registration commit failed".into());
+                    }
+                    registered = true;
+                    Ok(())
+                },
+                &mut || {
+                    if failure == "target" {
+                        Err("test target changed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                || Ok(()),
+            );
+            if failure == "none" {
+                result.unwrap();
+                assert!(registered && marker.is_file());
+                std::fs::remove_file(&marker).unwrap();
+            } else {
+                assert!(result.unwrap_err().to_string().contains(failure));
+                assert_eq!(registered, failure == "target");
+                assert!(!marker.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn preExecutionFailuresNeverResumeTheSettingProcess() {
+        use std::os::windows::process::CommandExt;
+        let directory =
+            std::env::temp_dir().join(format!("epp-mutator-start-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let marker = directory.join("started");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "mtu::windows::write::command::tests::preExecutionFailureFixture",
+            ])
+            .env("EPP_MUTATOR_START_MARKER", &marker)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .unwrap();
+        let started = marker.exists();
+        if started {
+            std::fs::remove_file(marker).unwrap();
+        }
+        std::fs::remove_dir(directory).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!started);
+    }
 
     #[test]
     fn generatedCommandLineQuotesOnlyTheExecutableAndRejectsUnstructuredArguments() {

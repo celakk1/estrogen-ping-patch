@@ -1,8 +1,10 @@
 use crate::{
     ServiceResult,
-    journal::{Checkpoint, Journal, MtuCheckpoint, Observation, State},
+    journal::{
+        Checkpoint, Journal, MtuCheckpoint, MutatorIdentity, MutatorRecord, Observation, State,
+    },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,11 +14,14 @@ pub enum AuthorizationAction {
     Retain,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum WritePurpose {
     Apply,
     Restore,
 }
+
+pub type MutatorRegistrar<'a> = dyn FnMut(MutatorIdentity) -> ServiceResult<()> + 'a;
 
 pub trait MtuBackend {
     fn authorize(
@@ -26,12 +31,16 @@ pub trait MtuBackend {
         nowUnixMs: u64,
     ) -> ServiceResult<()>;
     fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation>;
+    fn waitForMutator(&mut self, _: &MutatorRecord) -> ServiceResult<()> {
+        Err("This backend cannot verify a registered mutator's termination".into())
+    }
     fn writeMtu(
         &mut self,
         document: &MtuCheckpoint,
         expected: &Observation,
         value: u32,
         purpose: WritePurpose,
+        register: &mut MutatorRegistrar<'_>,
     ) -> ServiceResult<()>;
 }
 
@@ -66,8 +75,11 @@ pub struct MtuCoordinator<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> {
 
 fn nativeDocument(checkpoint: &Checkpoint) -> ServiceResult<&MtuCheckpoint> {
     let document = checkpoint.document();
-    if document.schemaVersion != 2 || document.nativeOriginal.is_none() {
-        return Err("Native MTU coordination requires a version-two checkpoint with native original evidence".into());
+    if !matches!(document.schemaVersion, 2 | 3) || document.nativeOriginal.is_none() {
+        return Err(
+            "Native MTU coordination requires a supported checkpoint with native original evidence"
+                .into(),
+        );
     }
     Ok(document)
 }
@@ -114,6 +126,39 @@ fn bounded(error: impl std::fmt::Display) -> String {
 }
 
 impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, C> {
+    fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation> {
+        if document.schemaVersion == 3 {
+            for record in self.journal.mutators(document.id)? {
+                self.backend.waitForMutator(&record)?;
+            }
+        }
+        self.backend.observe(document)
+    }
+
+    fn write(
+        &mut self,
+        document: &MtuCheckpoint,
+        expected: &Observation,
+        value: u32,
+        purpose: WritePurpose,
+    ) -> ServiceResult<()> {
+        let mut registered = false;
+        let journal = &mut self.journal;
+        let now = &mut self.now;
+        let mut register = |identity| {
+            journal.registerMutator(document.id, purpose, identity, (now)()?)?;
+            registered = true;
+            Ok(())
+        };
+        self.backend
+            .writeMtu(document, expected, value, purpose, &mut register)?;
+        if document.schemaVersion == 3 && !registered {
+            return Err(
+                "Native setting write returned without a durable mutator registration".into(),
+            );
+        }
+        Ok(())
+    }
     pub fn new(journal: &'a mut Journal, backend: &'a mut B, now: C) -> Self {
         Self {
             journal,
@@ -124,7 +169,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
 
     pub fn prepare(&mut self, document: MtuCheckpoint) -> ServiceResult<Checkpoint> {
         document.validate()?;
-        if document.schemaVersion != 2 {
+        if !matches!(document.schemaVersion, 2 | 3) {
             return Err("MTU coordinator cannot prepare legacy simulation checkpoints".into());
         }
         let now = (self.now)()?;
@@ -146,7 +191,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         }
         self.backend
             .authorize(&document, AuthorizationAction::Apply, (self.now)()?)?;
-        let observed = self.backend.observe(&document)?;
+        let observed = self.observe(&document)?;
         let now = (self.now)()?;
         observationMatches(&document, &observed, document.originalMtu, now, true)?;
         self.journal.transition(
@@ -163,13 +208,13 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
             }
             self.backend
                 .authorize(&document, AuthorizationAction::Apply, now)?;
-            self.backend.writeMtu(
+            self.write(
                 &document,
                 &observed,
                 document.proposedMtu,
                 WritePurpose::Apply,
             )?;
-            let after = self.backend.observe(&document)?;
+            let after = self.observe(&document)?;
             let now = (self.now)()?;
             observationMatches(&document, &after, document.proposedMtu, now, true)?;
             self.journal
@@ -193,7 +238,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         }
         self.backend
             .authorize(&document, AuthorizationAction::Retain, (self.now)()?)?;
-        let observed = self.backend.observe(&document)?;
+        let observed = self.observe(&document)?;
         let now = (self.now)()?;
         observationMatches(&document, &observed, document.proposedMtu, now, true)?;
         self.backend
@@ -230,8 +275,14 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         let mut unrelatedSettingsDrifted = false;
         let mut persistenceError = None;
         let recovered: ServiceResult<()> = (|| {
-            let observed = self.backend.observe(&document)?;
+            let observed = self.observe(&document)?;
             let now = (self.now)()?;
+            if document.schemaVersion == 3
+                && observed.mtu != document.originalMtu
+                && self.journal.mutators(document.id)?.is_empty()
+            {
+                return Err("No registered apply could have changed this value; refusing to overwrite an external MTU change".into());
+            }
             if observed.mtu != document.originalMtu && observed.mtu != document.proposedMtu {
                 return Err("Live MTU is neither the original nor the candidate; refusing to overwrite an external change".into());
             }
@@ -259,13 +310,13 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
                     }
                 }
                 // the verified original and durable apply intent still permit safe rollback if appending a restore event fails.
-                self.backend.writeMtu(
+                self.write(
                     &document,
                     &observed,
                     document.originalMtu,
                     WritePurpose::Restore,
                 )?;
-                self.backend.observe(&document)?
+                self.observe(&document)?
             };
             let now = (self.now)()?;
             observationMatches(&document, &after, document.originalMtu, now, false)?;
@@ -319,7 +370,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         let pending = self.journal.pendingRecovery()?;
         let mut results = Vec::new();
         for checkpoint in pending {
-            if checkpoint.document().schemaVersion == 2 {
+            if matches!(checkpoint.document().schemaVersion, 2 | 3) {
                 results.push(self.restore(checkpoint.document().id)?);
             }
         }

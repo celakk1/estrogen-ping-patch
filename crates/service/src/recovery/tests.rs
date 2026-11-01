@@ -53,6 +53,8 @@ impl Fixture {
             revokeAfterIntent: false,
             applyChecks: 0,
             pauseAfterWrite: None,
+            mutatorLive: false,
+            observations: 0,
         }
     }
 }
@@ -129,6 +131,8 @@ struct Backend {
     revokeAfterIntent: bool,
     applyChecks: usize,
     pauseAfterWrite: Option<WritePurpose>,
+    mutatorLive: bool,
+    observations: usize,
 }
 impl MtuBackend for Backend {
     fn authorize(
@@ -152,6 +156,7 @@ impl MtuBackend for Backend {
         Ok(())
     }
     fn observe(&mut self, _: &MtuCheckpoint) -> ServiceResult<Observation> {
+        self.observations += 1;
         let mut native = read(&self.value);
         native.capturedAtUnixMs = self.clock.load(Ordering::SeqCst);
         Ok(Observation {
@@ -167,6 +172,7 @@ impl MtuBackend for Backend {
         expected: &Observation,
         value: u32,
         purpose: WritePurpose,
+        register: &mut MutatorRegistrar<'_>,
     ) -> ServiceResult<()> {
         let checkpoint = Journal::open(&self.journal)?.load(document.id)?;
         assert!(matches!(
@@ -178,6 +184,12 @@ impl MtuBackend for Backend {
                 )
         ));
         assert_eq!(checkpoint.document(), document);
+        if document.schemaVersion == 3 {
+            register(crate::journal::MutatorIdentity {
+                processId: 100 + self.writes.len() as u32,
+                creationTime100ns: "10000".into(),
+            })?;
+        }
         self.writes.push((value, purpose));
         if purpose == WritePurpose::Apply && self.fault == Fault::BeforeApply {
             return Err("Simulated write failed before mutation".into());
@@ -209,6 +221,119 @@ impl MtuBackend for Backend {
         }
         Ok(())
     }
+
+    fn waitForMutator(&mut self, _: &crate::journal::MutatorRecord) -> ServiceResult<()> {
+        if self.mutatorLive {
+            Err("Simulated predecessor has not exited".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn trackedPredecessorBlocksObservationAndRestoreUntilExitWithoutRenewingPermission() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.open();
+    let clock = Arc::new(AtomicU64::new(1000));
+    let mut backend = fixture.backend(clock.clone());
+    let mut document = document(90);
+    document.schemaVersion = 3;
+    MtuCoordinator::new(&mut journal, &mut backend, || {
+        Ok(clock.load(Ordering::SeqCst))
+    })
+    .prepare(document.clone())
+    .unwrap();
+    assert!(matches!(
+        MtuCoordinator::new(&mut journal, &mut backend, || Ok(
+            clock.load(Ordering::SeqCst)
+        ))
+        .apply(document.id)
+        .unwrap(),
+        ApplyResult::Applied { .. }
+    ));
+    assert_eq!(journal.mutators(document.id).unwrap().len(), 1);
+    backend.mutatorLive = true;
+    backend.allow = false;
+    clock.store(20000, Ordering::SeqCst);
+    let observations = backend.observations;
+    let writes = backend.writes.len();
+    let recovered = MtuCoordinator::new(&mut journal, &mut backend, || {
+        Ok(clock.load(Ordering::SeqCst))
+    })
+    .restore(document.id)
+    .unwrap();
+    assert!(!recovered.originalMtuVerified && !recovered.journalFinalized);
+    assert_eq!(backend.observations, observations);
+    assert_eq!(backend.writes.len(), writes);
+    assert_eq!(read(&fixture.value).settings.nlMtu, 1400);
+    backend.mutatorLive = false;
+    let recovered = MtuCoordinator::new(&mut journal, &mut backend, || {
+        Ok(clock.load(Ordering::SeqCst))
+    })
+    .restore(document.id)
+    .unwrap();
+    assert!(recovered.originalMtuVerified && recovered.journalFinalized);
+    assert_eq!(read(&fixture.value).settings.nlMtu, 1500);
+    assert_eq!(journal.mutators(document.id).unwrap().len(), 2);
+}
+
+#[test]
+fn registrationCommitFailureStopsTheTrackedWriteBeforeItsMutation() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.open();
+    let clock = Arc::new(AtomicU64::new(1000));
+    let mut backend = fixture.backend(clock.clone());
+    let mut document = document(91);
+    document.schemaVersion = 3;
+    MtuCoordinator::new(&mut journal, &mut backend, || {
+        Ok(clock.load(Ordering::SeqCst))
+    })
+    .prepare(document.clone())
+    .unwrap();
+    Connection::open(&fixture.journal).unwrap().execute_batch("CREATE TRIGGER fail_mutator BEFORE INSERT ON checkpoint_mutators BEGIN SELECT RAISE(ABORT,'test full storage'); END;").unwrap();
+    let result = MtuCoordinator::new(&mut journal, &mut backend, || {
+        Ok(clock.load(Ordering::SeqCst))
+    })
+    .apply(document.id)
+    .unwrap();
+    assert!(failed(result).originalMtuVerified);
+    assert!(backend.writes.is_empty());
+    assert!(journal.mutators(document.id).unwrap().is_empty());
+    assert_eq!(read(&fixture.value).settings.nlMtu, 1500);
+}
+
+#[test]
+fn candidateValueWithoutAnApplyProcessIsAnExternalChange() {
+    let fixture = Fixture::new();
+    let mut journal = fixture.open();
+    let clock = Arc::new(AtomicU64::new(1000));
+    let mut backend = fixture.backend(clock.clone());
+    let mut document = document(92);
+    document.schemaVersion = 3;
+    MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+        .prepare(document.clone())
+        .unwrap();
+    let original = backend.observe(&document).unwrap();
+    journal
+        .transition(
+            document.id,
+            State::Prepared,
+            State::Applying,
+            1000,
+            Some(original),
+        )
+        .unwrap();
+    let mut external = read(&fixture.value);
+    external.settings.nlMtu = 1400;
+    save(&fixture.value, &external);
+    let result = MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+        .restore(document.id)
+        .unwrap();
+    assert!(!result.originalMtuVerified && !result.journalFinalized);
+    assert!(result.error.unwrap().contains("external MTU change"));
+    assert!(backend.writes.is_empty());
+    assert_eq!(read(&fixture.value).settings.nlMtu, 1400);
 }
 fn failed(result: ApplyResult) -> RecoveryResult {
     match result {
@@ -441,6 +566,9 @@ fn nativeCheckpointSchemaGuardsContextFreshnessAndPreservesLegacyHistory() {
     journal.prepare(legacy.clone(), 1000).unwrap();
     drop(journal);
     let connection = Connection::open(&fixture.journal).unwrap();
+    connection
+        .execute_batch("DROP TABLE checkpoint_mutators; DROP TABLE mutator_heads;")
+        .unwrap();
     connection.pragma_update(None, "user_version", 1).unwrap();
     drop(connection);
     let journal = fixture.open();

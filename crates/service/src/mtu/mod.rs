@@ -204,6 +204,11 @@ pub(crate) fn ensureLabCommandStopped() -> ServiceResult<()> {
 }
 
 #[cfg(all(windows, feature = "native-mtu-lab"))]
+pub(crate) fn waitForLabMutator(identity: &crate::journal::MutatorIdentity) -> ServiceResult<()> {
+    windows::waitForLabMutator(identity)
+}
+
+#[cfg(all(windows, feature = "native-mtu-lab"))]
 pub(crate) fn writeLabMtu(
     permit: &crate::mtu_lab::ServicePermit,
     original: &Snapshot,
@@ -211,8 +216,11 @@ pub(crate) fn writeLabMtu(
     value: u32,
     deadline: std::time::Instant,
     authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
+    register: &mut crate::recovery::MutatorRegistrar<'_>,
 ) -> ServiceResult<()> {
-    windows::writeLabMtu(permit, original, expected, value, deadline, authorize)
+    windows::writeLabMtu(
+        permit, original, expected, value, deadline, authorize, register,
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

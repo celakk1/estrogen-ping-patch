@@ -46,29 +46,15 @@ pub(crate) fn ensureLabCommandStopped() -> ServiceResult<()> {
     command::ensureStopped()
 }
 
-pub(crate) fn writeLabMtu(
+pub(crate) fn waitForLabMutator(identity: &crate::journal::MutatorIdentity) -> ServiceResult<()> {
+    command::waitForIdentity(identity, std::time::Duration::from_secs(5))
+}
+
+fn validateBeforeWrite(
     permit: &ServicePermit,
     original: &Snapshot,
     expected: &Snapshot,
-    value: u32,
-    deadline: Instant,
-    mut authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
 ) -> ServiceResult<()> {
-    ensureLabCommandStopped()?;
-    permit.validateTarget(original)?;
-    if value != original.settings.nlMtu && (value != 1400 || authorize.is_none()) {
-        return Err("Native lab permits only its fixed candidate or exact original MTU".into());
-    }
-    let mut check = || -> ServiceResult<()> {
-        if Instant::now() >= deadline {
-            return Err("Windows MTU command deadline expired".into());
-        }
-        if let Some(validate) = authorize.as_mut() {
-            validate()?;
-        }
-        Ok(())
-    };
-    check()?;
     let fresh = capture(
         original.adapterGuid,
         original.addressFamily,
@@ -101,8 +87,40 @@ pub(crate) fn writeLabMtu(
         GetIpInterfaceEntry(&mut row)
     })?;
     validateRow(&row, &fresh)?;
+    Ok(())
+}
+
+pub(crate) fn writeLabMtu(
+    permit: &ServicePermit,
+    original: &Snapshot,
+    expected: &Snapshot,
+    value: u32,
+    deadline: Instant,
+    mut authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
+    register: &mut crate::recovery::MutatorRegistrar<'_>,
+) -> ServiceResult<()> {
+    ensureLabCommandStopped()?;
+    permit.validateTarget(original)?;
+    if value != original.settings.nlMtu && (value != 1400 || authorize.is_none()) {
+        return Err("Native lab permits only its fixed candidate or exact original MTU".into());
+    }
+    let mut check = || -> ServiceResult<()> {
+        if Instant::now() >= deadline {
+            return Err("Windows MTU command deadline expired".into());
+        }
+        if let Some(validate) = authorize.as_mut() {
+            validate()?;
+        }
+        Ok(())
+    };
     check()?;
-    CommandJob::spawn(&executable()?, &arguments(original, value))?.finish(check)
+    validateBeforeWrite(permit, original, expected)?;
+    check()?;
+    CommandJob::spawn(&executable()?, &arguments(original, value))?.finish(
+        register,
+        &mut || validateBeforeWrite(permit, original, expected),
+        check,
+    )
 }
 
 #[cfg(test)]
@@ -116,7 +134,7 @@ mod tests {
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     fn ownedCommand(arguments: &[&str]) -> CommandJob {
-        let child = CommandJob::spawn(
+        let child = CommandJob::spawnFixture(
             &std::env::current_exe().unwrap(),
             &arguments
                 .iter()
@@ -226,7 +244,9 @@ mod tests {
         if std::env::var("EPP_MTU_COMMAND_TEST_STAGE").unwrap() == "suspended" {
             std::thread::sleep(Duration::from_secs(60));
         }
-        child.finish(|| Ok(())).unwrap();
+        child
+            .finish(&mut |_| Ok(()), &mut || Ok(()), || Ok(()))
+            .unwrap();
     }
 
     #[test]
@@ -360,7 +380,7 @@ mod tests {
             ]);
             let started = Instant::now();
             let error = child
-                .finish(|| {
+                .finish(&mut |_| Ok(()), &mut || Ok(()), || {
                     if revoked || started.elapsed() > Duration::from_millis(80) {
                         Err("test revocation or deadline".into())
                     } else {
@@ -372,6 +392,8 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(5));
         }
         let child = ownedCommand(&["--list"]);
-        child.finish(|| Ok(())).unwrap();
+        child
+            .finish(&mut |_| Ok(()), &mut || Ok(()), || Ok(()))
+            .unwrap();
     }
 }

@@ -34,6 +34,7 @@ enum Phase {
     Complete,
     Revoke,
     AuthorizationUnavailable,
+    Registered,
 }
 
 struct Config {
@@ -77,7 +78,7 @@ impl ServicePermit {
 fn config(arguments: &[String]) -> ServiceResult<Config> {
     let [ownerSid, guid, family, phase, trialId] = arguments else {
         return Err(
-            "Native lab service requires SID GUID ipv4|ipv6 complete|apply|restore|revoke|authorization-unavailable TRIAL_ID".into(),
+            "Native lab service requires SID GUID ipv4|ipv6 complete|apply|restore|revoke|authorization-unavailable|registered TRIAL_ID".into(),
         );
     };
     let guid = Uuid::parse_str(guid)?;
@@ -100,6 +101,7 @@ fn config(arguments: &[String]) -> ServiceResult<Config> {
             "complete" => Phase::Complete,
             "revoke" => Phase::Revoke,
             "authorization-unavailable" => Phase::AuthorizationUnavailable,
+            "registered" => Phase::Registered,
             _ => return Err("Unsupported native lab interruption phase".into()),
         },
     })
@@ -261,12 +263,22 @@ impl MtuBackend for Backend<'_> {
             native: Some(native),
         })
     }
+    fn waitForMutator(&mut self, record: &crate::journal::MutatorRecord) -> ServiceResult<()> {
+        if record.checkpointId != self.config.trialId {
+            return Err("Mutator is outside this native trial".into());
+        }
+        mtu::waitForLabMutator(&record.identity)?;
+        event(
+            json!({"phase":"mutatorExitVerified", "trialId":record.checkpointId, "purpose":format!("{:?}",record.purpose), "mutator":record.identity, "processId":std::process::id()}),
+        )
+    }
     fn writeMtu(
         &mut self,
         document: &MtuCheckpoint,
         expected: &Observation,
         value: u32,
         purpose: WritePurpose,
+        register: &mut crate::recovery::MutatorRegistrar<'_>,
     ) -> ServiceResult<()> {
         if purpose == WritePurpose::Apply {
             self.authorize(document, AuthorizationAction::Apply, nowUnixMs()?)?;
@@ -285,6 +297,23 @@ impl MtuBackend for Backend<'_> {
             let grantId = self.grantId;
             let ownerSid = &self.config.ownerSid;
             let stop = &self.stop;
+            let deadline = if purpose == WritePurpose::Apply {
+                (Instant::now() + Duration::from_secs(5)).min(self.started + LAB_DEADLINE)
+            } else {
+                Instant::now() + Duration::from_secs(5)
+            };
+            let mut record = |identity: crate::journal::MutatorIdentity| -> ServiceResult<()> {
+                register(identity.clone())?;
+                event(
+                    json!({"phase":"mutatorRegistered", "trialId":document.id, "purpose":format!("{purpose:?}"), "mutator":identity, "processId":std::process::id()}),
+                )?;
+                if self.config.phase == Phase::Registered && purpose == WritePurpose::Apply {
+                    while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+                Ok(())
+            };
             let mut check = || -> ServiceResult<()> {
                 if stop.load(Ordering::SeqCst) {
                     return Err("Native lab application was stopped".into());
@@ -308,16 +337,13 @@ impl MtuBackend for Backend<'_> {
                     .as_ref()
                     .ok_or("Native lab expected observation is missing")?,
                 value,
-                if purpose == WritePurpose::Apply {
-                    (Instant::now() + Duration::from_secs(5)).min(self.started + LAB_DEADLINE)
-                } else {
-                    Instant::now() + Duration::from_secs(5)
-                },
+                deadline,
                 if purpose == WritePurpose::Apply {
                     Some(&mut check as &mut dyn FnMut() -> ServiceResult<()>)
                 } else {
                     None
                 },
+                &mut record,
             )?;
         }
         self.writes += 1;
@@ -367,9 +393,9 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     let pending = journal.pendingRecovery()?;
     if !pending.is_empty() {
         if pending.iter().any(|checkpoint| {
-            checkpoint.document().id != config.trialId || checkpoint.document().schemaVersion != 2
+            checkpoint.document().id != config.trialId || checkpoint.document().schemaVersion != 3
         }) {
-            return Err("Native lab found recovery work outside this trial; preserving it without new writes".into());
+            return Err("Native lab requires current tracked-process checkpoints; preserving legacy or unrelated recovery work without new writes".into());
         }
         let results = MtuCoordinator::new(journal, &mut backend, nowUnixMs).restoreAllPending()?;
         if results
@@ -390,7 +416,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         backend.permit.validateTarget(&original)?;
         let now = nowUnixMs()?;
         let document = MtuCheckpoint {
-            schemaVersion: 2,
+            schemaVersion: 3,
             id: config.trialId,
             createdAtUnixMs: now,
             leaseExpiresAtUnixMs: now
@@ -418,7 +444,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
                 Some(WritePurpose::Apply)
             }
             Phase::Restore => Some(WritePurpose::Restore),
-            Phase::Complete => None,
+            Phase::Complete | Phase::Registered => None,
         };
         let applied = MtuCoordinator::new(journal, &mut backend, nowUnixMs).apply(document.id)?;
         match applied {
@@ -438,6 +464,10 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         }
     }
     let checkpoint = journal.load(config.trialId)?;
+    let mutators = journal.mutators(config.trialId)?;
+    for record in &mutators {
+        backend.waitForMutator(record)?;
+    }
     let after = backend.observe(checkpoint.document())?;
     let original = checkpoint
         .document()
@@ -455,7 +485,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     }
     event(
         json!({"phase":"complete", "trialId":config.trialId, "state":checkpoint.state(), "original":original,
-        "after":after.native, "writesThisProcess":backend.writes, "pendingRecoveryCount":journal.pendingRecovery()?.len()}),
+        "after":after.native, "writesThisProcess":backend.writes, "pendingRecoveryCount":journal.pendingRecovery()?.len(), "mutators":mutators}),
     )
 }
 
@@ -526,7 +556,7 @@ mod tests {
         identity.infPath = "netloop.inf".into();
         identity.deviceInstanceId = "ROOT\\NET\\0000".into();
         let document = MtuCheckpoint {
-            schemaVersion: 2,
+            schemaVersion: 3,
             id: Uuid::from_u128(123),
             authorizedUserSid: "S-1-5-21-1-2-3-1000".into(),
             context: original.journalContext().unwrap(),

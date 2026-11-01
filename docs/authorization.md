@@ -22,6 +22,8 @@ An owner can revoke an issued or claimed grant. Revocation is committed and read
 
 Restoration requires the verified original checkpoint and adapter context, not a valid apply grant. Pending recovery is selected before the lab opens authorization storage. An expired or revoked grant, a missing issuer instance, or unavailable authorization storage must not block exact-value restoration. The native writer requires a live permission callback for a candidate and permits authorization-independent recovery only to the captured original value. Stop, deadline, and permission failures terminate and reap the command before coordinator recovery continues.
 
+Tracked version-three checkpoints also require the [registered predecessor exit barrier](mutators.md) before recovery observes or restores an adapter. This gate uses the recovery journal and exact process creation time, independently of grants. Unavailable recovery evidence or a failed restoration-process registration blocks the write and leaves the checkpoint unresolved.
+
 ## Validation status
 
 Ten local tests cover exact journal binding, cross-user/adapter/value/original refusal, persisted claims, retention limits, revocation across connections and clock rollback, restart invalidation, checkpoint replay, wall/monotonic expiry, failed issue/claim/revocation commits, audit capacity, changed/missing events, future-schema refusal, and separation from a corrupted authorization store. The feature-enabled service tests and Clippy also passed locally.

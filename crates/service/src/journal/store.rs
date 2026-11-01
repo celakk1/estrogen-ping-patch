@@ -1,4 +1,7 @@
-use super::{Checkpoint, Event, MtuCheckpoint, Observation, State, validateEvent};
+use super::{
+    Checkpoint, Event, MtuCheckpoint, MutatorIdentity, MutatorRecord, Observation, State, mutators,
+    validateEvent,
+};
 use crate::ServiceResult;
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -35,6 +38,7 @@ impl Journal {
         if validateDatabaseIdentity(&transaction)? == 0 {
             transaction.execute_batch("CREATE TABLE checkpoints(id TEXT PRIMARY KEY, document_json TEXT NOT NULL, sha256 TEXT NOT NULL);
                 CREATE TABLE checkpoint_events(checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id), sequence INTEGER NOT NULL, event_json TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(checkpoint_id,sequence));")?;
+            mutators::initialize(&transaction)?;
             transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
             transaction.pragma_update(None, "user_version", super::SCHEMA_VERSION)?;
         }
@@ -49,13 +53,15 @@ impl Journal {
         }
         let mut journal = Self { connection };
         journal.pendingRecovery()?;
-        if validateDatabaseIdentity(&journal.connection)? == 1 {
+        if matches!(validateDatabaseIdentity(&journal.connection)?, 1 | 2) {
             let transaction = journal
                 .connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
             pending(&transaction)?;
+            mutators::initialize(&transaction)?;
             transaction.pragma_update(None, "user_version", super::SCHEMA_VERSION)?;
             transaction.commit()?;
+            journal.pendingRecovery()?;
         }
         Ok(journal)
     }
@@ -97,6 +103,7 @@ impl Journal {
             "INSERT INTO checkpoints(id,document_json,sha256) VALUES(?1,?2,?3)",
             params![document.id.to_string(), payload, digest],
         )?;
+        mutators::insertHead(&transaction, document.id, &digest)?;
         insertEvent(&transaction, document.id, &initial)?;
         transaction.commit()?;
         self.load(document.id)
@@ -108,6 +115,29 @@ impl Journal {
 
     pub fn pendingRecovery(&self) -> ServiceResult<Vec<Checkpoint>> {
         pending(&self.connection)
+    }
+
+    pub fn mutators(&self, id: Uuid) -> ServiceResult<Vec<MutatorRecord>> {
+        mutators::load(&self.connection, &self.load(id)?)
+    }
+
+    pub fn registerMutator(
+        &mut self,
+        id: Uuid,
+        purpose: crate::recovery::WritePurpose,
+        identity: MutatorIdentity,
+        nowUnixMs: u64,
+    ) -> ServiceResult<MutatorRecord> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let checkpoint = load(&transaction, id)?;
+        let record = mutators::append(&transaction, &checkpoint, purpose, identity, nowUnixMs)?;
+        transaction.commit()?;
+        if self.mutators(id)?.last() != Some(&record) {
+            return Err("Committed mutator registration did not match its readback".into());
+        }
+        Ok(record)
     }
 
     pub fn transition(
@@ -138,6 +168,7 @@ impl Journal {
         };
         validateEvent(&current.document, Some(expected), &event)?;
         insertEvent(&transaction, id, &event)?;
+        load(&transaction, id)?;
         transaction.commit()?;
         self.load(id)
     }
@@ -147,7 +178,7 @@ fn validateDatabaseIdentity(connection: &Connection) -> ServiceResult<u32> {
     let applicationId: u32 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if applicationId == APPLICATION_ID && matches!(version, 1 | 2) {
+    if applicationId == APPLICATION_ID && matches!(version, 1..=3) {
         return Ok(version);
     }
     if applicationId == 0 && version == 0 {
@@ -163,7 +194,7 @@ fn validateDatabaseIdentity(connection: &Connection) -> ServiceResult<u32> {
     Err("Database is not a supported recovery journal; refusing to alter or downgrade it".into())
 }
 
-fn checksum(value: &str) -> String {
+pub(super) fn checksum(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
@@ -216,12 +247,16 @@ fn load(connection: &Connection, id: Uuid) -> ServiceResult<Checkpoint> {
     if events.is_empty() {
         return Err("Checkpoint has no durable prepared event".into());
     }
-    Ok(Checkpoint {
+    let checkpoint = Checkpoint {
         document,
         documentSha256: digest,
         events,
         lastEventSha256: previousDigest,
-    })
+    };
+    if validateDatabaseIdentity(connection)? == super::SCHEMA_VERSION {
+        mutators::load(connection, &checkpoint)?;
+    }
+    Ok(checkpoint)
 }
 
 fn pending(connection: &Connection) -> ServiceResult<Vec<Checkpoint>> {

@@ -166,7 +166,7 @@ try {
         $original = captureNative $guid $family
         if ($original.driver.status -ne 'captured' -or $original.driver.identity.infPath -ine 'netloop.inf' -or $original.driver.identity.deviceInstanceId -ine $instanceId) { throw 'Native evidence does not match the newly created loopback device.' }
         Write-Host "Native pre-trial evidence: family=$family; MTU=$($original.settings.nlMtu); SitePrefixLength=$($original.settings.sitePrefixLength)."
-        foreach ($phase in @('complete', 'apply', 'restore', 'revoke', 'authorization-unavailable')) {
+        foreach ($phase in @('complete', 'apply', 'restore', 'revoke', 'authorization-unavailable', 'registered')) {
             $trialId = [Guid]::NewGuid().ToString('D')
             $imagePath = "`"$installedExe`" --native-mtu-lab-service $ownerSid $($guid.ToString('D')) $family $phase $trialId"
             $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -178,15 +178,33 @@ try {
             invokeSc -arguments @('start', $serviceName)
             if ($phase -ne 'complete') {
                 $purpose = $(if ($phase -eq 'restore') { 'Restore' } else { 'Apply' })
-                $written = waitEvent $startedAt $trialId 'nativeWriteReturned' $purpose
+                $marker = $(if ($phase -eq 'registered') { 'mutatorRegistered' } else { 'nativeWriteReturned' })
+                $written = waitEvent $startedAt $trialId $marker $purpose
                 if ($phase -eq 'revoke') { $null = waitEvent $startedAt $trialId 'grantRevoked' '' }
                 $live = captureNative $guid $family
-                $expected = $(if ($phase -eq 'restore') { $original.settings.nlMtu } else { 1400 })
+                $expected = $(if ($phase -in @('restore', 'registered')) { $original.settings.nlMtu } else { 1400 })
                 if ($live.settings.nlMtu -ne $expected) { throw 'Native write marker does not match independently read effective MTU.' }
                 if ((persistentPolicy $interfaceIndex) -cne $policyBefore) { throw 'Native setter changed persistent policy during the interrupted trial.' }
                 $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
                 if ($registered.ProcessId -ne $written.processId -or $registered.StartName -ne 'LocalSystem') { throw 'Crash target does not match the dedicated lab service.' }
-                Stop-Process -Id $registered.ProcessId -Force
+                $command = $null
+                $owner = $null
+                try {
+                    if ($phase -eq 'registered') {
+                        $command = [Diagnostics.Process]::GetProcessById([int]$written.mutator.processId)
+                        $null = $command.Handle
+                        if ($command.StartTime.ToFileTimeUtc().ToString() -cne $written.mutator.creationTime100ns) { throw 'Held command handle does not match the durable creation time.' }
+                        if ($command.HasExited) { throw 'Registered command exited before the crash injection.' }
+                    }
+                    $owner = [Diagnostics.Process]::GetProcessById([int]$registered.ProcessId)
+                    $null = $owner.Handle
+                    if ($owner.MainModule.FileName -ine $installedExe) { throw 'Held crash target is not the protected lab executable.' }
+                    $owner.Kill()
+                    if ($command -and -not $command.WaitForExit(5000)) { throw 'Registered command survived the lab service crash.' }
+                } finally {
+                    if ($command) { $command.Dispose() }
+                    if ($owner) { $owner.Dispose() }
+                }
                 waitStopped
                 if ($phase -eq 'authorization-unavailable') { $blockedAuthorization = blockAuthorization }
                 invokeSc -arguments @('start', $serviceName)
@@ -197,13 +215,25 @@ try {
             if ($complete.state -ne 'restored' -or $complete.pendingRecoveryCount -ne 0 -or $current.settings.nlMtu -ne $original.settings.nlMtu -or (settingsJson $current.settings) -cne (settingsJson $original.settings)) { throw 'Native recovery failed exact MTU/unrelated-settings verification.' }
             if ((settingsJson $complete.original.settings) -cne (settingsJson $original.settings)) { throw 'Durable native original does not match the independent pre-trial capture.' }
             if ((persistentPolicy $interfaceIndex) -cne $policyBefore -or (dnsPolicy $guid $interfaceIndex) -cne $dnsBefore) { throw 'Native trial changed persistent interface or automatic/static DNS origin values.' }
-            $expectedWrites = $(if ($phase -eq 'complete') { 2 } elseif ($phase -eq 'restore') { 0 } else { 1 })
+            $expectedWrites = $(if ($phase -eq 'complete') { 2 } elseif ($phase -in @('restore', 'registered')) { 0 } else { 1 })
             if ($complete.writesThisProcess -ne $expectedWrites) { throw 'Restart recovery wrote an unexpected number of MTU values.' }
-            $evidence += @{ family = $family; phase = $phase; originalMtu = $original.settings.nlMtu; finalMtu = $current.settings.nlMtu; state = $complete.state; writesAfterRestart = $complete.writesThisProcess }
+            $mutators = @($complete.mutators)
+            $expectedMutators = $(if ($phase -eq 'registered') { 1 } else { 2 })
+            if ($mutators.Count -ne $expectedMutators) { throw 'A native write is missing its durable process record.' }
+            for ($index = 0; $index -lt $mutators.Count; $index++) {
+                $record = $mutators[$index]
+                $expectedPurpose = $(if ($index -eq 0) { 'apply' } else { 'restore' })
+                if ($record.schemaVersion -ne 1 -or $record.checkpointId -ne $trialId -or $record.sequence -ne $index -or $record.purpose -ne $expectedPurpose -or $record.identity.processId -le 4 -or $record.identity.creationTime100ns -notmatch '^[1-9][0-9]{0,19}$') { throw 'Durable mutator identity or checkpoint binding was invalid.' }
+            }
+            if ($phase -eq 'registered') {
+                $verified = waitEvent $startedAt $trialId 'mutatorExitVerified' 'Apply'
+                if ($verified.mutator.processId -ne $written.mutator.processId -or $verified.mutator.creationTime100ns -cne $written.mutator.creationTime100ns) { throw 'Restart did not verify the registered predecessor.' }
+            }
+            $evidence += @{ family = $family; phase = $phase; originalMtu = $original.settings.nlMtu; finalMtu = $current.settings.nlMtu; state = $complete.state; writesAfterRestart = $complete.writesThisProcess; mutatorCount = $mutators.Count }
             if ($blockedAuthorization) { restoreAuthorization $blockedAuthorization; $blockedAuthorization = $null }
         }
     }
-    Write-Host 'Native MTU lab passed: exact IPv4/IPv6 restore, process termination during apply/restore, revoked/unavailable authorization, preserved unrelated fields, persistent policy, and DNS origin values on an owned Microsoft loopback adapter.'
+    Write-Host 'Native MTU lab passed: exact IPv4/IPv6 restore, registered-process crash barrier, process termination during apply/restore, revoked/unavailable authorization, preserved unrelated fields, persistent policy, and DNS origin values on an owned Microsoft loopback adapter.'
     $evidence | ConvertTo-Json -Depth 5
 } finally {
     if ($serviceCreated) {
