@@ -133,6 +133,28 @@ function persistentPolicy([int]$interfaceIndex) {
     $rows | ConvertTo-Json -Depth 6 -Compress
 }
 
+function ipPolicyEvidence([int]$interfaceIndex, [string]$family) {
+    $types = @{ UInt8 = 17; UInt16 = 18; UInt32 = 19 }
+    $fields = @('NlMtu', 'InterfaceMetric', 'AutomaticMetric', 'Dhcp', 'RouterDiscovery', 'Forwarding', 'WeakHostSend', 'WeakHostReceive', 'Advertising', 'ManagedAddressConfiguration', 'OtherStatefulConfiguration')
+    $evidence = [ordered]@{ active = $null; persistent = $null }
+    foreach ($store in @('ActiveStore', 'PersistentStore')) {
+        $rows = @(Get-NetIPInterface -InterfaceIndex $interfaceIndex -AddressFamily $family -PolicyStore $store)
+        if ($rows.Count -ne 1) { throw 'Native policy fixture requires exactly one row per store.' }
+        $row = $rows[0]
+        $values = [ordered]@{}
+        foreach ($name in @('CompartmentId') + $fields) {
+            $property = $row.CimInstanceProperties[$name]
+            if ($null -eq $property -or -not $types.ContainsKey($property.CimType.ToString())) { throw 'Native policy fixture encountered an unsupported CIM field type.' }
+            $values[$name] = [ordered]@{ cimType = $types[$property.CimType.ToString()]; value = $(if ($null -eq $property.Value) { $null } else { [UInt32]$property.Value }) }
+        }
+        $compartment = $values['CompartmentId']
+        $values.Remove('CompartmentId')
+        $key = $(if ($store -eq 'ActiveStore') { 'active' } else { 'persistent' })
+        $evidence[$key] = [ordered]@{ interfaceIndex = $interfaceIndex; addressFamily = [UInt32]$row.CimInstanceProperties['AddressFamily'].Value; store = [UInt32]$row.CimInstanceProperties['Store'].Value; compartmentId = $compartment; values = $values }
+    }
+    orderedJsonValue $evidence | ConvertTo-Json -Depth 16 -Compress
+}
+
 function dnsPolicy([Guid]$guid, [int]$interfaceIndex) {
     $registry = @()
     foreach ($stack in @('Tcpip', 'Tcpip6')) {
@@ -191,6 +213,7 @@ try {
     [IO.Directory]::CreateDirectory($dataRoot, $dataAcl) | Out-Null
     $dnsBefore = dnsPolicy $guid $interfaceIndex
     $policyBefore = persistentPolicy $interfaceIndex
+    & (Join-Path $PSScriptRoot 'policy-smoke.ps1') -executablePath $installedExe -adapterGuid $guid
     foreach ($family in @('ipv4', 'ipv6')) {
         $original = captureNative $guid $family
         if ($original.driver.status -ne 'captured' -or $original.driver.identity.infPath -ine 'netloop.inf' -or $original.driver.identity.deviceInstanceId -ine $instanceId) { throw 'Native evidence does not match the newly created loopback device.' }
@@ -289,6 +312,7 @@ try {
             }
             if ($phase -eq 'watchdog-crash' -and $complete.processId -eq $watchdogProcessId) { throw 'SCM did not automatically restart the crashed watchdog service.' }
             $current = captureNative $guid $family
+            if ($complete.checkpointSchemaVersion -ne 4 -or $null -eq $complete.policyOriginal -or (ipPolicyEvidence $interfaceIndex $family) -cne (orderedJsonValue $complete.policyOriginal | ConvertTo-Json -Depth 16 -Compress)) { throw 'Exact active/persistent IP policy differs from the durable original after restoration.' }
             if ($current.schemaVersion -ne 2 -or $original.schemaVersion -ne 2 -or $current.registryOrigins.status -ne 'captured' -or $original.registryOrigins.status -ne 'captured') { throw 'Service-owned fixed registry origin capture was unavailable.' }
             $originsBefore = originsJson $original.registryOrigins
             if ((originsJson $current.registryOrigins) -cne $originsBefore -or (originsJson $complete.original.registryOrigins) -cne $originsBefore) { throw 'Live or durable registry origin evidence changed during the native trial.' }

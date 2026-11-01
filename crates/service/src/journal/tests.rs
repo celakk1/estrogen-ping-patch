@@ -65,6 +65,7 @@ fn document(id: u128) -> MtuCheckpoint {
         originalMtu: 1500,
         proposedMtu: 1400,
         nativeOriginal: None,
+        policyOriginal: None,
     }
 }
 

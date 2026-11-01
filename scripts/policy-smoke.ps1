@@ -1,9 +1,18 @@
-param([string]$executablePath = (Join-Path $PSScriptRoot '..\target\release\epp-network-service.exe'))
+param(
+    [string]$executablePath = (Join-Path $PSScriptRoot '..\target\release\epp-network-service.exe'),
+    [Guid]$adapterGuid = [Guid]::Empty
+)
 
 $ErrorActionPreference = 'Stop'
 $executablePath = (Resolve-Path -LiteralPath $executablePath).Path
 $env:PSModulePath = "$PSHOME\Modules;$env:ProgramFiles\WindowsPowerShell\Modules"
-$adapter = Get-NetAdapter -IncludeHidden | Where-Object Status -eq 'Up' | Select-Object -First 1
+$adapter = if ($adapterGuid -eq [Guid]::Empty) {
+    Get-NetAdapter -IncludeHidden | Where-Object Status -eq 'Up' | Select-Object -First 1
+} else {
+    $adapters = @(Get-NetAdapter -IncludeHidden | Where-Object { ([Guid]$_.InterfaceGuid) -eq $adapterGuid })
+    if ($adapters.Count -ne 1) { throw 'The explicitly selected policy adapter was not uniquely discovered.' }
+    $adapters[0]
+}
 if ($null -eq $adapter) { throw 'Read-only policy validation requires a connected adapter.' }
 $guid = ([Guid]$adapter.InterfaceGuid).ToString('D')
 $workDirectory = Join-Path ([IO.Path]::GetTempPath()) ('epp-policy-smoke-' + [Guid]::NewGuid().ToString('N'))

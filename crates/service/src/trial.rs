@@ -103,7 +103,7 @@ pub fn execute<T, B: MtuBackend + Send>(
 ) -> ServiceResult<Report<T>> {
     policy.validate()?;
     document.validate()?;
-    if document.schemaVersion != 3
+    if !matches!(document.schemaVersion, 3 | 4)
         || document.leaseExpiresAtUnixMs - document.createdAtUnixMs > 1_800_000
     {
         return Err(

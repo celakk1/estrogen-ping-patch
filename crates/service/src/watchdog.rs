@@ -170,7 +170,7 @@ struct Guard {
 impl Guard {
     fn new(document: &MtuCheckpoint, wall: u64, monotonic: Instant) -> ServiceResult<Self> {
         document.validate()?;
-        if document.schemaVersion != 3
+        if !matches!(document.schemaVersion, 3 | 4)
             || document.leaseExpiresAtUnixMs - document.createdAtUnixMs > 1_800_000
         {
             return Err(
@@ -295,7 +295,8 @@ pub fn watch<B: MtuBackend>(
         return Err("Watchdog control belongs to a different checkpoint".into());
     }
     let checkpoint = journal.load(id)?;
-    if checkpoint.document().schemaVersion != 3 || checkpoint.state() != State::Applied {
+    if !matches!(checkpoint.document().schemaVersion, 3 | 4) || checkpoint.state() != State::Applied
+    {
         return Err("Watchdog requires one applied tracked-process checkpoint".into());
     }
     {

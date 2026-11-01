@@ -21,6 +21,12 @@ pub enum WritePurpose {
     Restore,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PolicyPurpose {
+    Validate,
+    VerifyRestored,
+}
+
 pub type MutatorRegistrar<'a> = dyn FnMut(MutatorIdentity) -> ServiceResult<()> + 'a;
 
 pub trait MtuBackend {
@@ -34,6 +40,13 @@ pub trait MtuBackend {
         nowUnixMs: u64,
     ) -> ServiceResult<()>;
     fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation>;
+    fn observePolicy(
+        &mut self,
+        _: &MtuCheckpoint,
+        _: PolicyPurpose,
+    ) -> ServiceResult<crate::mtu::policy::Capture> {
+        Err("This backend cannot capture exact active and persistent IP policy".into())
+    }
     fn waitForMutator(&mut self, _: &MutatorRecord) -> ServiceResult<()> {
         Err("This backend cannot verify a registered mutator's termination".into())
     }
@@ -78,7 +91,7 @@ pub struct MtuCoordinator<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> {
 
 fn nativeDocument(checkpoint: &Checkpoint) -> ServiceResult<&MtuCheckpoint> {
     let document = checkpoint.document();
-    if !matches!(document.schemaVersion, 2 | 3) || document.nativeOriginal.is_none() {
+    if !matches!(document.schemaVersion, 2..=4) || document.nativeOriginal.is_none() {
         return Err(
             "Native MTU coordination requires a supported checkpoint with native original evidence"
                 .into(),
@@ -129,8 +142,32 @@ fn bounded(error: impl std::fmt::Display) -> String {
 }
 
 impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, C> {
+    fn verifyPolicy(
+        &mut self,
+        document: &MtuCheckpoint,
+        expectedMtu: u32,
+        purpose: PolicyPurpose,
+    ) -> ServiceResult<()> {
+        if document.schemaVersion != 4 {
+            return Ok(());
+        }
+        let current = self.backend.observePolicy(document, purpose)?;
+        let observed = Observation {
+            context: current.native.journalContext()?,
+            addressFamily: current.native.addressFamily,
+            mtu: current.native.settings.nlMtu,
+            native: Some(current.native.clone()),
+        };
+        observationMatches(document, &observed, expectedMtu, (self.now)()?, true)?;
+        document
+            .policyOriginal
+            .as_ref()
+            .ok_or("Checkpoint IP policy original is missing")?
+            .validateMtuObservation(document.nativeOriginal.as_ref().unwrap(), &current)
+    }
+
     fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation> {
-        if document.schemaVersion == 3 {
+        if matches!(document.schemaVersion, 3 | 4) {
             for record in self.journal.mutators(document.id)? {
                 self.backend.waitForMutator(&record)?;
             }
@@ -155,7 +192,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         };
         self.backend
             .writeMtu(document, expected, value, purpose, &mut register)?;
-        if document.schemaVersion == 3 && !registered {
+        if matches!(document.schemaVersion, 3 | 4) && !registered {
             return Err(
                 "Native setting write returned without a durable mutator registration".into(),
             );
@@ -172,12 +209,13 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
 
     pub fn prepare(&mut self, document: MtuCheckpoint) -> ServiceResult<Checkpoint> {
         document.validate()?;
-        if !matches!(document.schemaVersion, 2 | 3) {
+        if !matches!(document.schemaVersion, 2..=4) {
             return Err("MTU coordinator cannot prepare legacy simulation checkpoints".into());
         }
         let now = (self.now)()?;
         self.backend
             .authorize(&document, AuthorizationAction::Prepare, now)?;
+        self.verifyPolicy(&document, document.originalMtu, PolicyPurpose::Validate)?;
         let observed = self.backend.observe(&document)?;
         let now = (self.now)()?;
         observationMatches(&document, &observed, document.originalMtu, now, true)?;
@@ -194,6 +232,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         }
         self.backend
             .authorize(&document, AuthorizationAction::Apply, (self.now)()?)?;
+        self.verifyPolicy(&document, document.originalMtu, PolicyPurpose::Validate)?;
         let observed = self.observe(&document)?;
         let now = (self.now)()?;
         observationMatches(&document, &observed, document.originalMtu, now, true)?;
@@ -211,9 +250,23 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
             }
             self.backend
                 .authorize(&document, AuthorizationAction::Apply, now)?;
+            let fresh = if document.schemaVersion == 4 {
+                self.verifyPolicy(&document, document.originalMtu, PolicyPurpose::Validate)?;
+                let observed = self.observe(&document)?;
+                let now = (self.now)()?;
+                if now < document.createdAtUnixMs || now >= document.leaseExpiresAtUnixMs {
+                    return Err("MTU lease expired during IP policy verification".into());
+                }
+                observationMatches(&document, &observed, document.originalMtu, now, true)?;
+                self.backend
+                    .authorize(&document, AuthorizationAction::Apply, now)?;
+                Some(observed)
+            } else {
+                None
+            };
             self.write(
                 &document,
-                &observed,
+                fresh.as_ref().unwrap_or(&observed),
                 document.proposedMtu,
                 WritePurpose::Apply,
             )?;
@@ -241,6 +294,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         }
         self.backend
             .authorize(&document, AuthorizationAction::Retain, (self.now)()?)?;
+        self.verifyPolicy(&document, document.proposedMtu, PolicyPurpose::Validate)?;
         let observed = self.observe(&document)?;
         let now = (self.now)()?;
         observationMatches(&document, &observed, document.proposedMtu, now, true)?;
@@ -298,7 +352,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         let recovered: ServiceResult<()> = (|| {
             let observed = self.observe(&document)?;
             let now = (self.now)()?;
-            if document.schemaVersion == 3
+            if matches!(document.schemaVersion, 3 | 4)
                 && observed.mtu != document.originalMtu
                 && self.journal.mutators(document.id)?.is_empty()
             {
@@ -359,7 +413,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
                 Err(error) => Err(error),
             }
         })();
-        let error = match recovered {
+        let mut error = match recovered {
             Ok(()) => persistenceError,
             Err(error) => {
                 if !originalMtuVerified
@@ -377,6 +431,22 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
                 Some(bounded(error))
             }
         };
+        if originalMtuVerified
+            && document.schemaVersion == 4
+            && let Err(policyError) = self.verifyPolicy(
+                &document,
+                document.originalMtu,
+                PolicyPurpose::VerifyRestored,
+            )
+        {
+            unrelatedSettingsDrifted = true;
+            let policyError =
+                format!("Original MTU verified; exact IP policy readback failed: {policyError}");
+            error = Some(bounded(match error {
+                Some(previous) => format!("{previous}; {policyError}"),
+                None => policyError,
+            }));
+        }
         Ok(RecoveryResult {
             checkpointId: id,
             durableState: state,
@@ -391,7 +461,7 @@ impl<'a, B: MtuBackend, C: FnMut() -> ServiceResult<u64>> MtuCoordinator<'a, B, 
         let pending = self.journal.pendingRecovery()?;
         let mut results = Vec::new();
         for checkpoint in pending {
-            if matches!(checkpoint.document().schemaVersion, 2 | 3) {
+            if matches!(checkpoint.document().schemaVersion, 2..=4) {
                 results.push(self.restore(checkpoint.document().id)?);
             }
         }

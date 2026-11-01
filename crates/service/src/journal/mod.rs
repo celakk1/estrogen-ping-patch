@@ -37,11 +37,13 @@ pub struct MtuCheckpoint {
     pub proposedMtu: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nativeOriginal: Option<crate::mtu::Snapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policyOriginal: Option<crate::mtu::policy::Evidence>,
 }
 
 impl MtuCheckpoint {
     pub fn validate(&self) -> ServiceResult<()> {
-        if !matches!(self.schemaVersion, 1..=3)
+        if !matches!(self.schemaVersion, 1..=4)
             || self.id.is_nil()
             || self.context.adapterGuid.is_nil()
         {
@@ -84,7 +86,7 @@ impl MtuCheckpoint {
         }
         match (self.schemaVersion, &self.nativeOriginal) {
             (1, None) => {}
-            (2 | 3, Some(native)) => {
+            (2..=4, Some(native)) => {
                 native.requireOriginalOrigins()?;
                 if native.journalContext()? != self.context
                     || native.addressFamily != self.addressFamily
@@ -98,6 +100,17 @@ impl MtuCheckpoint {
             }
             _ => {
                 return Err("Checkpoint schema does not match its native original snapshot".into());
+            }
+        }
+        match (
+            self.schemaVersion,
+            &self.policyOriginal,
+            &self.nativeOriginal,
+        ) {
+            (1..=3, None, _) => {}
+            (4, Some(policy), Some(native)) => policy.validate(native)?,
+            _ => {
+                return Err("Checkpoint schema does not match its exact IP policy original".into());
             }
         }
         Ok(())

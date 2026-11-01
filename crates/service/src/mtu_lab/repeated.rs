@@ -42,7 +42,7 @@ pub(super) fn recover(journal: &mut Journal, backend: &mut Backend<'_>) -> Servi
     for checkpoint in &pending {
         let document = checkpoint.document();
         if !backend.checkpointIds.contains(&document.id)
-            || document.schemaVersion != 3
+            || !matches!(document.schemaVersion, 3 | 4)
             || document.authorizedUserSid != backend.config.ownerSid
             || document.context.adapterGuid != backend.config.guid
             || document.addressFamily != backend.config.family
@@ -533,9 +533,10 @@ pub(super) fn run(
     )?;
     let (_, fingerprint) = routes(&listeners.endpoints)?;
     let plan = plan(backend.config, &original, &seed, &fingerprint)?;
+    let policyOriginal = backend.policyOriginal(&original)?;
     let now = nowUnixMs()?;
     let template = MtuCheckpoint {
-        schemaVersion: 3,
+        schemaVersion: 4,
         id: backend.config.trialId,
         createdAtUnixMs: now,
         leaseExpiresAtUnixMs: now + backend.config.leaseMs(),
@@ -545,6 +546,7 @@ pub(super) fn run(
         originalMtu: 1500,
         proposedMtu: 1400,
         nativeOriginal: Some(original.clone()),
+        policyOriginal: Some(policyOriginal),
     };
     let receipts = Arc::new(Mutex::new(Vec::new()));
     let activeCheckpoint = Arc::new(Mutex::new(None));
@@ -568,6 +570,12 @@ pub(super) fn run(
         &stop,
         collector,
         |backend: &mut Backend<'_>, fresh: &Snapshot, plan: &experiment::Plan| {
+            let policyOriginal = backend.policyOriginal(fresh)?;
+            if template.policyOriginal.as_ref() != Some(&policyOriginal) {
+                return Err(
+                    "IP policy drifted from the repeated experiment's original cohort".into(),
+                );
+            }
             let id = *backend
                 .checkpointIds
                 .get(issued)
@@ -584,6 +592,7 @@ pub(super) fn run(
             document.createdAtUnixMs = now;
             document.leaseExpiresAtUnixMs = expires;
             document.nativeOriginal = Some(fresh.clone());
+            document.policyOriginal = Some(policyOriginal);
             let grant = backend
                 .authorization
                 .as_deref_mut()
@@ -679,7 +688,7 @@ pub(super) fn run(
         json!({"phase":"repeatedExperimentComplete","trialId":parentId,"state":report.snapshot.state,"blockCount":12,"measurementCount":36,"rawRunIds":ids,"checkpoints":report.snapshot.checkpoints,"comparisonOutcome":comparison.outcome,"exploratory":comparison.exploratory,"acceptedConnections":listeners.accepted.load(Ordering::SeqCst),"reservedProbeAttempts":traffic.totals.probeAttempts}),
     )?;
     event(
-        json!({"phase":"complete","trialId":parentId,"state":"restored","original":original,"after":after,"writesThisProcess":backend.writes,"pendingRecoveryCount":0,"mutators":mutators,"processId":std::process::id()}),
+        json!({"phase":"complete","trialId":parentId,"state":"restored","checkpointSchemaVersion":template.schemaVersion,"policyOriginal":template.policyOriginal,"original":original,"after":after,"writesThisProcess":backend.writes,"pendingRecoveryCount":0,"mutators":mutators,"processId":std::process::id()}),
     )
 }
 
@@ -812,6 +821,7 @@ mod tests {
             originalMtu: original.settings.nlMtu,
             proposedMtu: 1400,
             nativeOriginal: Some(original),
+            policyOriginal: None,
         };
         let now = document.createdAtUnixMs + 1;
         backend

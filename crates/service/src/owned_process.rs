@@ -49,6 +49,14 @@ use windows_sys::Win32::{
 };
 
 pub(crate) static QUIESCENCE_UNKNOWN: AtomicBool = AtomicBool::new(false);
+static READER_QUIESCENCE_UNKNOWN: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, PartialEq)]
+enum ProcessRole {
+    ReadOnly,
+    #[cfg(feature = "native-mtu-lab")]
+    Setting,
+}
 
 pub(crate) fn ensureStopped() -> ServiceResult<()> {
     if QUIESCENCE_UNKNOWN.load(Ordering::SeqCst) {
@@ -170,31 +178,35 @@ pub(crate) struct CommandJob {
     thread: OwnedHandle,
     pub(crate) processId: u32,
     output: Option<OwnedHandle>,
+    role: ProcessRole,
     cleanupAttempted: bool,
 }
 
 impl CommandJob {
     #[cfg(feature = "native-mtu-lab")]
     pub(crate) fn spawn(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
-        Self::create(executable, arguments, false, false)
+        Self::create(executable, arguments, false, ProcessRole::Setting)
     }
 
     pub(crate) fn spawnReader(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
-        Self::create(executable, arguments, false, true)
+        Self::create(executable, arguments, false, ProcessRole::ReadOnly)
     }
 
     #[cfg(all(test, feature = "native-mtu-lab"))]
     pub(crate) fn spawnFixture(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
-        Self::create(executable, arguments, true, false)
+        Self::create(executable, arguments, true, ProcessRole::Setting)
     }
 
     fn create(
         executable: &Path,
         arguments: &[String],
         allowChildren: bool,
-        captureOutput: bool,
+        role: ProcessRole,
     ) -> ServiceResult<Self> {
         ensureStopped()?;
+        if role == ProcessRole::ReadOnly && READER_QUIESCENCE_UNKNOWN.load(Ordering::SeqCst) {
+            return Err("Reader termination could not be verified; further policy reads require a service restart, while MTU recovery remains available".into());
+        }
         let (application, mut line) = commandLine(executable, arguments)?;
         let job = unsafe { CreateJobObjectW(null(), null()) };
         if job.is_null() {
@@ -235,7 +247,7 @@ impl CommandJob {
             return Err(std::io::Error::last_os_error().into());
         }
         let nullFile = unsafe { OwnedHandle::from_raw_handle(nullFile) };
-        let (output, writer) = if captureOutput {
+        let (output, writer) = if role == ProcessRole::ReadOnly {
             let mut reader = null_mut();
             let mut writer = null_mut();
             succeeded("CreatePipe", unsafe {
@@ -264,7 +276,11 @@ impl CommandJob {
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdInput = nullFile.as_raw_handle();
         startup.StartupInfo.hStdOutput = stdout;
-        startup.StartupInfo.hStdError = nullFile.as_raw_handle();
+        startup.StartupInfo.hStdError = if role == ProcessRole::ReadOnly {
+            stdout
+        } else {
+            nullFile.as_raw_handle()
+        };
         startup.lpAttributeList = attributes.pointer();
         let mut created = PROCESS_INFORMATION::default();
         succeeded("CreateProcessW", unsafe {
@@ -287,6 +303,7 @@ impl CommandJob {
             thread: unsafe { OwnedHandle::from_raw_handle(created.hThread) },
             processId: created.dwProcessId,
             output,
+            role,
             cleanupAttempted: false,
         })
     }
@@ -371,7 +388,12 @@ impl CommandJob {
                             GetExitCodeProcess(self.process.as_raw_handle(), &mut exitCode)
                         })?;
                         if exitCode != 0 {
-                            return Err(format!("Owned reader failed: exit code {exitCode}").into());
+                            let detail: String =
+                                String::from_utf8_lossy(&bytes).chars().take(1024).collect();
+                            return Err(format!(
+                                "Owned reader failed: exit code {exitCode}: {detail}"
+                            )
+                            .into());
                         }
                         check()?;
                         return Ok(bytes);
@@ -442,9 +464,17 @@ impl CommandJob {
             }
         })();
         if result.is_err() {
-            QUIESCENCE_UNKNOWN.store(true, Ordering::SeqCst);
+            self.recordTerminationFailure();
         }
         result
+    }
+
+    fn recordTerminationFailure(&self) {
+        match self.role {
+            ProcessRole::ReadOnly => READER_QUIESCENCE_UNKNOWN.store(true, Ordering::SeqCst),
+            #[cfg(feature = "native-mtu-lab")]
+            ProcessRole::Setting => QUIESCENCE_UNKNOWN.store(true, Ordering::SeqCst),
+        }
     }
 
     #[cfg(feature = "native-mtu-lab")]

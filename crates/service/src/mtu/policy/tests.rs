@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture() -> Capture {
+pub(crate) fn fixture() -> Capture {
     let mut native = crate::recovery::tests::nativeFixture();
     native.schemaVersion = 2;
     native.registryOrigins = Some(crate::mtu::origins::OriginCapture::Captured {
@@ -175,4 +175,52 @@ fn isolatedResponseMustBeCompleteAndMatchTheRequestedTarget() {
             .to_string()
             .contains("dedicated service executable")
     );
+}
+
+#[test]
+fn policyComparisonPreservesTypesAndStoredMtuAcrossNativeIndexRemapping() {
+    let mut original = fixture();
+    let mut persistent = original.active.clone();
+    persistent.store = 0;
+    persistent.values.get_mut("NlMtu").unwrap().value = None;
+    original.persistent = Some(persistent);
+    let evidence = original.evidence();
+    let mut current = original.clone();
+    current.native.settings.nlMtu = 1400;
+    current.active.values.get_mut("NlMtu").unwrap().value = Some(1400);
+    current.native.interfaceIndex += 1;
+    current.native.interfaceLuid = "123456".into();
+    current.active.interfaceIndex = current.native.interfaceIndex;
+    current.persistent.as_mut().unwrap().interfaceIndex = current.native.interfaceIndex;
+    evidence
+        .validateMtuObservation(&original.native, &current)
+        .unwrap();
+    for fault in 0..4 {
+        let mut changed = current.clone();
+        match fault {
+            0 => changed.active.values.get_mut("NlMtu").unwrap().cimType = 18,
+            1 => {
+                changed
+                    .persistent
+                    .as_mut()
+                    .unwrap()
+                    .values
+                    .get_mut("NlMtu")
+                    .unwrap()
+                    .value = Some(1500)
+            }
+            2 => changed.persistent = None,
+            _ => {
+                changed.native.driver = crate::mtu::DriverContext::Unavailable {
+                    error: "fixture unavailable".into(),
+                }
+            }
+        }
+        assert!(
+            evidence
+                .validateMtuObservation(&original.native, &changed)
+                .is_err(),
+            "fault {fault}"
+        );
+    }
 }

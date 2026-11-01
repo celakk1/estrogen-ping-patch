@@ -97,7 +97,58 @@ pub struct Capture {
     pub persistent: Option<Row>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Evidence {
+    pub active: Row,
+    pub persistent: Option<Row>,
+}
+
+impl Evidence {
+    pub(crate) fn validate(&self, native: &Snapshot) -> ServiceResult<()> {
+        if native.schemaVersion != 2 {
+            return Err("IP policy originals require native schema-two context".into());
+        }
+        native.journalContext()?;
+        native.requireOriginalOrigins()?;
+        self.active.validate(native, 1)?;
+        if let Some(row) = &self.persistent {
+            row.validate(native, 0)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validateMtuObservation(
+        &self,
+        original: &Snapshot,
+        current: &Capture,
+    ) -> ServiceResult<()> {
+        self.validate(original)?;
+        current.validate()?;
+        current.native.validateMtuObservation(original)?;
+        let mut observed = current.evidence();
+        observed.active.interfaceIndex = self.active.interfaceIndex;
+        observed.active.values.get_mut("NlMtu").unwrap().value = self.active.values["NlMtu"].value;
+        if let (Some(expected), Some(actual)) = (&self.persistent, &mut observed.persistent) {
+            actual.interfaceIndex = expected.interfaceIndex;
+        }
+        if &observed != self {
+            return Err(
+                "Active or persistent IP policy changed from the exact checkpoint original".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 impl Capture {
+    pub fn evidence(&self) -> Evidence {
+        Evidence {
+            active: self.active.clone(),
+            persistent: self.persistent.clone(),
+        }
+    }
+
     pub fn validate(&self) -> ServiceResult<()> {
         if self.schemaVersion != 1 || self.native.schemaVersion != 2 {
             return Err("Unsupported IP policy evidence schema".into());
@@ -113,7 +164,7 @@ impl Capture {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 // com calls can block; invoke this reader only in an isolated worker process.
 pub fn inspectWorker(

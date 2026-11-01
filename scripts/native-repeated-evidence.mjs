@@ -45,6 +45,58 @@ const checkedPayload = (row, field = 'payload_json') => {
   return JSON.parse(row[field]);
 };
 let originReference;
+function verifyPolicy(document) {
+  assert.equal(document.schemaVersion, 4);
+  const evidence = document.policyOriginal;
+  assert.deepEqual(Object.keys(evidence).sort(), ['active', 'persistent']);
+  const fields = [
+    'NlMtu',
+    'InterfaceMetric',
+    'AutomaticMetric',
+    'Dhcp',
+    'RouterDiscovery',
+    'Forwarding',
+    'WeakHostSend',
+    'WeakHostReceive',
+    'Advertising',
+    'ManagedAddressConfiguration',
+    'OtherStatefulConfiguration',
+  ].sort();
+  function scalar(value) {
+    assert.deepEqual(Object.keys(value).sort(), ['cimType', 'value']);
+    const maximum = new Map([
+      [17, 255],
+      [18, 65535],
+      [19, 4294967295],
+    ]).get(value.cimType);
+    assert.notEqual(maximum, undefined);
+    if (value.value !== null)
+      assert.ok(Number.isInteger(value.value) && value.value >= 0 && value.value <= maximum);
+  }
+  for (const [name, store] of [
+    ['active', 1],
+    ['persistent', 0],
+  ]) {
+    const row = evidence[name];
+    if (name === 'persistent' && row === null) continue;
+    assert.deepEqual(Object.keys(row).sort(), [
+      'addressFamily',
+      'compartmentId',
+      'interfaceIndex',
+      'store',
+      'values',
+    ]);
+    assert.equal(row.interfaceIndex, document.nativeOriginal.interfaceIndex);
+    assert.equal(row.addressFamily, document.addressFamily === 'ipv4' ? 2 : 23);
+    assert.equal(row.store, store);
+    scalar(row.compartmentId);
+    if (store === 1 || row.compartmentId.value !== null) assert.equal(row.compartmentId.value, 1);
+    assert.deepEqual(Object.keys(row.values).sort(), fields);
+    for (const value of Object.values(row.values)) scalar(value);
+  }
+  assert.equal(evidence.active.values.NlMtu.value, document.originalMtu);
+}
+
 function verifyOrigins(native) {
   assert.equal(native.schemaVersion, 2);
   assert.equal(native.registryOrigins.status, 'captured');
@@ -312,6 +364,7 @@ try {
       .get(checkpointId);
     const document = checkedPayload(documentRow, 'document_json');
     verifyOrigins(document.nativeOriginal);
+    verifyPolicy(document);
     assert.equal(document.id, checkpointId);
     assert.equal(document.context.adapterGuid, adapterGuid);
     assert.equal(document.addressFamily, family);

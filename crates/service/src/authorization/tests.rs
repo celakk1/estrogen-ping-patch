@@ -49,6 +49,7 @@ fn document() -> MtuCheckpoint {
         originalMtu: native.settings.nlMtu,
         proposedMtu: 1400,
         nativeOriginal: Some(native),
+        policyOriginal: None,
     }
 }
 

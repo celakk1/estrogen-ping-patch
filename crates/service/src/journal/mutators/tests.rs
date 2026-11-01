@@ -47,6 +47,7 @@ fn document() -> MtuCheckpoint {
         originalMtu: 1500,
         proposedMtu: 1400,
         nativeOriginal: Some(original),
+        policyOriginal: None,
     }
 }
 fn observation(document: &MtuCheckpoint, mtu: u32) -> Observation {

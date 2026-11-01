@@ -11,6 +11,9 @@ use std::{
     },
 };
 
+#[path = "policy_tests.rs"]
+mod policy_tests;
+
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 
 struct Fixture {
@@ -107,6 +110,7 @@ fn document(id: u128) -> MtuCheckpoint {
         originalMtu: 1500,
         proposedMtu: 1400,
         nativeOriginal: Some(native),
+        policyOriginal: None,
     }
 }
 
@@ -294,7 +298,7 @@ impl MtuBackend for Backend {
                 )
         ));
         assert_eq!(checkpoint.document(), document);
-        if document.schemaVersion == 3 {
+        if matches!(document.schemaVersion, 3 | 4) {
             register(crate::journal::MutatorIdentity {
                 processId: 100 + self.writes.len() as u32,
                 creationTime100ns: "10000".into(),

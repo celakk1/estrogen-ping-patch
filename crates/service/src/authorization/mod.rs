@@ -144,7 +144,7 @@ fn validateCheck(
     if record.revoked || fence.revoked || grant.issuerInstanceId != instanceId {
         return Err("Authorization was revoked or belongs to an earlier service instance".into());
     }
-    if !matches!(document.schemaVersion, 2 | 3)
+    if !matches!(document.schemaVersion, 2..=4)
         || grant.checkpointId != document.id
         || grant.checkpointSha256 != checkpointChecksum(document)?
         || grant.context != document.context

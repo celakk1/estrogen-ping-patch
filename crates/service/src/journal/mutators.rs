@@ -105,7 +105,7 @@ pub(super) fn load(
             || record.previousSha256 != previous
             || record.registeredAtUnixMs == 0
             || record.registeredAtUnixMs > i64::MAX as u64
-            || checkpoint.document().schemaVersion != 3
+            || !matches!(checkpoint.document().schemaVersion, 3 | 4)
             || (sequence == 0 && record.purpose != WritePurpose::Apply)
             || (sequence != 0 && record.purpose != WritePurpose::Restore)
             || records
@@ -128,7 +128,7 @@ pub(super) fn load(
             checkpoint.state(),
             super::State::Prepared | super::State::Cancelled
         ))
-        || (checkpoint.document().schemaVersion == 3
+        || (matches!(checkpoint.document().schemaVersion, 3 | 4)
             && matches!(
                 checkpoint.state(),
                 super::State::Applied | super::State::Retained
@@ -159,7 +159,7 @@ pub(super) fn append(
             State::Applying | State::Applied | State::Restoring | State::RecoveryRequired
         ),
     };
-    if checkpoint.document().schemaVersion != 3
+    if !matches!(checkpoint.document().schemaVersion, 3 | 4)
         || !validState
         || records.len() >= MAX_MUTATORS
         || nowUnixMs == 0

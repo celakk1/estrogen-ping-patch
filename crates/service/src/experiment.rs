@@ -79,7 +79,7 @@ where
     ) -> ServiceResult<Self> {
         template.validate()?;
         policy.validate()?;
-        if template.schemaVersion != 3 {
+        if !matches!(template.schemaVersion, 3 | 4) {
             return Err(
                 "Repeated MTU trials require a tracked native original checkpoint template".into(),
             );
@@ -177,7 +177,7 @@ where
         let original = self.original()?;
         let document = (self.issueCheckpoint)(self.backend, &original, &plan)?;
         document.validate()?;
-        if document.schemaVersion != 3
+        if document.schemaVersion != self.template.schemaVersion
             || document.context != self.template.context
             || document.addressFamily != self.template.addressFamily
             || document.authorizedUserSid != self.template.authorizedUserSid

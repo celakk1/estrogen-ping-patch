@@ -297,6 +297,19 @@ struct Backend<'a> {
 }
 
 impl Backend<'_> {
+    fn policyOriginal(&mut self, original: &mtu::Snapshot) -> ServiceResult<mtu::policy::Evidence> {
+        let capture = mtu::policy::inspect(self.config.guid, self.config.family, &self.stop)?;
+        self.permit.validateTarget(&capture.native)?;
+        capture.native.validateMtuObservation(original)?;
+        if capture.native.settings != original.settings
+            || capture.native.interfaceIndex != original.interfaceIndex
+            || capture.native.interfaceLuid != original.interfaceLuid
+        {
+            return Err("Native original changed during exact IP policy capture".into());
+        }
+        Ok(capture.evidence())
+    }
+
     fn validateAuthorizationScope(
         &self,
         document: &MtuCheckpoint,
@@ -328,6 +341,28 @@ impl Backend<'_> {
 }
 
 impl MtuBackend for Backend<'_> {
+    fn observePolicy(
+        &mut self,
+        document: &MtuCheckpoint,
+        purpose: crate::recovery::PolicyPurpose,
+    ) -> ServiceResult<mtu::policy::Capture> {
+        mtu::ensureLabCommandStopped()?;
+        if document.context.adapterGuid != self.config.guid
+            || document.addressFamily != self.config.family
+        {
+            return Err("IP policy observation target is outside the native trial".into());
+        }
+        let recovering = AtomicBool::new(false);
+        let cancelled = if purpose == crate::recovery::PolicyPurpose::VerifyRestored {
+            &recovering
+        } else {
+            &self.stop
+        };
+        let capture = mtu::policy::inspect(self.config.guid, self.config.family, cancelled)?;
+        self.permit.validateTarget(&capture.native)?;
+        Ok(capture)
+    }
+
     fn checkAuthorization(&mut self, document: &MtuCheckpoint, now: u64) -> ServiceResult<()> {
         self.validateAuthorizationScope(document, AuthorizationAction::Apply, now)?;
         self.authorization
@@ -520,7 +555,8 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     let pending = journal.pendingRecovery()?;
     if !pending.is_empty() {
         if pending.iter().any(|checkpoint| {
-            checkpoint.document().id != config.trialId || checkpoint.document().schemaVersion != 3
+            checkpoint.document().id != config.trialId
+                || !matches!(checkpoint.document().schemaVersion, 3 | 4)
         }) {
             return Err("Native lab requires current tracked-process checkpoints; preserving legacy or unrelated recovery work without new writes".into());
         }
@@ -539,11 +575,13 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
             return Err("Native lab trial is unexpectedly unresolved".into());
         }
     } else {
-        let original = mtu::capture(config.guid, config.family, &AtomicBool::new(false))?;
+        let capture = mtu::policy::inspect(config.guid, config.family, &backend.stop)?;
+        let policyOriginal = capture.evidence();
+        let original = capture.native;
         backend.permit.validateTarget(&original)?;
         let now = nowUnixMs()?;
         let document = MtuCheckpoint {
-            schemaVersion: 3,
+            schemaVersion: 4,
             id: config.trialId,
             createdAtUnixMs: now,
             leaseExpiresAtUnixMs: now
@@ -555,6 +593,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
             originalMtu: original.settings.nlMtu,
             proposedMtu: 1400,
             nativeOriginal: Some(original),
+            policyOriginal: Some(policyOriginal),
         };
         let grant = backend
             .authorization
@@ -699,6 +738,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     }
     event(
         json!({"phase":"complete", "trialId":config.trialId, "state":checkpoint.state(), "original":original,
+        "checkpointSchemaVersion":checkpoint.document().schemaVersion, "policyOriginal":checkpoint.document().policyOriginal,
         "after":after.native, "writesThisProcess":backend.writes, "pendingRecoveryCount":journal.pendingRecovery()?.len(), "mutators":mutators, "processId":std::process::id()}),
     )
 }
@@ -780,6 +820,7 @@ mod tests {
             originalMtu: 1500,
             proposedMtu: 1400,
             nativeOriginal: Some(original.clone()),
+            policyOriginal: None,
         };
         let config = Config {
             guid: original.adapterGuid,

@@ -49,6 +49,7 @@ fn waits() {
 #[test]
 #[ignore]
 fn exitsWithFailure() {
+    eprintln!("policy-fixture-readable-error");
     std::process::exit(23);
 }
 
@@ -77,6 +78,43 @@ fn readerCannotCreateOrdinaryDescendants() {
             .unwrap()
             .contains("descendant-refused")
     );
+}
+
+#[test]
+#[ignore]
+fn readerUncertaintyFixture() {
+    let child = fixture("waits");
+    child.recordTerminationFailure();
+    drop(child);
+    assert!(
+        CommandJob::spawnReader(&std::env::current_exe().unwrap(), &["--list".into()]).is_err()
+    );
+    ensureStopped().unwrap();
+    #[cfg(feature = "native-mtu-lab")]
+    CommandJob::spawn(&std::env::current_exe().unwrap(), &["--list".into()])
+        .unwrap()
+        .finish(&mut |_| Ok(()), &mut || Ok(()), || Ok(()))
+        .unwrap();
+}
+
+#[test]
+fn uncertainReaderBlocksMoreReadsWithoutBlockingTheRecoveryCommandPath() {
+    use std::os::windows::process::CommandExt;
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "owned_process::reader_tests::readerUncertaintyFixture",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    ensureStopped().unwrap();
 }
 
 #[test]
@@ -200,6 +238,9 @@ fn overflowTimeoutFailureAndInvalidLimitsEndTheOwnedReader() {
             .unwrap_err()
             .to_string();
         assert!(error.contains(expected), "{name}: {error}");
+        if name == "exitsWithFailure" {
+            assert!(error.contains("policy-fixture-readable-error"));
+        }
         assert_eq!(
             unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
             WAIT_OBJECT_0,
