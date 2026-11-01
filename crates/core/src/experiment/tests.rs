@@ -42,6 +42,24 @@ fn plan() -> Plan {
         createdAtUnixMs: now,
         expiresAtUnixMs: now + 30_000,
         blockCount: 12,
+        trafficBudget: Some(budget::TrafficBudget {
+            schemaVersion: 1,
+            limits: budget::Resources {
+                probeAttempts: 96,
+                ..Default::default()
+            },
+            providers: vec![budget::Provider {
+                id: "fixture".into(),
+                perCollection: budget::Resources {
+                    probeAttempts: 1,
+                    ..Default::default()
+                },
+                limits: budget::Resources {
+                    probeAttempts: 96,
+                    ..Default::default()
+                },
+            }],
+        }),
         comparison: comparison::Plan {
             maximumBlockDurationMs: 1000,
             cohortSha256: "a".repeat(64),
@@ -73,11 +91,31 @@ struct HostFixture {
     cancel: Option<Arc<AtomicBool>>,
     cancelOnFinalVerification: Option<Arc<AtomicBool>>,
     candidateDelay: Duration,
+    traffic: Option<std::collections::BTreeMap<String, budget::Resources>>,
+    inspectReservations: Option<PathBuf>,
+    trafficDelay: Duration,
 }
 
 impl HostFixture {
     fn measurement(&self, candidate: bool, id: String) -> Session {
         let plan = self.plan.as_ref().unwrap();
+        if let Some(path) = &self.inspectReservations {
+            let stored = Store::open(path).unwrap().load(&plan.id).unwrap();
+            assert_eq!(stored.reservedBlocks as usize, stored.blocks.len() + 1);
+            assert_eq!(stored.schemaVersion, 2);
+            assert!(
+                stored
+                    .plan
+                    .trafficBudget
+                    .as_ref()
+                    .unwrap()
+                    .allows(stored.reservedBlocks)
+                    .unwrap()
+            );
+            if candidate {
+                assert_eq!(stored.state, State::Candidate);
+            }
+        }
         let start = nowUnixMs().unwrap();
         std::thread::sleep(Duration::from_millis(2));
         let variation = if self.candidates.is_multiple_of(2) {
@@ -118,6 +156,20 @@ impl HostFixture {
 }
 
 impl Host for HostFixture {
+    fn maximumTraffic(&self) -> AppResult<std::collections::BTreeMap<String, budget::Resources>> {
+        std::thread::sleep(self.trafficDelay);
+        Ok(self.traffic.clone().unwrap_or_else(|| {
+            [(
+                "fixture".into(),
+                budget::Resources {
+                    probeAttempts: 1,
+                    ..Default::default()
+                },
+            )]
+            .into()
+        }))
+    }
+
     fn verifyOriginal(&mut self, plan: &Plan) -> AppResult<()> {
         self.verifications += 1;
         self.plan = Some(plan.clone());
@@ -327,6 +379,7 @@ fn restartPreservesIntentAndNeverAutomaticallyRepeatsTheCandidate() {
     let mut snapshot = store.begin(plan.clone(), nowUnixMs().unwrap()).unwrap();
     let mut host = HostFixture::default();
     host.verifyOriginal(&plan).unwrap();
+    snapshot.reservedBlocks = 1;
     persist(&mut store, &mut snapshot, State::BaselineBefore).unwrap();
     let cancel = AtomicBool::new(false);
     let control = Control {
@@ -472,12 +525,239 @@ fn invalidPlansAndAlreadyCancelledWorkAreRefusedBeforeHostExecution() {
 }
 
 #[test]
+fn aggregateLimitsStopOnlyBeforeWholeBracketsAndNeverLeaveACandidateActive() {
+    for (limit, blocks) in [(2, 0), (3, 1), (6, 2)] {
+        let temporary = Temporary::new();
+        let mut store = Store::open(&temporary.0).unwrap();
+        let mut plan = plan();
+        plan.trafficBudget.as_mut().unwrap().limits.probeAttempts = limit;
+        let mut host = HostFixture::default();
+        let report = execute(&mut store, plan, &mut host, &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.snapshot.state, State::BudgetExhausted);
+        assert_eq!(report.snapshot.blocks.len(), blocks);
+        assert_eq!(report.snapshot.reservedBlocks as usize, blocks);
+        assert_eq!(host.candidates, blocks);
+        assert_eq!(host.originals, blocks * 2);
+        assert!(!host.changed);
+        let usage = report.traffic.unwrap();
+        assert_eq!(usage.totals.probeAttempts, (blocks * 3) as u64);
+        assert!(store.pending().unwrap().is_empty());
+        assert_eq!(
+            store.load("repeated-test").unwrap().reservedBlocks as usize,
+            blocks
+        );
+    }
+}
+
+#[test]
+fn everyMeasurementSeesItsWholeBracketReservationAlreadyCommitted() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let mut host = HostFixture {
+        inspectReservations: Some(temporary.0.clone()),
+        ..Default::default()
+    };
+    let report = execute(&mut store, plan(), &mut host, &AtomicBool::new(false)).unwrap();
+    assert_eq!(report.snapshot.state, State::Completed);
+    assert_eq!(report.snapshot.reservedBlocks, 12);
+    assert_eq!(report.traffic.unwrap().reservedCollections, 36);
+}
+
+#[test]
+fn underdeclaredOrUnknownCollectorTrafficIsRejectedBeforeAnyExperimentIntent() {
+    for unknown in [false, true] {
+        let temporary = Temporary::new();
+        let mut store = Store::open(&temporary.0).unwrap();
+        let mut plan = plan();
+        let budget = plan.trafficBudget.as_mut().unwrap();
+        if unknown {
+            budget.providers[0].id = "untrusted-substitute".into();
+        } else {
+            budget.providers[0].perCollection.probeAttempts = 0;
+            budget.providers[0].perCollection.providerRequests = 1;
+        }
+        let mut host = HostFixture::default();
+        let error = execute(&mut store, plan, &mut host, &AtomicBool::new(false)).unwrap_err();
+        assert!(error.to_string().contains("trusted collector"));
+        assert_eq!(host.verifications, 0);
+        assert_eq!(host.originals, 0);
+        assert_eq!(host.candidates, 0);
+        assert!(store.load("repeated-test").is_err());
+    }
+}
+
+#[test]
+fn timeSpentDeclaringTrafficCannotExtendTheExperimentOrCreateExpiredIntent() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let mut plan = plan();
+    plan.expiresAtUnixMs = nowUnixMs().unwrap() + 50;
+    let mut host = HostFixture {
+        trafficDelay: Duration::from_millis(100),
+        ..Default::default()
+    };
+    assert!(execute(&mut store, plan, &mut host, &AtomicBool::new(false)).is_err());
+    assert_eq!(host.verifications, 0);
+    assert!(store.load("repeated-test").is_err());
+}
+
+#[test]
+fn providerPayloadLimitsApplyEvenWhenTheGlobalBudgetHasRoom() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let mut plan = plan();
+    let budget = plan.trafficBudget.as_mut().unwrap();
+    budget.limits.downloadBytes = 1_000_000;
+    budget.limits.uploadBytes = 1_000_000;
+    let first = &mut budget.providers[0];
+    first.perCollection.downloadBytes = 100;
+    first.perCollection.uploadBytes = 50;
+    first.limits.downloadBytes = 300;
+    first.limits.uploadBytes = 150;
+    budget.providers.push(budget::Provider {
+        id: "second".into(),
+        perCollection: budget::Resources {
+            providerRequests: 2,
+            ..Default::default()
+        },
+        limits: budget::Resources {
+            providerRequests: 1000,
+            ..Default::default()
+        },
+    });
+    budget.limits.providerRequests = 1000;
+    let mut host = HostFixture {
+        traffic: Some(
+            budget
+                .providers
+                .iter()
+                .map(|provider| (provider.id.clone(), provider.perCollection))
+                .collect(),
+        ),
+        ..Default::default()
+    };
+    let report = execute(&mut store, plan, &mut host, &AtomicBool::new(false)).unwrap();
+    assert_eq!(report.snapshot.state, State::BudgetExhausted);
+    assert_eq!(host.candidates, 1);
+    let usage = report.traffic.unwrap();
+    assert_eq!(usage.totals.downloadBytes, 300);
+    assert_eq!(usage.totals.uploadBytes, 150);
+    assert_eq!(usage.totals.providerRequests, 6);
+    assert_eq!(usage.providers[0].reserved.downloadBytes, 300);
+    assert_eq!(usage.providers[1].reserved.providerRequests, 6);
+}
+
+#[test]
+fn failedReservationCommitCannotStartMeasurementsOrRefundItsConservativeAllowance() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let connection = rusqlite::Connection::open(&temporary.0).unwrap();
+    connection.execute_batch("CREATE TRIGGER refuse_reservation BEFORE UPDATE ON experiments WHEN json_extract(NEW.payload_json,'$.state')='baselineBefore' BEGIN SELECT RAISE(FAIL,'fixture reservation write failed'); END;").unwrap();
+    let mut host = HostFixture::default();
+    let report = execute(&mut store, plan(), &mut host, &AtomicBool::new(false)).unwrap();
+    assert_eq!(report.snapshot.state, State::Failed);
+    assert_eq!(host.originals, 0);
+    assert_eq!(host.candidates, 0);
+    assert_eq!(report.snapshot.reservedBlocks, 1);
+    assert_eq!(report.traffic.unwrap().totals.probeAttempts, 3);
+    assert_eq!(store.load("repeated-test").unwrap().reservedBlocks, 1);
+}
+
+#[test]
+fn committedReservationsCannotBeReducedBeforeAnotherCallerContinues() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let mut snapshot = store.begin(plan(), nowUnixMs().unwrap()).unwrap();
+    snapshot.reservedBlocks = 1;
+    persist(&mut store, &mut snapshot, State::BaselineBefore).unwrap();
+    snapshot.reservedBlocks = 0;
+    assert!(persist(&mut store, &mut snapshot, State::RecoveryRequired).is_err());
+    assert_eq!(store.load("repeated-test").unwrap().reservedBlocks, 1);
+}
+
+#[test]
+fn legacyUnbudgetedIntentRemainsRecoverableButCannotStartNewMeasurements() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let snapshot = store.begin(plan(), nowUnixMs().unwrap()).unwrap();
+    let mut legacy = serde_json::to_value(&snapshot).unwrap();
+    legacy["schemaVersion"] = serde_json::json!(1);
+    legacy["plan"]
+        .as_object_mut()
+        .unwrap()
+        .remove("trafficBudget");
+    legacy.as_object_mut().unwrap().remove("reservedBlocks");
+    let payload = serde_json::to_string(&legacy).unwrap();
+    let connection = rusqlite::Connection::open(&temporary.0).unwrap();
+    connection
+        .execute(
+            "UPDATE experiments SET payload_json=?1,sha256=?2",
+            (&payload, crate::backups::checksum(&payload)),
+        )
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&temporary.0).unwrap();
+    let loaded = store.load("repeated-test").unwrap();
+    assert_eq!(loaded.schemaVersion, 1);
+    assert!(loaded.plan.trafficBudget.is_none());
+    let mut host = HostFixture::default();
+    assert!(execute(&mut store, loaded.plan, &mut host, &AtomicBool::new(false)).is_err());
+    assert_eq!(host.verifications, 0);
+    let recovered = acknowledgeRecovery(&mut store, "repeated-test", &mut host).unwrap();
+    assert_eq!(recovered.state, State::Interrupted);
+    assert_eq!(recovered.schemaVersion, 1);
+    assert!(store.pending().unwrap().is_empty());
+    assert_eq!(host.originals, 0);
+    assert_eq!(host.candidates, 0);
+}
+
+#[test]
+fn legacyCompletedBracketsRemainReadableWithoutInventedTrafficAccounting() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let report = execute(
+        &mut store,
+        plan(),
+        &mut HostFixture::default(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut legacy = serde_json::to_value(&report.snapshot).unwrap();
+    legacy["schemaVersion"] = serde_json::json!(1);
+    legacy["plan"]
+        .as_object_mut()
+        .unwrap()
+        .remove("trafficBudget");
+    legacy.as_object_mut().unwrap().remove("reservedBlocks");
+    let payload = serde_json::to_string(&legacy).unwrap();
+    let connection = rusqlite::Connection::open(&temporary.0).unwrap();
+    connection
+        .execute(
+            "UPDATE experiments SET payload_json=?1,sha256=?2",
+            (&payload, crate::backups::checksum(&payload)),
+        )
+        .unwrap();
+    drop(store);
+    let reopened = Store::open(&temporary.0)
+        .unwrap()
+        .load("repeated-test")
+        .unwrap();
+    assert_eq!(reopened.state, State::Completed);
+    assert_eq!(reopened.blocks.len(), 12);
+    assert_eq!(reopened.reservedBlocks, 0);
+    assert!(reopened.plan.trafficBudget.is_none());
+    assert_eq!(serde_json::to_value(reopened).unwrap(), legacy);
+}
+
+#[test]
 fn storeRejectsStaleWritersCorruptionAndForeignSchemas() {
     let temporary = Temporary::new();
     let mut store = Store::open(&temporary.0).unwrap();
     let mut first = store.begin(plan(), nowUnixMs().unwrap()).unwrap();
     let mut other = Store::open(&temporary.0).unwrap();
     let mut stale = other.load("repeated-test").unwrap();
+    first.reservedBlocks = 1;
+    stale.reservedBlocks = 1;
     persist(&mut store, &mut first, State::BaselineBefore).unwrap();
     persist(&mut store, &mut first, State::RecoveryRequired).unwrap();
     assert!(persist(&mut other, &mut stale, State::BaselineBefore).is_err());

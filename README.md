@@ -86,6 +86,7 @@ Under **Network tests**, choose **Large packet check** to investigate whether la
 - [Experiment watchdog](docs/watchdog.md)
 - [Automatic temporary trials](docs/automatic-trials.md)
 - [Durable repeated trials](docs/repeated-trials.md)
+- [Repeated-experiment traffic budgets](docs/traffic-budgets.md)
 - [Repeated-session comparisons](docs/comparisons.md)
 - [Local route evidence](docs/routing.md)
 - [IPv4 packet-size diagnosis](docs/packet-size.md)

@@ -130,6 +130,30 @@ try {
   assert.equal(head.active, 0);
   assert.equal(snapshot.revision, head.revision);
   assert.equal(snapshot.state, 'completed');
+  assert.equal(snapshot.schemaVersion, 2);
+  assert.equal(snapshot.reservedBlocks, 12);
+  assert.deepEqual(snapshot.plan.trafficBudget.limits, {
+    probeAttempts: 216,
+    providerRequests: 0,
+    downloadBytes: 0,
+    uploadBytes: 0,
+  });
+  assert.equal(snapshot.plan.trafficBudget.providers.length, 2);
+  for (const [index, provider] of snapshot.plan.trafficBudget.providers.entries()) {
+    assert.equal(provider.id, `loopback-${index + 1}`);
+    assert.deepEqual(provider.perCollection, {
+      probeAttempts: 3,
+      providerRequests: 0,
+      downloadBytes: 0,
+      uploadBytes: 0,
+    });
+    assert.deepEqual(provider.limits, {
+      probeAttempts: 108,
+      providerRequests: 0,
+      downloadBytes: 0,
+      uploadBytes: 0,
+    });
+  }
   assert.equal(snapshot.error, null);
   assert.equal(snapshot.plan.id, experimentId);
   assert.equal(snapshot.plan.blockCount, 12);

@@ -58,6 +58,27 @@ fn plan(original: &Snapshot, endpoints: &[SocketAddr]) -> Plan {
         createdAtUnixMs: now,
         expiresAtUnixMs: now + 30_000,
         blockCount: 12,
+        trafficBudget: Some(epp_core::experiment::budget::TrafficBudget {
+            schemaVersion: 1,
+            limits: epp_core::experiment::budget::Resources {
+                probeAttempts: 72,
+                ..Default::default()
+            },
+            providers: endpoints
+                .iter()
+                .map(|endpoint| epp_core::experiment::budget::Provider {
+                    id: endpoint.to_string(),
+                    perCollection: epp_core::experiment::budget::Resources {
+                        probeAttempts: 1,
+                        ..Default::default()
+                    },
+                    limits: epp_core::experiment::budget::Resources {
+                        probeAttempts: 36,
+                        ..Default::default()
+                    },
+                })
+                .collect(),
+        }),
         comparison: comparison::Plan {
             maximumBlockDurationMs: 5000,
             cohortSha256: hash(&endpoints),
@@ -82,6 +103,25 @@ struct Collector {
 }
 
 impl Measurements for Collector {
+    fn maximumTraffic(
+        &self,
+    ) -> ServiceResult<std::collections::BTreeMap<String, epp_core::experiment::budget::Resources>>
+    {
+        Ok(self
+            .endpoints
+            .iter()
+            .map(|endpoint| {
+                (
+                    endpoint.to_string(),
+                    epp_core::experiment::budget::Resources {
+                        probeAttempts: 1,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect())
+    }
+
     fn verifyEnvironment(&mut self, plan: &Plan, original: &Snapshot) -> ServiceResult<()> {
         if plan.comparison.environmentSha256 != hash(&(&original.os, &original.driver))
             || plan.comparison.originalConfigurationSha256 != hash(&original.settings)
@@ -164,59 +204,77 @@ fn issue(template: &MtuCheckpoint, original: &Snapshot, plan: &Plan) -> MtuCheck
 
 #[test]
 fn repeatedServiceTrialsMeasureActualLoopbackAndVerifyEveryOriginalBetweenCandidates() {
-    let mut fixture = fixture();
-    let first = TcpListener::bind("127.0.0.1:0").unwrap();
-    let second = TcpListener::bind("[::1]:0").unwrap();
-    let endpoints = vec![first.local_addr().unwrap(), second.local_addr().unwrap()];
-    let native = fixture.document.nativeOriginal.as_ref().unwrap();
-    let plan = plan(native, &endpoints);
-    let temporary = Temporary::new();
-    let mut store = experiment::Store::open(&temporary.0).unwrap();
-    let observed = Arc::new(AtomicU32::new(1500));
-    fixture.backend.observedMtu = Some(observed.clone());
-    let collector = Collector {
-        plan: plan.clone(),
-        endpoints,
-        observed: observed.clone(),
-        count: 0,
-        cancel: None,
-        restoredDuringStall: Arc::new(AtomicBool::new(false)),
-    };
-    let template = fixture.document.clone();
-    let stop = AtomicBool::new(false);
-    let mut host = MtuHost::new(
-        &mut fixture.journal,
-        &mut fixture.backend,
-        template.clone(),
-        watchdog::Policy::default(),
-        &stop,
-        collector,
-        |_, original, plan| Ok(issue(&template, original, plan)),
-    )
-    .unwrap();
-    let report = experiment::execute(&mut store, plan, &mut host, &AtomicBool::new(false)).unwrap();
-    assert_eq!(report.snapshot.state, State::Completed);
-    assert_eq!(report.snapshot.blocks.len(), 12);
-    assert_eq!(report.snapshot.checkpoints.len(), 12);
-    let comparison = report.comparison.unwrap();
-    assert!(comparison.exploratory);
-    assert_eq!(comparison.outcome, comparison::Outcome::Inconclusive);
-    assert_eq!(host.measurements.count, 36);
-    drop(host);
-    assert_eq!(observed.load(Ordering::SeqCst), 1500);
-    assert_eq!(fixture.backend.writes.len(), 24);
-    assert!(fixture.journal.pendingRecovery().unwrap().is_empty());
-    for id in report.snapshot.checkpoints {
-        let checkpoint = fixture.journal.load(id.parse().unwrap()).unwrap();
-        assert_eq!(checkpoint.state(), crate::journal::State::Restored);
+    for allowedBlocks in [0, 1, 12] {
+        let mut fixture = fixture();
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("[::1]:0").unwrap();
+        let endpoints = vec![first.local_addr().unwrap(), second.local_addr().unwrap()];
+        let native = fixture.document.nativeOriginal.as_ref().unwrap();
+        let mut plan = plan(native, &endpoints);
+        plan.trafficBudget.as_mut().unwrap().limits.probeAttempts = allowedBlocks * 6;
+        let temporary = Temporary::new();
+        let mut store = experiment::Store::open(&temporary.0).unwrap();
+        let observed = Arc::new(AtomicU32::new(1500));
+        fixture.backend.observedMtu = Some(observed.clone());
+        let collector = Collector {
+            plan: plan.clone(),
+            endpoints,
+            observed: observed.clone(),
+            count: 0,
+            cancel: None,
+            restoredDuringStall: Arc::new(AtomicBool::new(false)),
+        };
+        let template = fixture.document.clone();
+        let stop = AtomicBool::new(false);
+        let mut host = MtuHost::new(
+            &mut fixture.journal,
+            &mut fixture.backend,
+            template.clone(),
+            watchdog::Policy::default(),
+            &stop,
+            collector,
+            |_, original, plan| Ok(issue(&template, original, plan)),
+        )
+        .unwrap();
+        let report =
+            experiment::execute(&mut store, plan, &mut host, &AtomicBool::new(false)).unwrap();
         assert_eq!(
-            fixture
-                .journal
-                .mutators(checkpoint.document().id)
-                .unwrap()
-                .len(),
-            2
+            report.snapshot.state,
+            if allowedBlocks == 12 {
+                State::Completed
+            } else {
+                State::BudgetExhausted
+            }
         );
+        assert_eq!(report.snapshot.blocks.len(), allowedBlocks as usize);
+        assert_eq!(report.snapshot.checkpoints.len(), allowedBlocks as usize);
+        if let Some(comparison) = report.comparison {
+            assert!(comparison.exploratory);
+            assert_eq!(comparison.outcome, comparison::Outcome::Inconclusive);
+        } else {
+            assert_eq!(allowedBlocks, 0);
+        }
+        assert_eq!(host.measurements.count, allowedBlocks as usize * 3);
+        assert_eq!(
+            report.traffic.unwrap().totals.probeAttempts,
+            allowedBlocks * 6
+        );
+        drop(host);
+        assert_eq!(observed.load(Ordering::SeqCst), 1500);
+        assert_eq!(fixture.backend.writes.len(), allowedBlocks as usize * 2);
+        assert!(fixture.journal.pendingRecovery().unwrap().is_empty());
+        for id in report.snapshot.checkpoints {
+            let checkpoint = fixture.journal.load(id.parse().unwrap()).unwrap();
+            assert_eq!(checkpoint.state(), crate::journal::State::Restored);
+            assert_eq!(
+                fixture
+                    .journal
+                    .mutators(checkpoint.document().id)
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod budget;
 mod store;
 pub use store::Store;
 
@@ -24,6 +25,8 @@ pub struct Plan {
     pub expiresAtUnixMs: u64,
     pub blockCount: usize,
     pub comparison: comparison::Plan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trafficBudget: Option<budget::TrafficBudget>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -36,6 +39,14 @@ fn identifier(value: &str) -> bool {
 
 impl Plan {
     pub fn validate(&self) -> AppResult<()> {
+        self.validateFields()?;
+        self.trafficBudget
+            .as_ref()
+            .ok_or("New experiments require explicit aggregate and provider traffic budgets")?
+            .validate()
+    }
+
+    fn validateFields(&self) -> AppResult<()> {
         self.comparison.validate()?;
         if !identifier(&self.id)
             || self.createdAtUnixMs == 0
@@ -67,6 +78,7 @@ pub enum State {
     Failed,
     RecoveryRequired,
     Interrupted,
+    BudgetExhausted,
 }
 
 impl State {
@@ -114,13 +126,55 @@ pub struct Snapshot {
     pub pendingBefore: Option<Session>,
     pub pendingCandidate: Option<CandidateResult>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "isZero")]
+    pub reservedBlocks: u32,
+}
+
+fn isZero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl Snapshot {
     fn validate(&self) -> AppResult<()> {
-        self.plan.validate()?;
-        if self.schemaVersion != 1
-            || self.revision > 256
+        match self.schemaVersion {
+            1 if self.plan.trafficBudget.is_none()
+                && self.reservedBlocks == 0
+                && self.state != State::BudgetExhausted =>
+            {
+                self.plan.validateFields()?
+            }
+            2 => {
+                self.plan.validate()?;
+                let complete = self.blocks.len() as u32;
+                let expected = match self.state {
+                    State::Ready | State::Completed | State::BudgetExhausted => Some(complete),
+                    State::BaselineBefore | State::Candidate | State::BaselineAfter => {
+                        Some(complete + 1)
+                    }
+                    _ => None,
+                };
+                if self.reservedBlocks < complete
+                    || self.reservedBlocks > complete + 1
+                    || self.reservedBlocks as usize > self.plan.blockCount
+                    || expected.is_some_and(|expected| self.reservedBlocks != expected)
+                    || !self
+                        .plan
+                        .trafficBudget
+                        .as_ref()
+                        .ok_or("Missing traffic budget")?
+                        .allows(self.reservedBlocks)?
+                {
+                    return Err("Experiment traffic reservations disagree with its phase, limits, or completed blocks".into());
+                }
+            }
+            _ => {
+                return Err(
+                    "Unsupported experiment evidence schema or unexpected legacy traffic metadata"
+                        .into(),
+                );
+            }
+        }
+        if self.revision > 256
             || !(self.plan.createdAtUnixMs..=i64::MAX as u64).contains(&self.updatedAtUnixMs)
             || self.blocks.len() > self.plan.blockCount
             || self.checkpoints.len() != self.blocks.len()
@@ -145,7 +199,7 @@ impl Snapshot {
             return Err("Candidate result requires its exact recovery checkpoint identity".into());
         }
         match self.state {
-            State::Ready | State::BaselineBefore | State::Completed
+            State::Ready | State::BaselineBefore | State::Completed | State::BudgetExhausted
                 if self.pendingBefore.is_some() || self.pendingCandidate.is_some() =>
             {
                 return Err("Experiment phase has unexpected pending measurements".into());
@@ -251,6 +305,8 @@ impl Control<'_> {
 }
 
 pub trait Host {
+    // declarations must be side-effect free; provider discovery needs separate accounting.
+    fn maximumTraffic(&self) -> AppResult<std::collections::BTreeMap<String, budget::Resources>>;
     fn verifyOriginal(&mut self, plan: &Plan) -> AppResult<()>;
     fn measureOriginal(&mut self, control: &Control<'_>) -> AppResult<Session>;
     fn measureCandidate(&mut self, control: &Control<'_>) -> AppResult<CandidateResult>;
@@ -261,6 +317,8 @@ pub trait Host {
 pub struct Report {
     pub snapshot: Snapshot,
     pub comparison: Option<comparison::Report>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<budget::Usage>,
 }
 
 fn nowUnixMs() -> AppResult<u64> {
@@ -374,6 +432,25 @@ fn advance<H: Host>(
     while snapshot.blocks.len() < snapshot.plan.blockCount {
         control.check()?;
         guarded(|| host.verifyOriginal(&snapshot.plan))?;
+        let nextReservation = snapshot
+            .reservedBlocks
+            .checked_add(1)
+            .ok_or("Traffic reservation overflow")?;
+        if !snapshot
+            .plan
+            .trafficBudget
+            .as_ref()
+            .ok_or("Missing traffic budget")?
+            .allows(nextReservation)?
+        {
+            snapshot.error = Some(
+                "Traffic limits cannot fund another complete original/candidate/original block"
+                    .into(),
+            );
+            return Ok(State::BudgetExhausted);
+        }
+        // reserve the full bracket durably before the first measurement; failures do not refund it.
+        snapshot.reservedBlocks = nextReservation;
         persist(store, snapshot, State::BaselineBefore)?;
         let before = guarded(|| host.measureOriginal(control))?;
         validateNext(
@@ -486,7 +563,12 @@ pub fn execute<H: Host>(
         deadline: Instant::now() + Duration::from_millis(plan.expiresAtUnixMs - now),
         startedAtUnixMs: now,
     };
-    let mut snapshot = store.begin(plan, now)?;
+    plan.trafficBudget
+        .as_ref()
+        .ok_or("Missing traffic budget")?
+        .bind(&guarded(|| host.maximumTraffic())?)?;
+    control.check()?;
+    let mut snapshot = store.begin(plan, nowUnixMs()?)?;
     let result = advance(store, &mut snapshot, host, &control);
     let (state, error) = match result {
         Ok(state) => (state, snapshot.error.clone()),
@@ -512,6 +594,12 @@ pub fn execute<H: Host>(
         )?)
     };
     Ok(Report {
+        traffic: snapshot
+            .plan
+            .trafficBudget
+            .as_ref()
+            .map(|budget| budget.usage(snapshot.reservedBlocks))
+            .transpose()?,
         snapshot,
         comparison,
     })

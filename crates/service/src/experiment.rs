@@ -41,6 +41,9 @@ impl Progress<'_, '_> {
 }
 
 pub trait Measurements {
+    fn maximumTraffic(
+        &self,
+    ) -> ServiceResult<std::collections::BTreeMap<String, epp_core::experiment::budget::Resources>>;
     fn verifyEnvironment(&mut self, plan: &Plan, original: &Snapshot) -> ServiceResult<()>;
     fn collect(
         &mut self,
@@ -136,6 +139,13 @@ impl<B: MtuBackend + Send, M: Measurements, F> Host for MtuHost<'_, B, M, F>
 where
     F: FnMut(&mut B, &Snapshot, &Plan) -> ServiceResult<MtuCheckpoint>,
 {
+    fn maximumTraffic(
+        &self,
+    ) -> ServiceResult<std::collections::BTreeMap<String, epp_core::experiment::budget::Resources>>
+    {
+        self.measurements.maximumTraffic()
+    }
+
     fn verifyOriginal(&mut self, plan: &Plan) -> ServiceResult<()> {
         let original = self.original()?;
         self.measurements.verifyEnvironment(plan, &original)?;

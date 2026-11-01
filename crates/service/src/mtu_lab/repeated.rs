@@ -243,6 +243,28 @@ fn plan(
             .checked_add(300_000)
             .ok_or("Repeated lab deadline overflow")?,
         blockCount: 12,
+        trafficBudget: Some(experiment::budget::TrafficBudget {
+            schemaVersion: 1,
+            limits: experiment::budget::Resources {
+                probeAttempts: 216,
+                ..Default::default()
+            },
+            providers: seed
+                .results
+                .iter()
+                .map(|result| experiment::budget::Provider {
+                    id: result.endpoint.id.clone(),
+                    perCollection: experiment::budget::Resources {
+                        probeAttempts: 3,
+                        ..Default::default()
+                    },
+                    limits: experiment::budget::Resources {
+                        probeAttempts: 108,
+                        ..Default::default()
+                    },
+                })
+                .collect(),
+        }),
         comparison: comparison::Plan {
             maximumBlockDurationMs: 30_000,
             cohortSha256: baseline::cohortSha256(seed, &selections())?,
@@ -312,6 +334,24 @@ impl Collector<'_> {
 }
 
 impl Measurements for Collector<'_> {
+    fn maximumTraffic(
+        &self,
+    ) -> ServiceResult<std::collections::BTreeMap<String, experiment::budget::Resources>> {
+        Ok(self
+            .endpoints
+            .iter()
+            .map(|endpoint| {
+                (
+                    endpoint.id.clone(),
+                    experiment::budget::Resources {
+                        probeAttempts: u64::from(self.config.sampleCount),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect())
+    }
+
     fn verifyEnvironment(
         &mut self,
         plan: &experiment::Plan,
@@ -616,11 +656,26 @@ pub(super) fn run(
         .comparison
         .as_ref()
         .ok_or("Repeated native comparison missing")?;
+    let traffic = report
+        .traffic
+        .as_ref()
+        .ok_or("Repeated native traffic reservations missing")?;
+    if traffic.reservedBlocks != 12
+        || traffic.reservedCollections != 36
+        || traffic.totals.probeAttempts != 216
+        || traffic.totals.providerRequests != 0
+        || traffic.totals.downloadBytes != 0
+        || traffic.totals.uploadBytes != 0
+    {
+        return Err(
+            "Repeated native traffic reservations do not match its fixed loopback workload".into(),
+        );
+    }
     if !comparison.exploratory || comparison.outcome != comparison::Outcome::Inconclusive {
         return Err("Lifecycle fixture must not claim a retained optimization".into());
     }
     event(
-        json!({"phase":"repeatedExperimentComplete","trialId":parentId,"state":report.snapshot.state,"blockCount":12,"measurementCount":36,"rawRunIds":ids,"checkpoints":report.snapshot.checkpoints,"comparisonOutcome":comparison.outcome,"exploratory":comparison.exploratory,"acceptedConnections":listeners.accepted.load(Ordering::SeqCst)}),
+        json!({"phase":"repeatedExperimentComplete","trialId":parentId,"state":report.snapshot.state,"blockCount":12,"measurementCount":36,"rawRunIds":ids,"checkpoints":report.snapshot.checkpoints,"comparisonOutcome":comparison.outcome,"exploratory":comparison.exploratory,"acceptedConnections":listeners.accepted.load(Ordering::SeqCst),"reservedProbeAttempts":traffic.totals.probeAttempts}),
     )?;
     event(
         json!({"phase":"complete","trialId":parentId,"state":"restored","original":original,"after":after,"writesThisProcess":backend.writes,"pendingRecoveryCount":0,"mutators":mutators,"processId":std::process::id()}),

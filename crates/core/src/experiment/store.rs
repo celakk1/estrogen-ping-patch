@@ -128,7 +128,7 @@ impl Store {
 
     pub(super) fn begin(&mut self, plan: Plan, now: u64) -> AppResult<Snapshot> {
         let snapshot = Snapshot {
-            schemaVersion: 1,
+            schemaVersion: 2,
             revision: 0,
             updatedAtUnixMs: now,
             plan,
@@ -138,6 +138,7 @@ impl Store {
             pendingBefore: None,
             pendingCandidate: None,
             error: None,
+            reservedBlocks: 0,
         };
         let payload = payload(&snapshot)?;
         self.verifyAll()?;
@@ -167,6 +168,8 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous = load(&transaction, &snapshot.plan.id)?;
         if !previous.state.blocksNewExperiment()
+            || snapshot.schemaVersion != previous.schemaVersion
+            || snapshot.reservedBlocks < previous.reservedBlocks
             || snapshot.revision != previous.revision + 1
             || snapshot.updatedAtUnixMs < previous.updatedAtUnixMs
             || snapshot.updatedAtUnixMs > nowUnixMs()?.max(previous.updatedAtUnixMs)
