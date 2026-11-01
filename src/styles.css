@@ -109,18 +109,14 @@ nav button.active {
   background: #bb7c9b15;
   border-color: #bb7c9b30;
 }
-.nav-mark {
-  width: 14px;
-  height: 14px;
-  border: 1px solid currentColor;
-  border-radius: 3px;
+.app-icon {
+  display: inline-block;
+  vertical-align: -3px;
+  margin-right: 8px;
+  flex-shrink: 0;
 }
-.nav-mark.inventory {
-  border-radius: 50%;
-}
-.nav-mark.history {
-  border-radius: 50%;
-  border-style: dashed;
+.nav-icon {
+  flex-shrink: 0;
 }
 .sidebar-bottom {
   margin-top: auto;
@@ -1013,7 +1009,7 @@ summary {
   }
   .sidebar .workspace-label,
   .sidebar-bottom,
-  .nav-mark {
+  .nav-icon {
     display: none;
   }
   .sidebar nav {

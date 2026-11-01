@@ -2,7 +2,8 @@ use super::{Direction, Plan, Session, Unit, digest, identifier};
 use crate::{
     AppResult,
     benchmark::{
-        BenchmarkRun, Endpoint, ProbeProtocol, Sample, summarizeEndpoint, validateEndpoints,
+        BenchmarkRun, Endpoint, ProbeProtocol, RoutingStatus, Sample, summarizeEndpoint,
+        validateEndpoints,
     },
     dns::DnsStatus,
     icmp::{EchoStatus, EchoTarget},
@@ -150,6 +151,14 @@ pub fn fromRun(
     context: Context<'_>,
 ) -> AppResult<Session> {
     plan.validate()?;
+    if let Some(routing) = &run.routing
+        && (routing.schemaVersion != 1
+            || !matches!(routing.status, RoutingStatus::Unchanged)
+            || !routing.beforeFingerprint.as_deref().is_some_and(digest)
+            || routing.beforeFingerprint != routing.afterFingerprint)
+    {
+        return Err("Recorded route choices changed or could not be verified; repeat this session before comparison".into());
+    }
     let cohort = cohortSha256(run, selections)?;
     let start = timestamp(&run.startedAt)?;
     let finish = timestamp(&run.finishedAt)?;

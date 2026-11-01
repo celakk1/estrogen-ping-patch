@@ -43,6 +43,7 @@ fn fixture() -> (BenchmarkRun, Vec<Selection>, Plan) {
         config,
         results,
         samples,
+        routing: None,
     };
     let selections = vec![
         Selection {
@@ -89,6 +90,34 @@ fn comparisonRecomputesMetricsFromRawSamplesInsteadOfTrustingSavedSummaries() {
     let session = convert(&run, &selections, &plan).unwrap();
     assert_eq!(session.values[0], 11.5);
     assert!((session.values[1] - 100.0 / 3.0).abs() < 1e-12);
+}
+
+#[test]
+fn recordedRouteDriftOrMissingRouteEvidenceCannotBeOverriddenByAContextHash() {
+    use crate::benchmark::{RoutingEvidence, RoutingStatus};
+    let (mut run, selections, plan) = fixture();
+    for status in [RoutingStatus::Changed, RoutingStatus::Unavailable] {
+        run.routing = Some(RoutingEvidence {
+            schemaVersion: 1,
+            status,
+            beforeFingerprint: Some("a".repeat(64)),
+            afterFingerprint: Some("b".repeat(64)),
+            before: serde_json::json!([]),
+            after: serde_json::json!([]),
+        });
+        assert!(
+            convert(&run, &selections, &plan)
+                .unwrap_err()
+                .to_string()
+                .contains("route choices")
+        );
+    }
+    let evidence = run.routing.as_mut().unwrap();
+    evidence.status = RoutingStatus::Unchanged;
+    evidence.afterFingerprint = evidence.beforeFingerprint.clone();
+    convert(&run, &selections, &plan).unwrap();
+    run.routing.as_mut().unwrap().beforeFingerprint = None;
+    assert!(convert(&run, &selections, &plan).is_err());
 }
 
 #[test]

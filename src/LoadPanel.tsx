@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Activity, Play, Square } from 'iconoir-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Config, ProbeProtocol } from './types';
@@ -208,12 +209,14 @@ export default function LoadPanel({
                 disabled={!config || disabled || providerCount === 0 || !validSize || overBudget}
                 onClick={start}
               >
+                {running ? <Activity /> : <Play />}
                 {running ? 'Test running...' : 'Start speed test'}
               </button>
               {running && (
                 <button
                   onClick={() => invoke('cancelBaseline').catch((error) => setError(String(error)))}
                 >
+                  <Square />
                   Stop speed test
                 </button>
               )}

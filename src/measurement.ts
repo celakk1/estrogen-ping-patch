@@ -1,4 +1,29 @@
-import type { DnsCounts, DnsOutcome, ProbeProtocol, Sample, Summary } from './types';
+import type {
+  DnsCounts,
+  DnsOutcome,
+  ProbeProtocol,
+  RoutingEvidence,
+  Sample,
+  Summary,
+} from './types';
+
+export function routingNote(evidence?: RoutingEvidence): string | null {
+  if (!evidence) return null;
+  const unavailable = "We couldn't check your PC's route choices for this test.";
+  if (
+    evidence.schemaVersion !== 1 ||
+    !/^[a-f0-9]{64}$/.test(evidence.beforeFingerprint ?? '') ||
+    !/^[a-f0-9]{64}$/.test(evidence.afterFingerprint ?? '')
+  )
+    return unavailable;
+  if (evidence.status === 'unchanged' && evidence.beforeFingerprint === evidence.afterFingerprint) {
+    return 'Windows reported the same local route before and after this test.';
+  }
+  if (evidence.status === 'changed' && evidence.beforeFingerprint !== evidence.afterFingerprint) {
+    return "Your PC's local route changed. Repeat the test before comparing results.";
+  }
+  return unavailable;
+}
 export const formatMs = (value: number | null | undefined): string =>
   value == null || !Number.isFinite(value) ? 'Unavailable' : `${value.toFixed(2)} ms`;
 

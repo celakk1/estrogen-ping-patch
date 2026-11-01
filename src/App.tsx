@@ -1,6 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import {
+  Activity,
+  ClockRotateRight,
+  Code,
+  DatabaseBackup,
+  Download,
+  FloppyDisk,
+  HalfMoon,
+  Network,
+  Page,
+  Refresh,
+  ShieldCheck,
+  SunLight,
+} from 'iconoir-react';
 import type {
   AppStatus,
   BackupExport,
@@ -223,19 +237,19 @@ export default function App() {
         <nav>
           {(
             [
-              ['overview', 'Network tests'],
-              ['inventory', 'Your network'],
-              ['history', 'Test history'],
-              ['backups', 'Saved settings'],
-              ['policy', 'Safety & privacy'],
+              ['overview', 'Network tests', Activity],
+              ['inventory', 'Your network', Network],
+              ['history', 'Test history', ClockRotateRight],
+              ['backups', 'Saved settings', DatabaseBackup],
+              ['policy', 'Safety & privacy', ShieldCheck],
             ] as const
-          ).map(([key, title]) => (
+          ).map(([key, title, Icon]) => (
             <button
               key={key}
               className={view === key || (key === 'overview' && showingBenchmarks) ? 'active' : ''}
               onClick={() => setView(key)}
             >
-              <span className={`nav-mark ${key}`} />
+              <Icon className="nav-icon" width={20} height={20} />
               {title}
             </button>
           ))}
@@ -244,6 +258,7 @@ export default function App() {
           <div className="status-dot" />
           Saved on this PC<p>AI is off. No AI charges.</p>
           <button className="text-button" onClick={() => setLight(!light)}>
+            {light ? <HalfMoon /> : <SunLight />}
             Switch to {light ? 'dark' : 'light'} theme
           </button>
           <small>Development preview {appStatus?.version ?? ''}</small>
@@ -356,6 +371,7 @@ export default function App() {
                   </p>
                 </div>
                 <button disabled={loadingInventory} onClick={refreshInventory}>
+                  <Refresh />
                   {loadingInventory ? 'Refreshing...' : 'Refresh details'}
                 </button>
               </div>
@@ -468,9 +484,13 @@ export default function App() {
                               View results
                             </button>
                             <button onClick={() => downloadReport(run, 'json')}>
+                              <Code />
                               Export raw data (JSON)
                             </button>
-                            <button onClick={() => downloadReport(run, 'html')}>Save report</button>
+                            <button onClick={() => downloadReport(run, 'html')}>
+                              <Page />
+                              Save report
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -494,6 +514,7 @@ export default function App() {
                       disabled={running || loadRunning || capturingBackup}
                       onClick={captureBackup}
                     >
+                      <FloppyDisk />
                       {capturingBackup ? 'Copying settings...' : 'Save settings copy'}
                     </button>
                     {capturingBackup && (
@@ -541,6 +562,7 @@ export default function App() {
                             <td>
                               <button onClick={() => openBackup(backup.id)}>View details</button>
                               <button onClick={() => openBackup(backup.id, true)}>
+                                <Download />
                                 Download settings copy
                               </button>
                             </td>

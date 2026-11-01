@@ -140,6 +140,15 @@ export interface BenchmarkRun {
     dnsCounts?: DnsCounts;
   }[];
   samples: Sample[];
+  routing?: RoutingEvidence;
+}
+export interface RoutingEvidence {
+  schemaVersion: number;
+  status: 'unchanged' | 'changed' | 'unavailable';
+  beforeFingerprint: string | null;
+  afterFingerprint: string | null;
+  before: unknown;
+  after: unknown;
 }
 export interface Progress {
   sample: Sample;

@@ -2,6 +2,7 @@
 #![allow(non_snake_case)]
 
 mod backups;
+mod routing;
 
 use epp_core::{
     backups::{BackupExport, BackupSummary},
@@ -187,11 +188,13 @@ async fn runBaseline(
 ) -> Result<BenchmarkRun, String> {
     config.validate().map_err(|error| error.to_string())?;
     epp_core::benchmark::validateEndpoints(&endpoints).map_err(|error| error.to_string())?;
+    let destinations = routing::destinations(&endpoints)?;
     let guard = beginJob(&service)?;
     let cancelled = service.cancelled.clone();
     let directory = service.directory.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
+        let routesBefore = routing::capture(&destinations, &cancelled);
         let start = std::time::Instant::now();
         let timeoutMs = config.timeoutMs;
         let intervalMs = config.intervalMs;
@@ -215,6 +218,10 @@ async fn runBaseline(
             },
         )
         .map_err(|error| error.to_string())?;
+        run.routing = Some(routing::evidence(
+            routesBefore,
+            routing::capture(&destinations, &cancelled),
+        ));
         let mut connection = epp_core::storage::openDatabase(
             &directory.join("experiments.sqlite3"),
         )

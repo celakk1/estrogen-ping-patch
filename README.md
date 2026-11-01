@@ -47,6 +47,8 @@ Open **Network tests**, select **Connection test**, and choose what to check: **
 
 ICMP reports Windows' whole-millisecond RTT separately from TCP connect time and API call duration. Raw zero RTT is displayed as `<1 ms`. Timeouts, IP errors, system errors, and invalid replies remain distinct; timeout percentage is unavailable if non-timeout errors prevent a clean estimate. ICMP may be filtered or rate-limited and is not application packet loss. Automatic optimization remains unfinished. No game selection, game launch, or in-game telemetry is required.
 
+Connection tests also save Windows' selected local routes before and after measurements. A short results note reports matching, changed, or unavailable route evidence. Matching local routes do not establish a stable internet path or complete experiment environment. Older reports have no route evidence.
+
 DNS benchmarks send the chosen query name directly to each resolver over UDP with TCP fallback. Successful lookup timing, negative answers, timeouts, and system errors remain separate. Resolver cache state is unknown, and AD is resolver-reported rather than independently validated DNSSEC. Windows DNS settings stay unchanged. See [DNS behavior and limitations](docs/dns.md).
 
 Under **Network tests**, choose **Speed test**, review **Test size**, the providers and data limit, then press **Start speed test**. The default Quick test requests 16 MiB down and 4 MiB up per provider, about 21 MB of payload in total. The four stages measure responsiveness before downloading, during download, during upload, and afterward. Results show download/upload speed in Mbps and a side-by-side response-time table in ms. **Advanced settings** exposes custom providers, exact payload sizes, parallel streams, and probe targets.
@@ -62,7 +64,7 @@ Application database version five supports protocol-specific reports and separat
 - AI is disabled with a zero cloud budget. MCP exposes an explicit read-only tool allowlist.
 - Inventory and raw measurements are stored in `%LOCALAPPDATA%/estrogen-ping-patch`, outside the source checkout.
 - Use `.env.example` as documentation only. No `.env` loader is installed and no credentials are required.
-- JSON and HTML exports may contain endpoint addresses; review them before sharing.
+- JSON and HTML exports may contain endpoint addresses; JSON connection-test exports also include local route, source-address, and adapter identifiers. Review exports before sharing.
 
 ## Documentation
 
@@ -76,6 +78,7 @@ Application database version five supports protocol-specific reports and separat
 - [Operation authorization](docs/authorization.md)
 - [Settings-command recovery barrier](docs/mutators.md)
 - [Repeated-session comparisons](docs/comparisons.md)
+- [Local route evidence](docs/routing.md)
 - [Research sources](docs/research.md)
 - [Direct DNS benchmarks](docs/dns.md)
 - [Transfer providers and methodology](docs/providers.md)
@@ -84,3 +87,5 @@ Application database version five supports protocol-specific reports and separat
 ## License
 
 MIT, selected by the project owner. See [LICENSE](LICENSE). Private repository visibility and software licensing are independent.
+
+Interface icons use [Iconoir](https://iconoir.com/), pinned through `iconoir-react`. Its [MIT notice](docs/iconoir-license.txt) is included with the Windows installer. Icons are bundled locally and do not contact an icon service.

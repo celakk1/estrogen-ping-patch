@@ -1,4 +1,5 @@
 import type { BenchmarkRun, Config, DnsQuery, ProbeProtocol, Progress, Sample } from './types';
+import { Activity, Code, Page, Play, Square } from 'iconoir-react';
 import { downloadReport } from './report';
 import {
   dnsAnswerText,
@@ -7,6 +8,7 @@ import {
   failurePercent,
   formatProbeMs,
   protocolNotes,
+  routingNote,
   sampleLatency,
 } from './measurement';
 import { baselineLimitSeconds, runExplanation, testGuide } from './benchmark-guide';
@@ -200,9 +202,15 @@ export default function BenchmarkOverview(props: Props) {
                 disabled={!config || running || blocked}
                 onClick={onStart}
               >
+                {running ? <Activity /> : <Play />}
                 {running ? 'Test running...' : 'Start test'}
               </button>
-              {running && <button onClick={onCancel}>Stop test</button>}
+              {running && (
+                <button onClick={onCancel}>
+                  <Square />
+                  Stop test
+                </button>
+              )}
             </div>
             <p className="field-help">
               Starting contacts the two servers above. They receive your IP address. This test does
@@ -379,6 +387,7 @@ export default function BenchmarkOverview(props: Props) {
                 <div className="result-explanation">
                   <h3>{explanation?.title}</h3>
                   <p>{explanation?.detail}</p>
+                  {selected.routing && <p className="form-note">{routingNote(selected.routing)}</p>}
                 </div>
                 <p className="measurement-key">
                   Delay is shown in <strong>ms (milliseconds)</strong>. Lower times mean faster{' '}
@@ -455,8 +464,12 @@ export default function BenchmarkOverview(props: Props) {
                   ))}
                 </div>
                 <div className="button-row report-actions">
-                  <button onClick={() => downloadReport(selected, 'html')}>Save report</button>
+                  <button onClick={() => downloadReport(selected, 'html')}>
+                    <Page />
+                    Save report
+                  </button>
                   <button onClick={() => downloadReport(selected, 'json')}>
+                    <Code />
                     Export raw data (JSON)
                   </button>
                 </div>

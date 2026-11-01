@@ -1,7 +1,47 @@
 import { describe, expect, it } from 'vitest';
-import { failurePercent, formatProbeMs, sampleLatency } from './measurement';
+import { failurePercent, formatProbeMs, routingNote, sampleLatency } from './measurement';
 import { reportHtml } from './report';
-import type { BenchmarkRun, DnsOutcome, Sample, Summary } from './types';
+import type { BenchmarkRun, DnsOutcome, RoutingEvidence, Sample, Summary } from './types';
+
+describe('local route notes', () => {
+  const evidence: RoutingEvidence = {
+    schemaVersion: 1,
+    status: 'unchanged',
+    beforeFingerprint: 'a'.repeat(64),
+    afterFingerprint: 'a'.repeat(64),
+    before: [],
+    after: [],
+  };
+  it('distinguishes route stability, changes, unavailable evidence, and older reports', () => {
+    expect(routingNote()).toBeNull();
+    expect(routingNote(evidence)).toContain('same local route');
+    expect(
+      routingNote({ ...evidence, status: 'changed', afterFingerprint: 'b'.repeat(64) }),
+    ).toContain('Repeat the test');
+    for (const updated of [
+      { ...evidence, status: 'unavailable' as const },
+      { ...evidence, afterFingerprint: null },
+      { ...evidence, status: 'changed' as const },
+      { ...evidence, schemaVersion: 2 },
+      { ...evidence, beforeFingerprint: 'invalid' },
+    ]) {
+      expect(routingNote(updated)).toContain("couldn't check");
+    }
+  });
+  it('includes the same route explanation in readable exports', () => {
+    const run = {
+      startedAt: '2026-11-01T00:00:00Z',
+      status: 'completed',
+      appVersion: '0.1.0',
+      protocol: 'icmpEcho',
+      results: [],
+      samples: [],
+      routing: evidence,
+    } as unknown as BenchmarkRun;
+    expect(reportHtml(run)).toContain('same local route');
+    expect(reportHtml({ ...run, routing: undefined })).not.toContain('same local route');
+  });
+});
 
 describe('protocol-specific measurements', () => {
   const summary: Summary = {

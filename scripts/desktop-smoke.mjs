@@ -126,6 +126,22 @@ try {
   );
   assert.equal(echoRun.protocol, 'icmpEcho');
   assert.equal(echoRun.samples.length, 6);
+  assert.equal(echoRun.routing.schemaVersion, 1);
+  assert.equal(echoRun.routing.status, 'unchanged');
+  assert.match(echoRun.routing.beforeFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(echoRun.routing.beforeFingerprint, echoRun.routing.afterFingerprint);
+  for (const captures of [echoRun.routing.before, echoRun.routing.after]) {
+    assert.equal(captures.length, 2);
+    for (const capture of captures) {
+      assert.equal(capture.status, 'captured');
+      assert.ok(capture.snapshot.adapterGuid.length > 0);
+      assert.match(capture.snapshot.interfaceLuid, /^[1-9][0-9]*$/);
+      assert.equal(capture.snapshot.destination.ip, capture.snapshot.source.ip);
+    }
+  }
+  await page
+    .getByText('Windows reported the same local route before and after this test.', { exact: true })
+    .waitFor();
   for (const sample of echoRun.samples) {
     assert.equal(sample.connectMs, null);
     assert.equal(sample.echo.status, 'reply');
@@ -158,6 +174,7 @@ try {
     else {
       assert.match(content, /ICMP echo RTT/);
       assert.match(content, /ICMP echo timeouts/);
+      assert.match(content, /same local route/);
       assert.doesNotMatch(content, /TCP connection establishment/);
     }
   }

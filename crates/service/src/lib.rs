@@ -7,6 +7,7 @@ pub mod mtu;
 pub mod mtu_lab;
 pub mod protocol;
 pub mod recovery;
+pub mod routing;
 #[cfg(windows)]
 mod security;
 #[cfg(windows)]

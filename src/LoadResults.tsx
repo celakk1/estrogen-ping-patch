@@ -1,4 +1,5 @@
 import type { LoadPhase, LoadRun } from './load-types';
+import { Code, Page } from 'iconoir-react';
 import { downloadLoadReport, formatMbps, loadNotes } from './load-report';
 import { formatProbeMs } from './measurement';
 
@@ -59,8 +60,14 @@ export default function LoadResults({ run }: { run: LoadRun }) {
         before your connection reaches full speed or enough response checks finish.
       </p>
       <div className="button-row report-actions">
-        <button onClick={() => downloadLoadReport(run, 'html')}>Save report</button>
-        <button onClick={() => downloadLoadReport(run, 'json')}>Export raw data (JSON)</button>
+        <button onClick={() => downloadLoadReport(run, 'html')}>
+          <Page />
+          Save report
+        </button>
+        <button onClick={() => downloadLoadReport(run, 'json')}>
+          <Code />
+          Export raw data (JSON)
+        </button>
       </div>
       <details className="advanced-settings">
         <summary>

@@ -52,6 +52,19 @@ enum ParsedTarget {
 }
 
 impl Endpoint {
+    pub fn destinationAddress(&self) -> AppResult<(std::net::IpAddr, u32)> {
+        match self.target()? {
+            ParsedTarget::Tcp(address) | ParsedTarget::Dns(address) => Ok((
+                address.ip(),
+                match address {
+                    std::net::SocketAddr::V4(_) => 0,
+                    std::net::SocketAddr::V6(address) => address.scope_id(),
+                },
+            )),
+            ParsedTarget::Echo(address) => Ok((address.address, address.scopeId)),
+        }
+    }
+
     fn target(&self) -> AppResult<ParsedTarget> {
         match self.protocol {
             ProbeProtocol::TcpConnect => {
@@ -129,6 +142,27 @@ pub struct BenchmarkRun {
     pub config: Config,
     pub results: Vec<EndpointResult>,
     pub samples: Vec<Sample>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingEvidence>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoutingStatus {
+    Unchanged,
+    Changed,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RoutingEvidence {
+    pub schemaVersion: u32,
+    pub status: RoutingStatus,
+    pub beforeFingerprint: Option<String>,
+    pub afterFingerprint: Option<String>,
+    pub before: serde_json::Value,
+    pub after: serde_json::Value,
 }
 
 fn probeTarget(
@@ -324,6 +358,7 @@ pub fn runBenchmark(
         config,
         results,
         samples,
+        routing: None,
     })
 }
 
@@ -425,6 +460,33 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
+    fn routeDestinationsReuseProtocolParsingAndPreserveIpv6Scope() {
+        for (protocol, address, ip, scope) in [
+            (ProbeProtocol::TcpConnect, "127.0.0.1:443", "127.0.0.1", 0),
+            (ProbeProtocol::DnsLookup, "[fe80::1%12]:53", "fe80::1", 12),
+            (ProbeProtocol::IcmpEcho, "fe80::1%12", "fe80::1", 12),
+        ] {
+            let endpoint = Endpoint {
+                id: "fixture".into(),
+                address: address.into(),
+                protocol,
+                dnsQuery: None,
+            };
+            assert_eq!(
+                endpoint.destinationAddress().unwrap(),
+                (ip.parse::<std::net::IpAddr>().unwrap(), scope)
+            );
+        }
+        let endpoint = Endpoint {
+            id: "invalid".into(),
+            address: "https://example.com".into(),
+            protocol: ProbeProtocol::TcpConnect,
+            dnsQuery: None,
+        };
+        assert!(endpoint.destinationAddress().is_err());
+    }
+
+    #[test]
     fn measureRealLocalSocketsAndPersistFailuresAsMissing() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let closed = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -450,11 +512,36 @@ mod tests {
                 dnsQuery: None,
             },
         ];
-        let run = runBenchmark(config, endpoints, &AtomicBool::new(false), |_, _, _| {}).unwrap();
+        let mut run =
+            runBenchmark(config, endpoints, &AtomicBool::new(false), |_, _, _| {}).unwrap();
         assert_eq!(run.samples.len(), 6);
         assert_eq!(run.results[0].summary.successful, 3);
         assert_eq!(run.results[1].summary.connectionFailurePercent, Some(100.0));
         assert!(run.results[1].summary.medianMs.is_none());
+        let legacy = serde_json::to_value(&run).unwrap();
+        assert!(legacy.get("routing").is_none());
+        assert!(
+            serde_json::from_value::<BenchmarkRun>(legacy)
+                .unwrap()
+                .routing
+                .is_none()
+        );
+        run.routing = Some(RoutingEvidence {
+            schemaVersion: 1,
+            status: RoutingStatus::Unavailable,
+            beforeFingerprint: None,
+            afterFingerprint: None,
+            before: serde_json::json!({"status":"unavailable","error":"fixture unavailable"}),
+            after: serde_json::json!({"status":"unavailable","error":"fixture unavailable"}),
+        });
+        let mut connection =
+            crate::storage::openDatabase(std::path::Path::new(":memory:")).unwrap();
+        crate::storage::saveRun(&mut connection, &mut run).unwrap();
+        let saved = crate::storage::history(&connection, 1).unwrap().remove(0);
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::to_value(&run).unwrap()
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@ The current implementation includes the desktop, a local read-only application s
 
 The transfer worker runs a bounded per-phase asynchronous HTTP client on a separate thread while the session observer reuses native TCP/ICMP probes. One to four HTTP/1.1 streams share a per-direction payload budget and deadline. Samples record request overlap and actual application payload progress; summaries do not infer saturation. Provider adapters construct fixed protocol paths from validated server origins. Transfer sessions use their own version-five database table and desktop history/report flow; DNS and unloaded baseline semantics remain unchanged. See [providers](providers.md).
 
+Connection tests additionally capture [native local route evidence](routing.md) around measurement. The unelevated desktop uses the existing service library's read-only Windows APIs, preserving GUID/LUID/source/prefix/next-hop evidence in optional baseline metadata. This does not add a service pipe operation or establish complete environment/configuration coverage for the experiment engine.
+
 ## Runtime paths
 
 `launch.bat -> scripts/dev.ps1 -> epp-check -> tauri dev -> Vite + desktop`
