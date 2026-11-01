@@ -16,6 +16,8 @@ A [service-owned experiment watchdog](docs/watchdog.md) now monitors temporary M
 
 A separate, disabled-by-default [native MTU lab](docs/native-mtu-lab.md) passed twenty owned-loopback trials on a disposable hosted Windows runner: normal apply/restore, deadline/heartbeat/shutdown recovery, automatic SCM crash restart, process termination after apply/restore, a crash after durable command registration before execution, revoked permission, and unavailable authorization storage, for IPv4 and IPv6. Exact original MTU, unrelated fields, persistent policy, and DNS origin values were verified afterward. The lab is excluded from ordinary launch/build/package workflows and does not enable optimization in the application.
 
+The lab's later repeated lifecycle fixture passed twelve actual temporary trials and thirty-six saved measurement sessions per family, with independently checked native receipts and restoration. Its full twenty-two-case matrix passed. The measurements use software loopback and do not measure the changed adapter's performance. Production consent, trusted traffic budgets/collection, recovery, and keep/revert integration remain unfinished.
+
 ## Quick start
 
 Supported development platform: Windows 10/11 x64, Rust stable MSVC, Node.js 24 LTS with npm 11 or 12, Visual Studio 2022 C++ Build Tools with a Windows SDK, and Microsoft Edge WebView2 Runtime.
