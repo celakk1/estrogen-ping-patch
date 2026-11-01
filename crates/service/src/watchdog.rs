@@ -268,6 +268,20 @@ fn currentTrigger(
         .or(requested))
 }
 
+fn verificationFailureTrigger(
+    control: &Control,
+    serviceStop: &AtomicBool,
+    guard: &mut Guard,
+    heartbeatTimeout: Duration,
+) -> ServiceResult<Trigger> {
+    Ok(
+        match currentTrigger(control, serviceStop, guard, heartbeatTimeout)? {
+            None | Some(Trigger::TrialFinished) => Trigger::VerificationFailed,
+            Some(trigger) => trigger,
+        },
+    )
+}
+
 pub fn watch<B: MtuBackend>(
     journal: &mut Journal,
     backend: &mut B,
@@ -307,6 +321,26 @@ pub fn watch<B: MtuBackend>(
             if let Some(trigger) =
                 currentTrigger(control, serviceStop, &mut guard, policy.heartbeatTimeout)?
             {
+                if trigger == Trigger::TrialFinished {
+                    if let Err(error) =
+                        MtuCoordinator::new(journal, backend, nowUnixMs).verifyApplied(id)
+                    {
+                        monitorError = Some(bounded(error));
+                        return verificationFailureTrigger(
+                            control,
+                            serviceStop,
+                            &mut guard,
+                            policy.heartbeatTimeout,
+                        );
+                    }
+                    return Ok(currentTrigger(
+                        control,
+                        serviceStop,
+                        &mut guard,
+                        policy.heartbeatTimeout,
+                    )?
+                    .unwrap_or(Trigger::TrialFinished));
+                }
                 return Ok(trigger);
             }
             let monotonic = Instant::now();
@@ -315,13 +349,12 @@ pub fn watch<B: MtuBackend>(
                     MtuCoordinator::new(journal, backend, nowUnixMs).verifyApplied(id)
                 {
                     monitorError = Some(bounded(error));
-                    return Ok(currentTrigger(
+                    return verificationFailureTrigger(
                         control,
                         serviceStop,
                         &mut guard,
                         policy.heartbeatTimeout,
-                    )?
-                    .unwrap_or(Trigger::VerificationFailed));
+                    );
                 }
                 if let Some(armed) = armed.take() {
                     armed()?;

@@ -94,6 +94,32 @@ fn automaticRollbackWhileCollectorStallsInvalidatesItsLaterSuccessfulReturn() {
 }
 
 #[test]
+fn externalRestorationBeforeCollectionFinishesCannotBecomeACompletedCandidateTrial() {
+    let mut fixture = fixture();
+    let changed = std::sync::Arc::new(AtomicBool::new(false));
+    fixture.backend.externalOriginal = Some(changed.clone());
+    let report = execute(
+        &mut fixture.journal,
+        &mut fixture.backend,
+        fixture.document.clone(),
+        &AtomicBool::new(false),
+        Policy::default(),
+        |_| {
+            changed.store(true, Ordering::SeqCst);
+            Ok(42)
+        },
+    )
+    .unwrap();
+    assert_eq!(report.outcome, Outcome::Interrupted);
+    assert_eq!(
+        report.watchdog.unwrap().trigger,
+        Trigger::VerificationFailed
+    );
+    assert_eq!(fixture.backend.native.settings.nlMtu, 1500);
+    assert_eq!(fixture.backend.writes, [WritePurpose::Apply]);
+}
+
+#[test]
 fn failedRestoreNeverBecomesACompletedTrialDespiteSuccessfulMeasurements() {
     let mut fixture = fixture();
     fixture.backend.failRestore = true;

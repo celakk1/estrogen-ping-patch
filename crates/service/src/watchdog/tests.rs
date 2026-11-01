@@ -10,6 +10,7 @@ pub(crate) struct Backend {
     pub(crate) allow: bool,
     pub(crate) failRestore: bool,
     pub(crate) panicAfterApply: bool,
+    pub(crate) externalOriginal: Option<Arc<AtomicBool>>,
     checks: usize,
     stopDuringVerification: Option<Arc<AtomicBool>>,
     pub(crate) writes: Vec<WritePurpose>,
@@ -39,6 +40,13 @@ impl MtuBackend for Backend {
         Ok(())
     }
     fn observe(&mut self, _: &MtuCheckpoint) -> ServiceResult<Observation> {
+        if self
+            .externalOriginal
+            .as_ref()
+            .is_some_and(|signal| signal.load(Ordering::SeqCst))
+        {
+            self.native.settings.nlMtu = 1500;
+        }
         self.native.capturedAtUnixMs = nowUnixMs()?;
         Ok(Observation {
             context: self.native.journalContext()?,
@@ -120,6 +128,7 @@ pub(crate) fn fixture() -> Fixture {
         allow: true,
         failRestore: false,
         panicAfterApply: false,
+        externalOriginal: None,
         checks: 0,
         stopDuringVerification: None,
         writes: Vec::new(),
