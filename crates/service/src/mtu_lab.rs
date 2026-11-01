@@ -532,68 +532,114 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         event(
             json!({"phase":"grantIssued", "trialId":document.id, "grantId":grant.id, "checkpointSha256":grant.checkpointSha256}),
         )?;
-        MtuCoordinator::new(journal, &mut backend, nowUnixMs).prepare(document.clone())?;
-        backend.pause = match config.phase {
-            Phase::Apply | Phase::Revoke | Phase::AuthorizationUnavailable => {
-                Some(WritePurpose::Apply)
-            }
-            Phase::Restore => Some(WritePurpose::Restore),
-            Phase::Complete
-            | Phase::Registered
-            | Phase::WatchdogDeadline
-            | Phase::WatchdogHeartbeat
-            | Phase::WatchdogStop
-            | Phase::WatchdogCrash => None,
-        };
-        let applied = MtuCoordinator::new(journal, &mut backend, nowUnixMs).apply(document.id)?;
-        match applied {
-            ApplyResult::Applied { .. } => {
-                if config.usesWatchdog() {
-                    let control = crate::watchdog::Control::new(document.id)?;
-                    let serviceStop = backend.stop.clone();
-                    let report = crate::watchdog::watch(
-                        journal,
-                        &mut backend,
-                        document.id,
-                        &control,
-                        &serviceStop,
-                        crate::watchdog::Policy {
-                            heartbeatTimeout: Duration::from_secs(
-                                if config.phase == Phase::WatchdogHeartbeat {
-                                    5
-                                } else {
-                                    30
-                                },
-                            ),
-                            ..Default::default()
-                        },
-                        || {
-                            event(
-                                json!({"phase":"watchdogArmed", "trialId":document.id, "processId":std::process::id()}),
-                            )
-                        },
-                    )?;
-                    event(
-                        json!({"phase":"watchdogReturned", "trialId":document.id, "report":report}),
-                    )?;
-                    if !report.originalVerified() {
-                        return Err(
-                            "Native watchdog did not verify complete original restoration".into(),
-                        );
+        if config.phase == Phase::Complete {
+            let stop = backend.stop.clone();
+            let report = crate::trial::execute(
+                journal,
+                &mut backend,
+                document.clone(),
+                &stop,
+                crate::watchdog::Policy::default(),
+                |control| {
+                    let listeners = [
+                        std::net::TcpListener::bind("127.0.0.1:0")?,
+                        std::net::TcpListener::bind("[::1]:0")?,
+                    ];
+                    let addresses = [listeners[0].local_addr()?, listeners[1].local_addr()?];
+                    let mut measurements = Vec::new();
+                    for _ in 0..3 {
+                        for address in addresses {
+                            control.heartbeat()?;
+                            let start = Instant::now();
+                            let _connection = std::net::TcpStream::connect_timeout(
+                                &address,
+                                Duration::from_millis(100),
+                            )?;
+                            measurements.push(json!({"endpoint":address.to_string(),"connectMs":start.elapsed().as_secs_f64()*1000.0}));
+                        }
                     }
-                } else {
-                    let recovered = MtuCoordinator::new(journal, &mut backend, nowUnixMs)
-                        .restore(document.id)?;
-                    if !recovered.originalMtuVerified || !recovered.journalFinalized {
-                        return Err("Native lab could not finish exact original restoration".into());
+                    Ok(measurements)
+                },
+            )?;
+            event(
+                json!({"phase":"automaticTrialComplete", "trialId":document.id, "report":report}),
+            )?;
+            if report.outcome != crate::trial::Outcome::Completed
+                || report.measurement.as_ref().map(Vec::len) != Some(6)
+            {
+                return Err(
+                    "Automatic native trial did not complete measurement and verified recovery"
+                        .into(),
+                );
+            }
+        } else {
+            MtuCoordinator::new(journal, &mut backend, nowUnixMs).prepare(document.clone())?;
+            backend.pause = match config.phase {
+                Phase::Apply | Phase::Revoke | Phase::AuthorizationUnavailable => {
+                    Some(WritePurpose::Apply)
+                }
+                Phase::Restore => Some(WritePurpose::Restore),
+                Phase::Complete
+                | Phase::Registered
+                | Phase::WatchdogDeadline
+                | Phase::WatchdogHeartbeat
+                | Phase::WatchdogStop
+                | Phase::WatchdogCrash => None,
+            };
+            let applied =
+                MtuCoordinator::new(journal, &mut backend, nowUnixMs).apply(document.id)?;
+            match applied {
+                ApplyResult::Applied { .. } => {
+                    if config.usesWatchdog() {
+                        let control = crate::watchdog::Control::new(document.id)?;
+                        let serviceStop = backend.stop.clone();
+                        let report = crate::watchdog::watch(
+                            journal,
+                            &mut backend,
+                            document.id,
+                            &control,
+                            &serviceStop,
+                            crate::watchdog::Policy {
+                                heartbeatTimeout: Duration::from_secs(
+                                    if config.phase == Phase::WatchdogHeartbeat {
+                                        5
+                                    } else {
+                                        30
+                                    },
+                                ),
+                                ..Default::default()
+                            },
+                            || {
+                                event(
+                                    json!({"phase":"watchdogArmed", "trialId":document.id, "processId":std::process::id()}),
+                                )
+                            },
+                        )?;
+                        event(
+                            json!({"phase":"watchdogReturned", "trialId":document.id, "report":report}),
+                        )?;
+                        if !report.originalVerified() {
+                            return Err(
+                                "Native watchdog did not verify complete original restoration"
+                                    .into(),
+                            );
+                        }
+                    } else {
+                        let recovered = MtuCoordinator::new(journal, &mut backend, nowUnixMs)
+                            .restore(document.id)?;
+                        if !recovered.originalMtuVerified || !recovered.journalFinalized {
+                            return Err(
+                                "Native lab could not finish exact original restoration".into()
+                            );
+                        }
                     }
                 }
-            }
-            ApplyResult::Failed { recovery, error } => {
-                event(
-                    json!({"phase":"applyFailed", "trialId":config.trialId, "recovery":recovery,"error":error}),
-                )?;
-                return Err("Native lab application was not confirmed".into());
+                ApplyResult::Failed { recovery, error } => {
+                    event(
+                        json!({"phase":"applyFailed", "trialId":config.trialId, "recovery":recovery,"error":error}),
+                    )?;
+                    return Err("Native lab application was not confirmed".into());
+                }
             }
         }
     }

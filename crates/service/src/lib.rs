@@ -14,6 +14,7 @@ mod security;
 mod storage;
 #[cfg(windows)]
 mod transport;
+pub mod trial;
 pub mod watchdog;
 #[cfg(windows)]
 pub mod windows;

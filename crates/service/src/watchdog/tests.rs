@@ -5,13 +5,14 @@ use crate::{
     recovery::{ApplyResult, AuthorizationAction, MutatorRegistrar, WritePurpose},
 };
 
-struct Backend {
-    native: Snapshot,
-    allow: bool,
-    failRestore: bool,
+pub(crate) struct Backend {
+    pub(crate) native: Snapshot,
+    pub(crate) allow: bool,
+    pub(crate) failRestore: bool,
+    pub(crate) panicAfterApply: bool,
     checks: usize,
     stopDuringVerification: Option<Arc<AtomicBool>>,
-    writes: Vec<WritePurpose>,
+    pub(crate) writes: Vec<WritePurpose>,
 }
 
 impl MtuBackend for Backend {
@@ -67,6 +68,9 @@ impl MtuBackend for Backend {
         })?;
         self.writes.push(purpose);
         self.native.settings.nlMtu = value;
+        if self.panicAfterApply && purpose == WritePurpose::Apply {
+            panic!("fixture setting worker panic after application");
+        }
         Ok(())
     }
 }
@@ -99,38 +103,45 @@ impl Drop for Temporary {
         }
     }
 }
-struct Fixture {
-    journal: Journal,
-    backend: Backend,
-    document: MtuCheckpoint,
+pub(crate) struct Fixture {
+    pub(crate) journal: Journal,
+    pub(crate) backend: Backend,
+    pub(crate) document: MtuCheckpoint,
     _temporary: Temporary,
 }
-fn applied() -> Fixture {
+pub(crate) fn fixture() -> Fixture {
     let document = document();
     let temporary = Temporary(
         std::env::temp_dir().join(format!("epp-watchdog-fixture-{}.sqlite3", Uuid::new_v4())),
     );
-    let mut journal = Journal::open(&temporary.0).unwrap();
-    let mut backend = Backend {
+    let journal = Journal::open(&temporary.0).unwrap();
+    let backend = Backend {
         native: document.nativeOriginal.clone().unwrap(),
         allow: true,
         failRestore: false,
+        panicAfterApply: false,
         checks: 0,
         stopDuringVerification: None,
         writes: Vec::new(),
     };
-    let mut coordinator = MtuCoordinator::new(&mut journal, &mut backend, nowUnixMs);
-    coordinator.prepare(document.clone()).unwrap();
-    assert!(matches!(
-        coordinator.apply(document.id).unwrap(),
-        ApplyResult::Applied { .. }
-    ));
     Fixture {
         journal,
         backend,
         document,
         _temporary: temporary,
     }
+}
+
+fn applied() -> Fixture {
+    let mut fixture = fixture();
+    let mut coordinator =
+        MtuCoordinator::new(&mut fixture.journal, &mut fixture.backend, nowUnixMs);
+    coordinator.prepare(fixture.document.clone()).unwrap();
+    assert!(matches!(
+        coordinator.apply(fixture.document.id).unwrap(),
+        ApplyResult::Applied { .. }
+    ));
+    fixture
 }
 
 #[test]

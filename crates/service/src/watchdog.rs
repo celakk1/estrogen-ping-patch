@@ -14,7 +14,7 @@ use std::{
 use uuid::Uuid;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Policy {
@@ -149,7 +149,7 @@ impl Control {
         Ok(())
     }
 
-    fn close(&self) {
+    pub(crate) fn close(&self) {
         let mut state = self
             .shared
             .state
@@ -235,7 +235,7 @@ impl Report {
     }
 }
 
-fn nowUnixMs() -> ServiceResult<u64> {
+pub(crate) fn nowUnixMs() -> ServiceResult<u64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_millis()

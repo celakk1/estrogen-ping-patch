@@ -1,0 +1,25 @@
+# Automatic temporary trials
+
+`epp-service::trial` coordinates one authorized MTU trial: validate the policy and exact native checkpoint, refuse unresolved recovery work, durably prepare, apply and verify, start the service-owned watchdog, wait for measurement readiness, collect measurements, request rollback, and wait for verified restoration. It does not expose an IPC write operation and is not enabled through the desktop. It does not retain a setting or decide that a candidate improves performance.
+
+## Ownership and failure handling
+
+One scoped worker owns the mutable journal and native backend while the caller collects measurements. Measurements cannot start until the watchdog has verified the active value and permission. Heartbeats are tied to the exact checkpoint; they cannot prolong the lease. The collector must be bounded and report actual progress. It can run independently of the watchdog, which restores even if collection stops making progress.
+
+Collection errors and unwinding panics request rollback. An apply panic after a recorded write also attempts exact restoration before returning. Missing readiness, watchdog failure, and restoration errors remain explicit. An interrupted collector's later successful return cannot become a Completed trial. Raw returned measurements can remain available for inspection, but Interrupted and RecoveryRequired outcomes are not completed candidate measurements.
+
+Completed means that the collector returned successfully while the watchdog remained active, normal trial completion triggered rollback, and the exact original MTU and captured interface fields were verified without unrelated drift or recovery errors. It does not establish statistical significance, internet performance, stable routing, complete environment binding, DNS/addressing restoration, or connectivity after restoring an unplugged interface. No outcome authorizes retention.
+
+The durable MTU journal retains the existing schema-three apply/restore states and process records. The complete experiment plan, measurement progress, candidate search history, comparison, and confirmation workflow still need their own durable application lifecycle. A process crash is handled by journal-based service startup recovery; the in-process controller cannot execute after its service dies or preempt a hung Windows API.
+
+## Validation
+
+Six focused tests passed. They exercise real bounded loopback TCP connections during a simulated setting trial; measurement errors and panics; a collector returning after heartbeat-triggered recovery; failed restoration despite successful measurements; an apply panic after the setting changed; and refused startup with denied permission, invalid policy, or unresolved recovery work. The complete local suite passed 162 Rust tests, fifteen frontend tests, twelve script tests, formatting, TypeScript, and workspace Clippy. The native-feature suite passed 98 tests plus feature Clippy, with ten explicit subprocess helpers ignored. All five safe harness checks passed. These tests change no development-machine network settings.
+
+The native lab's Complete case now uses this controller and collects six actual loopback TCP connection timings against two fixed local address families, while the watchdog owns the native backend. The harness checks returned measurements, normal completion, exact restoration, and process records independently. These loopback measurements are not routed over the test adapter and cannot demonstrate an MTU benefit. Native verification of the controller integration is pending.
+
+The preceding watchdog revision at `e0e6046` passed all twenty [native Windows trials](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41306701964) and the [separate service lifecycle](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41306704105). Independent inspection confirmed two families, ten phases each, exact original/final MTU 1500, restored state, and expected setting-process/write counts. Those runs predate this controller integration.
+
+## Remaining production work
+
+Production consent and service privilege/backend integration, complete trusted environment capture, diagnostic candidate generation, repeated matched benchmarks, calibrated confirmation, retained-setting verification, offline user recovery, physical/client-OS and reboot validation, and beginner-facing desktop optimization controls remain unfinished. The installed application service stays read-only.

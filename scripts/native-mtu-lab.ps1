@@ -238,6 +238,12 @@ try {
             }
             $complete = waitEvent $startedAt $trialId 'complete' ''
             waitStopped
+            if ($phase -eq 'complete') {
+                $automatic = waitEvent $startedAt $trialId 'automaticTrialComplete' ''
+                if ($automatic.report.outcome -ne 'completed' -or @($automatic.report.measurement).Count -ne 6 -or $automatic.report.watchdog.trigger -ne 'trialFinished' -or -not $automatic.report.watchdog.recovery.originalMtuVerified -or -not $automatic.report.watchdog.recovery.journalFinalized -or $automatic.report.watchdog.recovery.unrelatedSettingsDrifted -or $automatic.report.watchdog.recovery.error -or $automatic.report.watchdog.recoveryError) { throw 'Automatic native trial did not finish measurement with verified recovery.' }
+                $peers = @($automatic.report.measurement | Select-Object -ExpandProperty endpoint -Unique)
+                if ($peers.Count -ne 2 -or @($peers | Where-Object { $_ -notmatch '^(127\.0\.0\.1:\d+|\[::1\]:\d+)$' }).Count -ne 0 -or @($automatic.report.measurement | Where-Object { $_.connectMs -lt 0 -or [double]::IsNaN($_.connectMs) -or [double]::IsInfinity($_.connectMs) }).Count -ne 0) { throw 'Automatic trial did not preserve its bounded loopback connection measurements.' }
+            }
             if ($watchdog -and $phase -ne 'watchdog-crash') {
                 $returned = waitEvent $startedAt $trialId 'watchdogReturned' ''
                 $expectedTrigger = $(if ($phase -eq 'watchdog-deadline') { 'leaseExpired' } elseif ($phase -eq 'watchdog-heartbeat') { 'heartbeatLost' } else { 'serviceStopping' })
