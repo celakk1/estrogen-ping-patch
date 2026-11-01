@@ -90,7 +90,8 @@ struct HostFixture {
     candidateOutcome: Option<TrialOutcome>,
     cancel: Option<Arc<AtomicBool>>,
     cancelOnFinalVerification: Option<Arc<AtomicBool>>,
-    candidateDelay: Duration,
+    expireDuringCandidate: bool,
+    initialVerificationDelay: Duration,
     traffic: Option<std::collections::BTreeMap<String, budget::Resources>>,
     inspectReservations: Option<PathBuf>,
     trafficDelay: Duration,
@@ -171,6 +172,9 @@ impl Host for HostFixture {
     }
 
     fn verifyOriginal(&mut self, plan: &Plan) -> AppResult<()> {
+        if self.verifications == 0 {
+            std::thread::sleep(self.initialVerificationDelay);
+        }
         self.verifications += 1;
         self.plan = Some(plan.clone());
         if self.candidates == 12
@@ -192,14 +196,19 @@ impl Host for HostFixture {
         }
         Ok(session)
     }
-    fn measureCandidate(&mut self, _: &Control<'_>) -> AppResult<CandidateResult> {
+    fn measureCandidate(&mut self, control: &Control<'_>) -> AppResult<CandidateResult> {
         self.candidates += 1;
         self.changed = true;
         assert!(self.candidates <= 32);
         if self.panicCandidate {
             panic!("fixture candidate interrupted before restoration");
         }
-        std::thread::sleep(self.candidateDelay);
+        if self.expireDuringCandidate {
+            std::thread::sleep(
+                control.deadline.saturating_duration_since(Instant::now())
+                    + Duration::from_millis(10),
+            );
+        }
         let mut measurement = self.measurement(true, format!("candidate-{}", self.candidates));
         if self.badCandidate {
             measurement.environmentSha256 = "e".repeat(64);
@@ -305,12 +314,15 @@ fn cancellationAndDeadlineAfterCandidateCannotStartAnotherMeasurement() {
         let mut store = Store::open(&temporary.0).unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let mut plan = plan();
-        let mut host = HostFixture::default();
+        let mut host = HostFixture {
+            initialVerificationDelay: Duration::from_millis(100),
+            ..Default::default()
+        };
         if cancelled {
             host.cancel = Some(cancel.clone());
         } else {
-            plan.expiresAtUnixMs = nowUnixMs().unwrap() + 50;
-            host.candidateDelay = Duration::from_millis(100);
+            plan.expiresAtUnixMs = nowUnixMs().unwrap() + 5_000;
+            host.expireDuringCandidate = true;
         }
         let report = execute(&mut store, plan, &mut host, &cancel).unwrap();
         assert_eq!(
