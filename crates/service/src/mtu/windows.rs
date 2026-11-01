@@ -1,4 +1,5 @@
 mod context;
+mod origins;
 #[cfg(feature = "native-mtu-lab")]
 mod write;
 use super::{CaptureEntry, InterfaceSettings, Snapshot};
@@ -144,8 +145,15 @@ fn read(
         return Err("IP interface identity changed during native MTU capture".into());
     }
     checkCancellation(cancelled)?;
+    let registryOrigins = match origins::capture(adapterGuid, cancelled) {
+        Ok(evidence) => super::origins::OriginCapture::Captured { evidence },
+        Err(error) => super::origins::OriginCapture::Unavailable {
+            error: error.to_string().chars().take(512).collect(),
+        },
+    };
+    checkCancellation(cancelled)?;
     Ok(Snapshot {
-        schemaVersion: 1,
+        schemaVersion: 2,
         capturedAtUnixMs: crate::transport::nowUnixMs()?,
         adapterGuid,
         addressFamily,
@@ -162,6 +170,7 @@ fn read(
         os: os.clone(),
         driver: drivers.get(adapterGuid),
         settings: settings(&row),
+        registryOrigins: Some(registryOrigins),
     })
 }
 

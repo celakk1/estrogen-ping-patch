@@ -260,6 +260,9 @@ try {
             }
             if ($phase -eq 'watchdog-crash' -and $complete.processId -eq $watchdogProcessId) { throw 'SCM did not automatically restart the crashed watchdog service.' }
             $current = captureNative $guid $family
+            if ($current.schemaVersion -ne 2 -or $original.schemaVersion -ne 2 -or $current.registryOrigins.status -ne 'captured' -or $original.registryOrigins.status -ne 'captured') { throw 'Service-owned fixed registry origin capture was unavailable.' }
+            $originsBefore = $original.registryOrigins | ConvertTo-Json -Depth 12 -Compress
+            if (($current.registryOrigins | ConvertTo-Json -Depth 12 -Compress) -cne $originsBefore -or ($complete.original.registryOrigins | ConvertTo-Json -Depth 12 -Compress) -cne $originsBefore) { throw 'Live or durable registry origin evidence changed during the native trial.' }
             if ($complete.state -ne 'restored' -or $complete.pendingRecoveryCount -ne 0 -or $current.settings.nlMtu -ne $original.settings.nlMtu -or (settingsJson $current.settings) -cne (settingsJson $original.settings)) { throw 'Native recovery failed exact MTU/unrelated-settings verification.' }
             if ((settingsJson $complete.original.settings) -cne (settingsJson $original.settings)) { throw 'Durable native original does not match the independent pre-trial capture.' }
             if ((persistentPolicy $interfaceIndex) -cne $policyBefore -or (dnsPolicy $guid $interfaceIndex) -cne $dnsBefore) { throw 'Native trial changed persistent interface or automatic/static DNS origin values.' }

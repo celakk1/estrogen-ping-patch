@@ -46,6 +46,20 @@ Native MTU/interface/OS/driver readers are implemented. A disabled-by-default [n
 
 ## Mandatory gate for future setting changes
 
+### Service-owned registry origin evidence
+
+New native interface snapshots use schema two and include `registryOrigins`. The service reads only the target GUID's `Tcpip` and `Tcpip6` interface keys, with nine fixed names: `MTU`, `EnableDHCP`, `IPAddress`, `SubnetMask`, `DefaultGateway`, `NameServer`, `DhcpNameServer`, `ProfileNameServer`, and `Dhcpv6DNSServers`. It records key presence, value presence, the original registry type, and exact hexadecimal bytes. Missing values, empty data, terminating nulls, binary data, and unexpanded strings remain distinct. It does not infer automatic DNS from IP DHCP state or turn an effective resolver list into a static configuration.
+
+Two complete bounded reads must agree. Access failures, changing data, or more than four KiB of aggregate raw data produce an explicit unavailable result. Cancellation discards the capture. A schema-two native original with unavailable evidence cannot prepare a checkpoint; the existing durable commit, checksum, readback, GUID, OS/driver, and process-registration gates still apply. Strict observations and the final pre-command check reject origin drift. The native fixture's version-two environment fingerprint includes the origin evidence while excluding its candidate MTU. Its independent verifier additionally compares these fields in raw measurement receipts, saved original documents, and recovery observations.
+
+Recovery remains MTU-specific. Unavailable current origin reads or external DNS/addressing changes do not require renewed apply permission and do not prevent verified original-MTU recovery when native identity remains established. Recovery preserves those external values and reports unrelated drift; it does not overwrite DNS or addresses. Such drift cannot become a clean completed trial. Legacy native-schema-one records remain readable and recoverable without inventing missing origin evidence. The journal wrapper remains version three; older service binaries refuse journals containing the new nested native snapshot rather than silently discarding it. Diagnostic backup JSON remains a separate read-only format.
+
+This is fixed registry representation evidence, not a complete effective-policy capture, a supported registry setter, or proven DNS/addressing restoration. Group policy, per-network profile policy, encrypted DNS, IPv6 address configuration, persistent-store semantics, and physical/reboot recovery still need their operation-specific coverage. Diagnostic exports retain `restorationVerified: false`, list unavailable origin capture explicitly, and do not enable production changes. Registry data may include private addresses and DNS configuration; review exports before sharing.
+
+The reader uses [RegOpenKeyExW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regopenkeyexw) and [RegQueryValueExW](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regqueryvalueexw). It deliberately retains raw bytes rather than interpreting potentially unterminated strings or adding terminators. No registry write API or caller-selected path/value name is exposed.
+
+### Production change requirements
+
 Before any setter is enabled, the privileged service must perform all of these steps:
 
 1. Match the target adapter by GUID and verify its current OS, driver, capability, management-policy, VPN, and remote-administration context.

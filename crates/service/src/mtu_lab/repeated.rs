@@ -171,11 +171,12 @@ fn routes(endpoints: &[Endpoint]) -> ServiceResult<(Vec<routing::Capture>, Strin
 
 fn environment(native: &Snapshot, fingerprint: &str) -> ServiceResult<String> {
     hash(&(
-        "native-lab-loopback-environment-v1",
+        "native-lab-loopback-environment-v2",
         native.adapterGuid,
         native.addressFamily,
         &native.os,
         &native.driver,
+        &native.registryOrigins,
         fingerprint,
     ))
 }
@@ -685,6 +686,27 @@ pub(super) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn originChangesAlterTheEnvironmentFingerprintWhileCandidateMtuDoesNot() {
+        use crate::mtu::origins::{OriginCapture, RawValue, tests::fixture};
+        let mut native = crate::recovery::tests::nativeFixture();
+        native.schemaVersion = 2;
+        native.registryOrigins = Some(OriginCapture::Captured {
+            evidence: fixture(native.adapterGuid),
+        });
+        let original = environment(&native, "route-fixture").unwrap();
+        native.settings.nlMtu = 1400;
+        assert_eq!(environment(&native, "route-fixture").unwrap(), original);
+        let Some(OriginCapture::Captured { evidence }) = &mut native.registryOrigins else {
+            unreachable!()
+        };
+        evidence.stacks[0].values[5].value = Some(RawValue {
+            valueType: 1,
+            dataHex: "0000".into(),
+        });
+        assert_ne!(environment(&native, "route-fixture").unwrap(), original);
+    }
+
     #[test]
     fn repeatedCheckpointScopeIsDeterministicBoundedAndSeparateFromItsParent() {
         let parent = Uuid::new_v4();

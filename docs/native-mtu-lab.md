@@ -1,5 +1,7 @@
 # Native MTU recovery lab
 
+The newer service-owned registry-origin extension is awaiting hosted validation. It adds bounded exact DNS/addressing marker evidence to native schema-two originals, strict readback and pre-command drift guards, and a version-two repeated-fixture environment fingerprint. The independent matrix checks compare live, saved, and recovered origin evidence. Existing successful matrix results below predate this extension. See [coverage and remaining recovery requirements](backups.md#service-owned-registry-origin-evidence).
+
 The `native-mtu-lab` Cargo feature adds a separate, narrowly scoped Windows service for testing real Windows MTU writes and recovery. Default development, build, and packaging commands do not enable it. The normal LocalService service and desktop still expose no setters and report `rollbackAvailable: false`.
 
 The lab is not an optimization feature or a production authorization mechanism. Its purpose is to establish native MTU behavior before enabling application-owned experiments. The current twenty-trial native matrix passed on a disposable Windows Server 2022 runner. This establishes the bounded loopback cases below, not production readiness or physical-adapter recovery.

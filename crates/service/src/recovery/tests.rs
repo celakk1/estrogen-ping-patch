@@ -110,6 +110,116 @@ fn document(id: u128) -> MtuCheckpoint {
     }
 }
 
+#[test]
+fn serviceOwnedOriginsCommitExactlyAndMissingOrDriftedEvidenceBlocksApply() {
+    use crate::mtu::origins::{OriginCapture, RawValue, tests::fixture as originFixture};
+    let fixture = Fixture::new();
+    let mut journal = fixture.open();
+    let mut backend = fixture.backend(Arc::new(AtomicU64::new(1000)));
+    let mut document = document(91);
+    let native = document.nativeOriginal.as_mut().unwrap();
+    native.schemaVersion = 2;
+    native.registryOrigins = Some(OriginCapture::Unavailable {
+        error: "fixture denied".into(),
+    });
+    save(&fixture.value, native);
+    assert!(
+        MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+            .prepare(document.clone())
+            .is_err()
+    );
+    assert!(journal.load(document.id).is_err());
+    assert!(backend.writes.is_empty());
+    let native = document.nativeOriginal.as_mut().unwrap();
+    native.registryOrigins = Some(OriginCapture::Captured {
+        evidence: originFixture(native.adapterGuid),
+    });
+    save(&fixture.value, native);
+    MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+        .prepare(document.clone())
+        .unwrap();
+    let stored = journal.load(document.id).unwrap();
+    assert_eq!(stored.document(), &document);
+    let mut changed = read(&fixture.value);
+    let Some(OriginCapture::Captured { evidence }) = &mut changed.registryOrigins else {
+        unreachable!()
+    };
+    evidence.stacks[0].values[5].value = Some(RawValue {
+        valueType: 1,
+        dataHex: "0000".into(),
+    });
+    save(&fixture.value, &changed);
+    assert!(
+        MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+            .apply(document.id)
+            .is_err()
+    );
+    assert!(backend.writes.is_empty());
+    assert_eq!(read(&fixture.value), changed);
+    assert_eq!(journal.load(document.id).unwrap().document(), &document);
+}
+
+#[test]
+fn offlineMtuRecoveryPreservesExternalOriginsAndDoesNotNeedTheirReaderOrApplyPermission() {
+    use crate::mtu::origins::{OriginCapture, RawValue, tests::fixture as originFixture};
+    for unavailable in [false, true] {
+        let fixture = Fixture::new();
+        let mut journal = fixture.open();
+        let clock = Arc::new(AtomicU64::new(1000));
+        let mut backend = fixture.backend(clock.clone());
+        let mut document = document(92);
+        document.schemaVersion = 3;
+        let native = document.nativeOriginal.as_mut().unwrap();
+        native.schemaVersion = 2;
+        native.registryOrigins = Some(OriginCapture::Captured {
+            evidence: originFixture(native.adapterGuid),
+        });
+        save(&fixture.value, native);
+        MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+            .prepare(document.clone())
+            .unwrap();
+        assert!(matches!(
+            MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+                .apply(document.id)
+                .unwrap(),
+            ApplyResult::Applied { .. }
+        ));
+        drop(journal);
+        let mut changed = read(&fixture.value);
+        if unavailable {
+            changed.registryOrigins = Some(OriginCapture::Unavailable {
+                error: "fixture reader unavailable after restart".into(),
+            });
+        } else {
+            let Some(OriginCapture::Captured { evidence }) = &mut changed.registryOrigins else {
+                unreachable!()
+            };
+            evidence.stacks[0].values[1].value = Some(RawValue {
+                valueType: 4,
+                dataHex: "01000000".into(),
+            });
+        }
+        let expectedOrigins = changed.registryOrigins.clone();
+        save(&fixture.value, &changed);
+        backend.allow = false;
+        clock.store(20000, Ordering::SeqCst);
+        let mut journal = fixture.open();
+        let result = MtuCoordinator::new(&mut journal, &mut backend, || Ok(20000))
+            .restore(document.id)
+            .unwrap();
+        assert!(
+            result.originalMtuVerified
+                && result.journalFinalized
+                && result.unrelatedSettingsDrifted
+        );
+        let restored = read(&fixture.value);
+        assert_eq!(restored.settings.nlMtu, 1500);
+        assert_eq!(restored.registryOrigins, expectedOrigins);
+        assert_eq!(journal.load(document.id).unwrap().document(), &document);
+        assert_eq!(journal.mutators(document.id).unwrap().len(), 2);
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Fault {
     None,

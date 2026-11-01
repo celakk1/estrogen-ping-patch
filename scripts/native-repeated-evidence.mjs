@@ -44,6 +44,52 @@ const checkedPayload = (row, field = 'payload_json') => {
   assert.equal(digest(row[field]), row.sha256);
   return JSON.parse(row[field]);
 };
+let originReference;
+function verifyOrigins(native) {
+  assert.equal(native.schemaVersion, 2);
+  assert.equal(native.registryOrigins.status, 'captured');
+  const evidence = native.registryOrigins.evidence;
+  assert.equal(evidence.schemaVersion, 1);
+  assert.equal(evidence.adapterGuid, adapterGuid);
+  assert.deepEqual(
+    evidence.stacks.map((stack) => stack.name),
+    ['Tcpip', 'Tcpip6'],
+  );
+  let bytes = 0;
+  for (const stack of evidence.stacks) {
+    assert.equal(typeof stack.keyPresent, 'boolean');
+    assert.deepEqual(
+      stack.values.map((entry) => entry.name),
+      [
+        'MTU',
+        'EnableDHCP',
+        'IPAddress',
+        'SubnetMask',
+        'DefaultGateway',
+        'NameServer',
+        'DhcpNameServer',
+        'ProfileNameServer',
+        'Dhcpv6DNSServers',
+      ],
+    );
+    for (const entry of stack.values) {
+      if (!stack.keyPresent) assert.equal(entry.value, null);
+      if (entry.value !== null) {
+        assert.ok(
+          Number.isInteger(entry.value.valueType) &&
+            entry.value.valueType >= 0 &&
+            entry.value.valueType <= 0xffffffff,
+        );
+        assert.equal(typeof entry.value.dataHex, 'string');
+        assert.match(entry.value.dataHex, /^(?:[0-9a-f]{2})*$/);
+        bytes += entry.value.dataHex.length / 2;
+      }
+    }
+  }
+  assert.ok(bytes <= 4096);
+  if (originReference === undefined) originReference = native.registryOrigins;
+  assert.deepEqual(native.registryOrigins, originReference);
+}
 const childId = (index) => {
   const bytes = createHash('sha256')
     .update('epp-native-repeated-checkpoint-v1')
@@ -213,6 +259,7 @@ try {
     assert.equal(candidate, checkpointIds.includes(receipt.checkpointId));
     if (!candidate) assert.equal(receipt.checkpointId, null);
     for (const native of [receipt.nativeBefore, receipt.nativeAfter]) {
+      verifyOrigins(native);
       assert.equal(native.adapterGuid, adapterGuid);
       assert.equal(native.addressFamily, family);
       assert.equal(native.alias, `epp-mtu-lab-${adapterGuid}`);
@@ -227,11 +274,12 @@ try {
       );
       assert.equal(
         jsonHash([
-          'native-lab-loopback-environment-v1',
+          'native-lab-loopback-environment-v2',
           native.adapterGuid,
           native.addressFamily,
           native.os,
           native.driver,
+          native.registryOrigins,
           run.routing.beforeFingerprint,
         ]),
         snapshot.plan.comparison.environmentSha256,
@@ -263,6 +311,7 @@ try {
       .prepare('SELECT document_json,sha256 FROM checkpoints WHERE id=?')
       .get(checkpointId);
     const document = checkedPayload(documentRow, 'document_json');
+    verifyOrigins(document.nativeOriginal);
     assert.equal(document.id, checkpointId);
     assert.equal(document.context.adapterGuid, adapterGuid);
     assert.equal(document.addressFamily, family);
@@ -278,6 +327,7 @@ try {
     assert.ok(events.length >= 4);
     for (const [sequence, row] of events.entries()) {
       const event = checkedPayload(row, 'event_json');
+      if (event.observation?.native) verifyOrigins(event.observation.native);
       assert.equal(event.sequence, sequence);
       assert.equal(event.previousSha256, previous);
       previous = row.sha256;

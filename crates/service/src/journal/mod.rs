@@ -85,6 +85,7 @@ impl MtuCheckpoint {
         match (self.schemaVersion, &self.nativeOriginal) {
             (1, None) => {}
             (2 | 3, Some(native)) => {
+                native.requireOriginalOrigins()?;
                 if native.journalContext()? != self.context
                     || native.addressFamily != self.addressFamily
                     || native.settings.nlMtu != self.originalMtu

@@ -41,6 +41,10 @@ pub(crate) fn appendNativeMtu(payload: &mut Value, cancelled: &AtomicBool) -> Re
                         if value["driver"]["status"] != "captured" {
                             unavailable.push("driverContext");
                         }
+                        if value["registryOrigins"]["status"] != "captured" {
+                            unavailable.push("registryOrigins");
+                        }
+                        value["registryApi"] = json!("RegOpenKeyExW/RegQueryValueExW");
                         value["unavailableFields"] = json!(unavailable);
                         (json!([value]), "captured", Value::Null)
                     }
@@ -71,7 +75,7 @@ pub(crate) fn appendNativeMtu(payload: &mut Value, cancelled: &AtomicBool) -> Re
         .as_array_mut()
         .ok_or("Backup sections are malformed")?
         .extend(sections);
-    payload["limitations"].as_array_mut().ok_or("Backup limitations are malformed")?.push(json!("Native interface rows preserve API-reported values and OS/driver context. Persistent policy-store origin, DNS/addressing recovery, authorization, and native restore validation are not established."));
+    payload["limitations"].as_array_mut().ok_or("Backup limitations are malformed")?.push(json!("Native interface rows preserve API-reported values and OS/driver context. Fixed registry origin fields retain exact presence, type, and bytes, not complete effective policy or DNS/addressing restore coverage. Persistent policy-store origin, authorization, and native restore validation are not established."));
     Ok(())
 }
 

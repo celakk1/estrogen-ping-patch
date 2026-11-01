@@ -76,7 +76,48 @@ try {
       const value = section.values[0];
       assert.equal(value.api, 'GetIpInterfaceEntry');
       assert.equal(value.linkApi, 'GetIfEntry2');
-      assert.equal(value.schemaVersion, 1);
+      assert.equal(value.schemaVersion, 2);
+      assert.equal(value.registryApi, 'RegOpenKeyExW/RegQueryValueExW');
+      if (value.registryOrigins.status === 'captured') {
+        const evidence = value.registryOrigins.evidence;
+        assert.equal(evidence.schemaVersion, 1);
+        assert.equal(evidence.adapterGuid, value.adapterGuid);
+        assert.deepEqual(
+          evidence.stacks.map((stack) => stack.name),
+          ['Tcpip', 'Tcpip6'],
+        );
+        let bytes = 0;
+        for (const stack of evidence.stacks) {
+          assert.equal(typeof stack.keyPresent, 'boolean');
+          assert.deepEqual(
+            stack.values.map((entry) => entry.name),
+            [
+              'MTU',
+              'EnableDHCP',
+              'IPAddress',
+              'SubnetMask',
+              'DefaultGateway',
+              'NameServer',
+              'DhcpNameServer',
+              'ProfileNameServer',
+              'Dhcpv6DNSServers',
+            ],
+          );
+          for (const entry of stack.values) {
+            if (!stack.keyPresent) assert.equal(entry.value, null);
+            if (entry.value !== null) {
+              assert.ok(Number.isInteger(entry.value.valueType));
+              assert.match(entry.value.dataHex, /^(?:[0-9a-f]{2})*$/);
+              bytes += entry.value.dataHex.length / 2;
+            }
+          }
+        }
+        assert.ok(bytes <= 4096);
+      } else {
+        assert.equal(value.registryOrigins.status, 'unavailable');
+        assert.equal(typeof value.registryOrigins.error, 'string');
+        assert.ok(value.unavailableFields.includes('registryOrigins'));
+      }
       assert.equal(value.restorationVerified, false);
       assert.match(value.interfaceLuid, /^[0-9]+$/);
       assert.ok(value.os.build > 0 && value.os.major >= 10);

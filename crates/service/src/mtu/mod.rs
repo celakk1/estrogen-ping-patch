@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use uuid::Uuid;
 
+pub mod origins;
 #[cfg(windows)]
 mod windows;
 
@@ -78,6 +79,8 @@ pub struct Snapshot {
     pub os: OsContext,
     pub driver: DriverContext,
     pub settings: InterfaceSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registryOrigins: Option<origins::OriginCapture>,
 }
 
 impl Snapshot {
@@ -86,7 +89,16 @@ impl Snapshot {
             .interfaceLuid
             .parse::<u64>()
             .map_err(|_| "Native snapshot LUID is invalid")?;
-        if self.schemaVersion != 1
+        match (self.schemaVersion, &self.registryOrigins) {
+            (1, None) => {}
+            (2, Some(origins)) => origins.validate(self.adapterGuid)?,
+            _ => {
+                return Err(
+                    "Native snapshot schema disagrees with its registry origin evidence".into(),
+                );
+            }
+        }
+        if !matches!(self.schemaVersion, 1 | 2)
             || self.adapterGuid.is_nil()
             || self.interfaceIndex == 0
             || luid == 0
@@ -153,6 +165,12 @@ impl Snapshot {
 
     pub(crate) fn validateMtuObservation(&self, original: &Self) -> ServiceResult<()> {
         self.validateMtuIdentity(original)?;
+        if original.schemaVersion == 2 {
+            original.requireOriginalOrigins()?;
+            if self.registryOrigins != original.registryOrigins {
+                return Err("Unrelated DNS, addressing, or persistent MTU registry origin evidence changed or became unavailable".into());
+            }
+        }
         let mut settings = self.settings.clone();
         settings.nlMtu = original.settings.nlMtu;
         if settings != original.settings {
@@ -169,6 +187,16 @@ impl Snapshot {
             return Err(format!(
                 "Unrelated native interface settings changed ({changed}); refusing an unsafe MTU transition"
             ).into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn requireOriginalOrigins(&self) -> ServiceResult<()> {
+        if self.schemaVersion == 2 {
+            self.registryOrigins
+                .as_ref()
+                .ok_or("Native original has no registry origin evidence")?
+                .requireCaptured(self.adapterGuid)?;
         }
         Ok(())
     }

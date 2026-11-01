@@ -65,6 +65,13 @@ fn validateBeforeWrite(
     if fresh.settings != expected.settings {
         return Err("Native interface settings drifted before the MTU write".into());
     }
+    if matches!(
+        expected.registryOrigins,
+        Some(crate::mtu::origins::OriginCapture::Captured { .. })
+    ) && fresh.registryOrigins != expected.registryOrigins
+    {
+        return Err("Network registry origins drifted before the MTU write".into());
+    }
     let mut luid = NET_LUID_LH::default();
     errorCode("ConvertInterfaceGuidToLuid", unsafe {
         ConvertInterfaceGuidToLuid(&nativeGuid(original.adapterGuid), &mut luid)
