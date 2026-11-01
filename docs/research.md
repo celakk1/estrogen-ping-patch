@@ -24,6 +24,8 @@ Research checked on 2026-10-31. These references establish design constraints; t
 
 ## Research gates still open
 
+The [repeated-session comparison library](comparisons.md) uses paired resampling as described by [SciPy](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.bootstrap.html) and per-metric nominal levels following [NIST's Bonferroni description](https://itl.nist.gov/div898/handbook/prc/section4/prc473.htm). These sources establish the method definitions, not calibrated coverage for networking sessions. Independent confirmation, serial dependence, small-sample/rare-failure behavior, and sequential/multiple-candidate policies remain open before production retention.
+
 Verify official provider APIs, traffic policies, privacy terms, supported discovery, and redistribution licenses before implementing NDT7, Cloudflare throughput infrastructure, or optional Ookla/iperf3 adapters. No undocumented website endpoint is used as a speed-test API. Verify Windows 10/11 client API compatibility and driver behavior in a test lab before enabling any candidate setter. Verify supported inference APIs, credential protection, and MCP proposal validation before enabling paid or local inference.
 
 ## Direct ICMP measurement

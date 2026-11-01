@@ -2,6 +2,7 @@
 
 pub mod backups;
 pub mod benchmark;
+pub mod comparison;
 pub mod config;
 pub mod discovery;
 pub mod dns;

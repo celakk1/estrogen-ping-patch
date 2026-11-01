@@ -1,0 +1,42 @@
+# Repeated-session comparison library
+
+The core comparison library analyzes complete original/candidate/original blocks. It is backend groundwork for the experiment engine, not a desktop optimization command. It does not run benchmarks, capture network settings, authorize changes, retain a configuration, or schedule experiments. The desktop remains a read-only preview.
+
+## Evidence contract
+
+A plan fixes the server cohort, environment identity, original and candidate configuration hashes, ordered metrics, metric directions, objective/safety roles, measurement resolutions, practical thresholds, regression limits, baseline-drift limits, and maximum matched-block duration. The duration must be explicitly bounded within one day; this upper input limit is not a recommendation for widely separated measurements. It requires at least one objective and one guard. No universal score or default percentage weights combine unrelated measurements. Thresholds are explicit inputs; production profiles and validated defaults remain unfinished.
+
+Each matched block contains one completed original session before the candidate session and one completed original session afterward. Session IDs must be unique across the comparison, timestamps ordered and nonoverlapping, and all hashes/metric counts consistent. Missing, nonfinite, negative, unfinished, reused, or mismatched evidence is refused. The limit is 128 blocks and sixteen metrics. One block contains three sessions, regardless of the number of packets within them.
+
+The original reference is linearly interpolated between the midpoints of the surrounding original sessions at the candidate midpoint. This accommodates unequal spacing; it does not establish that real drift is linear. A surrounding-baseline change beyond the configured absolute/relative drift allowance, floored at measurement resolution, invalidates the complete comparison. Bad blocks are not silently discarded. Unexpected environment/cohort changes are rejected before analysis.
+
+Benefits have the metric's original unit, with positive values always meaning improvement. Thresholds use the greater of the absolute allowance and the baseline-relative allowance. Practical improvement must be at least the declared measurement resolution. Any observed block exceeding a hard regression limit rejects the comparison, even if the average is better or there are too few blocks for inference. Results preserve the complete plan and block evidence, per-metric effects, limits, and offending block indexes.
+
+## Uncertainty and outcomes
+
+At least twelve complete blocks are required before resampling. This is an engineering minimum, not a guarantee of sufficient power or independence. Analysis uses 16,384 bootstrap resamples of whole matched blocks; all metrics use the same selected block indexes. For each metric, it resamples the benefit, benefit minus its practical threshold, and benefit plus its regression allowance. Relative thresholds travel with their original session rather than being treated as fixed averages. The three reported intervals per metric use a nominal confidence of `1 - 0.05 / (3 * metricCount)`. The simultaneous nominal level is 95 percent. The adjusted intervals concern the configured metrics within one comparison, not repeated candidate searches or repeated looks at accumulating data.
+
+The [SciPy bootstrap documentation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.bootstrap.html) describes paired resampling and percentile intervals, while also explaining that basic and BCa methods are more common. The [NIST Bonferroni description](https://itl.nist.gov/div898/handbook/prc/section4/prc473.htm) motivates the per-metric confidence adjustment. Bootstrap coverage remains approximate; adjustment does not repair dependence between sessions, biased cohorts, inadequate data, or an invalid underlying interval.
+
+A deterministic SHA-256 counter stream selects unbiased block indexes with rejection sampling. Its seed is the SHA-256 of the serialized plan and block evidence, retained as `evidenceSha256`. Reanalysis of unchanged input reproduces the same report. The digest detects changed evidence; it does not authenticate an untrusted producer or establish that the plan was committed before collection.
+
+| Outcome | Meaning |
+| --- | --- |
+| `invalid` | At least one bracketing baseline drifted beyond its allowance |
+| `reject` | At least one observed block exceeded a hard regression limit |
+| `inconclusive` | Too few blocks, insufficient effect, uncertain safety, or degenerate resampling |
+| `promising` | An objective's practical-margin interval is entirely positive, every metric's non-regression-margin interval meets its gate, and no observed hard regression occurred |
+
+All reports explicitly remain exploratory. Degenerate distributions cannot become promising, including a safety metric that never varied; repeated observed zero failures alone is not a validated rare-failure upper bound. `promising` means eligible for further investigation, never permission to retain. Independent confirmation, calibrated coverage/power, serial dependence, rare failures, sequential testing, multiple candidates, production profile policies, and final retained-configuration verification remain required.
+
+## Existing baseline adapter
+
+`comparison::baseline` converts saved completed TCP, ICMP, or DNS runs into session measurements. It hashes exact endpoint metadata, application version, sample count, pacing, timeout, session time budget, and metric selections into the cohort. Changed selection order or measurement policy changes the hash. It validates raw sample protocol/outcome consistency, addresses, timestamps, balanced endpoint counts, and configuration/context binding, then recalculates selected statistics from raw samples rather than trusting stored summary fields.
+
+Available selections are median, p95, p99, IQR, successive variation, and protocol-specific failure/timeout percentage. ICMP OS errors cannot become zero loss, DNS negative-answer timing cannot become successful lookup timing, and whole-millisecond ICMP cannot claim a finer comparison resolution. Missing required metrics prevent comparison instead of becoming zero. This adapter does not establish tail-estimate precision from a small packet count.
+
+Environment and network-configuration hashes must come from a trusted collector that verifies the exact operation and relevant adapter, OS, driver, routing, VPN, and policy context. The existing desktop baseline format has no such capture stamp; the adapter requires it separately and cannot invent it from benchmark options. Binding that collector to the privileged checkpoint and automated measurement lifecycle is unfinished. Load-session conversion and UI/report history integration are also unfinished. No persistent database or IPC format changed for this library.
+
+## Validation
+
+Sixteen focused tests cover paired-block resampling, an exact binomial fixture for interval bounds, opposite-metric index pairing, reproducibility and evidence round trips, insufficient sessions, hard regressions despite a better average, complete-comparison drift refusal, uncertainty/degeneracy, timestamp precision, input bounds, and context/cohort mismatch. A targeted failing test reproduced false promotion when relative-threshold uncertainty was ignored; it passed after practical and non-regression margins were resampled together. Baseline tests recalculate deliberately false saved summaries, reject inconsistent or reordered raw evidence, preserve ICMP/DNS outcome semantics, and convert actual loopback TCP measurements after SQLite persistence. The loopback test verifies the adapter execution path, not internet performance or optimization efficacy.
