@@ -138,6 +138,59 @@ Write-Output 'comparison verified'
   assert.match(result.stdout, /comparison verified/);
 });
 
+test(
+  'native origin comparison preserves nested values while ignoring object key order',
+  options,
+  () => {
+    const result = powershell(String.raw`
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:EPP_LAB_SCRIPT, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) { throw 'Native lab script failed parsing.' }
+foreach ($name in @('orderedJsonValue', 'originsJson')) {
+    $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if ($null -ne $function) { . ([scriptblock]::Create($function.Extent.Text)) }
+}
+$first = '{"status":"captured","evidence":{"schemaVersion":1,"stacks":[{"name":"Tcpip","keyPresent":true,"values":[{"name":"NameServer","value":null},{"name":"MTU","value":{"valueType":4,"dataHex":"dc050000"}}]}]}}' | ConvertFrom-Json
+$second = '{"evidence":{"stacks":[{"values":[{"value":null,"name":"NameServer"},{"value":{"dataHex":"dc050000","valueType":4},"name":"MTU"}],"keyPresent":true,"name":"Tcpip"}],"schemaVersion":1},"status":"captured"}' | ConvertFrom-Json
+if (($first | ConvertTo-Json -Depth 12 -Compress) -ceq ($second | ConvertTo-Json -Depth 12 -Compress)) { throw 'Fixture does not reproduce nested serializer key-order differences.' }
+$original = originsJson $first
+if ($original -cne (originsJson $second)) { throw 'Equal origin evidence was rejected because of nested key order.' }
+for ($fault = 0; $fault -lt 10; $fault++) {
+    $changed = $first | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    switch ($fault) {
+        0 { $changed.evidence.stacks[0].values[1].value.dataHex = 'dc040000' }
+        1 { $changed.evidence.stacks[0].values[1].value.valueType = 1 }
+        2 { $changed.evidence.stacks[0].keyPresent = 1 }
+        3 { $changed.evidence.stacks[0].values[0].value = '' }
+        4 { $changed.evidence.stacks[0].values = @($changed.evidence.stacks[0].values[1], $changed.evidence.stacks[0].values[0]) }
+        5 { $changed.evidence.stacks[0].PSObject.Properties.Remove('keyPresent') }
+        6 { $changed.evidence | Add-Member -NotePropertyName extra -NotePropertyValue 1 }
+        7 { $changed.evidence.stacks[0].values = @() }
+        8 { $changed.evidence.stacks[0].values[0].value = @() }
+        9 { $changed.evidence.stacks[0].values[1].value.dataHex = 'DC050000' }
+    }
+    if ($original -ceq (originsJson $changed)) { throw "Changed origin evidence was accepted for fault $fault." }
+}
+Write-Output 'nested origin comparison verified'
+originsJson ([pscustomobject]@{ emptyArray = @(); singleArray = @($null); emptyObject = [pscustomobject]@{}; nullValue = $null; boolean = $true; numeric = 1; text = '1' })
+`);
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /nested origin comparison verified/);
+    assert.deepEqual(JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1)), {
+      emptyArray: [],
+      singleArray: [null],
+      emptyObject: {},
+      nullValue: null,
+      boolean: true,
+      numeric: 1,
+      text: '1',
+    });
+  },
+);
+
 test('authorization fault fixture preserves the original database and sidecars', options, () => {
   const result = powershell(String.raw`
 $ErrorActionPreference = 'Stop'

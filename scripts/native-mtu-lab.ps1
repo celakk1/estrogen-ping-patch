@@ -83,6 +83,35 @@ function settingsJson([object]$settings) {
     $ordered | ConvertTo-Json -Depth 4 -Compress
 }
 
+function orderedJsonValue([object]$value) {
+    if ($null -eq $value -or $value -is [string] -or $value -is [ValueType]) { return ,$value }
+    if ($value -is [Collections.IDictionary]) {
+        $ordered = [ordered]@{}
+        $names = [string[]]@($value.Keys)
+        [Array]::Sort($names, [StringComparer]::Ordinal)
+        foreach ($name in $names) { $ordered[$name] = orderedJsonValue $value[$name] }
+        return ,$ordered
+    }
+    if ($value -is [Collections.IEnumerable]) {
+        $items = [Collections.Generic.List[object]]::new()
+        foreach ($item in $value) { $items.Add((orderedJsonValue $item)) }
+        return ,($items.ToArray())
+    }
+    if ($value -is [Management.Automation.PSCustomObject]) {
+        $ordered = [ordered]@{}
+        $names = [string[]]@($value.PSObject.Properties | ForEach-Object { $_.Name })
+        [Array]::Sort($names, [StringComparer]::Ordinal)
+        foreach ($name in $names) { $ordered[$name] = orderedJsonValue $value.PSObject.Properties[$name].Value }
+        return ,$ordered
+    }
+    throw 'Origin comparison encountered an unsupported non-JSON value.'
+}
+
+function originsJson([object]$origins) {
+    if ($null -eq $origins) { throw 'Registry origin evidence is missing.' }
+    orderedJsonValue $origins | ConvertTo-Json -Depth 16 -Compress
+}
+
 function blockAuthorization {
     $path = Join-Path $dataRoot 'authorization.sqlite3'
     $backup = "$path.lab-blocked"
@@ -261,8 +290,8 @@ try {
             if ($phase -eq 'watchdog-crash' -and $complete.processId -eq $watchdogProcessId) { throw 'SCM did not automatically restart the crashed watchdog service.' }
             $current = captureNative $guid $family
             if ($current.schemaVersion -ne 2 -or $original.schemaVersion -ne 2 -or $current.registryOrigins.status -ne 'captured' -or $original.registryOrigins.status -ne 'captured') { throw 'Service-owned fixed registry origin capture was unavailable.' }
-            $originsBefore = $original.registryOrigins | ConvertTo-Json -Depth 12 -Compress
-            if (($current.registryOrigins | ConvertTo-Json -Depth 12 -Compress) -cne $originsBefore -or ($complete.original.registryOrigins | ConvertTo-Json -Depth 12 -Compress) -cne $originsBefore) { throw 'Live or durable registry origin evidence changed during the native trial.' }
+            $originsBefore = originsJson $original.registryOrigins
+            if ((originsJson $current.registryOrigins) -cne $originsBefore -or (originsJson $complete.original.registryOrigins) -cne $originsBefore) { throw 'Live or durable registry origin evidence changed during the native trial.' }
             if ($complete.state -ne 'restored' -or $complete.pendingRecoveryCount -ne 0 -or $current.settings.nlMtu -ne $original.settings.nlMtu -or (settingsJson $current.settings) -cne (settingsJson $original.settings)) { throw 'Native recovery failed exact MTU/unrelated-settings verification.' }
             if ((settingsJson $complete.original.settings) -cne (settingsJson $original.settings)) { throw 'Durable native original does not match the independent pre-trial capture.' }
             if ((persistentPolicy $interfaceIndex) -cne $policyBefore -or (dnsPolicy $guid $interfaceIndex) -cne $dnsBefore) { throw 'Native trial changed persistent interface or automatic/static DNS origin values.' }
