@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { createSocket } from 'node:dgram';
-import { createServer } from 'node:net';
+import { dnsListeners } from './dns-listeners.mjs';
 
 export async function dnsFixture(ip, fallback = false) {
+  const { tcp, udp, port } = await dnsListeners(ip);
   const sockets = new Set();
   let requests = 0;
   const answer = (request, truncated = false) => {
@@ -28,7 +28,7 @@ export async function dnsFixture(ip, fallback = false) {
     requests += 1;
     return Buffer.concat([header, question, record, address]);
   };
-  const tcp = createServer((socket) => {
+  tcp.on('connection', (socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
@@ -43,20 +43,10 @@ export async function dnsFixture(ip, fallback = false) {
       socket.end(Buffer.concat([length, response]));
     });
   });
-  const udp = createSocket(ip.includes(':') ? 'udp6' : 'udp4');
   try {
-    await new Promise((resolve, reject) => {
-      tcp.once('error', reject);
-      tcp.listen(0, ip, resolve);
-    });
-    const port = tcp.address().port;
     udp.on('message', (request, peer) =>
       udp.send(answer(request, fallback), peer.port, peer.address),
     );
-    await new Promise((resolve, reject) => {
-      udp.once('error', reject);
-      udp.bind(port, ip, resolve);
-    });
     return {
       address: `${ip.includes(':') ? `[${ip}]` : ip}:${port}`,
       get requests() {
