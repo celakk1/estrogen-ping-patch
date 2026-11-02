@@ -144,6 +144,40 @@ pub struct BenchmarkRun {
     pub samples: Vec<Sample>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<RoutingEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sourceBindings: Option<Vec<SourceBinding>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceBinding {
+    pub endpointId: String,
+    pub source: EchoTarget,
+}
+
+#[cfg(test)]
+#[path = "benchmark/source_bound_tests.rs"]
+mod source_bound_tests;
+
+pub(crate) fn validateSourceBindings(
+    endpoints: &[Endpoint],
+    bindings: &[SourceBinding],
+) -> AppResult<()> {
+    validateEndpoints(endpoints)?;
+    if endpoints.len() != bindings.len() {
+        return Err(
+            "Every source-bound echo endpoint needs exactly one ordered source binding".into(),
+        );
+    }
+    for (endpoint, binding) in endpoints.iter().zip(bindings) {
+        if endpoint.protocol != ProbeProtocol::IcmpEcho || endpoint.id != binding.endpointId {
+            return Err(
+                "Source bindings must match the complete ordered ICMP endpoint cohort".into(),
+            );
+        }
+        crate::icmp::validateSource(&binding.source, &EchoTarget::parse(&endpoint.address)?)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -171,6 +205,7 @@ fn probeTarget(
     timeout: Duration,
     cancelled: &AtomicBool,
     echoProbe: &mut EchoProbe,
+    source: Option<&EchoTarget>,
 ) -> AppResult<Option<Sample>> {
     let start = Instant::now();
     let (connectMs, error, echo, dns) = match target {
@@ -183,7 +218,11 @@ fn probeTarget(
             Err(error) => (None, Some(error.to_string()), None, None),
         },
         ParsedTarget::Echo(target) => {
-            let result = echoProbe.measure(target, timeout, cancelled)?;
+            let result = if let Some(source) = source {
+                echoProbe.measureFrom(source, target, timeout, cancelled)?
+            } else {
+                echoProbe.measure(target, timeout, cancelled)?
+            };
             if result.status == EchoStatus::Cancelled {
                 return Ok(None);
             }
@@ -238,7 +277,14 @@ pub(crate) fn measureOnce(
     if cancelled.load(Ordering::SeqCst) {
         return Ok(None);
     }
-    probeTarget(endpoint, &endpoint.target()?, timeout, cancelled, echoProbe)
+    probeTarget(
+        endpoint,
+        &endpoint.target()?,
+        timeout,
+        cancelled,
+        echoProbe,
+        None,
+    )
 }
 pub fn validateEndpoints(endpoints: &[Endpoint]) -> AppResult<()> {
     if !(2..=8).contains(&endpoints.len()) {
@@ -288,6 +334,27 @@ pub fn runBenchmark(
     config: Config,
     endpoints: Vec<Endpoint>,
     cancelled: &AtomicBool,
+    onSample: impl FnMut(&Sample, usize, usize),
+) -> AppResult<BenchmarkRun> {
+    runBenchmarkInternal(config, endpoints, None, cancelled, onSample)
+}
+
+pub fn runSourceBoundEchoBenchmark(
+    config: Config,
+    endpoints: Vec<Endpoint>,
+    bindings: Vec<SourceBinding>,
+    cancelled: &AtomicBool,
+    onSample: impl FnMut(&Sample, usize, usize),
+) -> AppResult<BenchmarkRun> {
+    validateSourceBindings(&endpoints, &bindings)?;
+    runBenchmarkInternal(config, endpoints, Some(bindings), cancelled, onSample)
+}
+
+fn runBenchmarkInternal(
+    config: Config,
+    endpoints: Vec<Endpoint>,
+    sourceBindings: Option<Vec<SourceBinding>>,
+    cancelled: &AtomicBool,
     mut onSample: impl FnMut(&Sample, usize, usize),
 ) -> AppResult<BenchmarkRun> {
     config.validate()?;
@@ -303,7 +370,7 @@ pub fn runBenchmark(
     let protocol = endpoints[0].protocol;
     let mut echoProbe = EchoProbe::default();
     'measurements: for _ in 0..config.sampleCount {
-        for (endpoint, target) in endpoints.iter().zip(&targets) {
+        for (index, (endpoint, target)) in endpoints.iter().zip(&targets).enumerate() {
             if cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
                 break 'measurements;
             }
@@ -313,7 +380,11 @@ pub fn runBenchmark(
             if timeout.as_millis() == 0 {
                 break 'measurements;
             }
-            let Some(sample) = probeTarget(endpoint, target, timeout, cancelled, &mut echoProbe)?
+            let source = sourceBindings
+                .as_ref()
+                .map(|bindings| &bindings[index].source);
+            let Some(sample) =
+                probeTarget(endpoint, target, timeout, cancelled, &mut echoProbe, source)?
             else {
                 break 'measurements;
             };
@@ -359,6 +430,7 @@ pub fn runBenchmark(
         results,
         samples,
         routing: None,
+        sourceBindings,
     })
 }
 

@@ -7,7 +7,7 @@ use windows_sys::Win32::{
     Foundation::{GetLastError, HANDLE, INVALID_HANDLE_VALUE},
     NetworkManagement::IpHelper::{
         ICMPV6_ECHO_REPLY_LH, IP_REQ_TIMED_OUT, IP_SUCCESS, Icmp6CreateFile, Icmp6SendEcho2,
-        IcmpCloseHandle, IcmpCreateFile, IcmpSendEcho,
+        IcmpCloseHandle, IcmpCreateFile, IcmpSendEcho, IcmpSendEcho2Ex,
     },
     Networking::WinSock::{AF_INET6, IN6_ADDR, IN6_ADDR_0, SOCKADDR_IN6, SOCKADDR_IN6_0},
 };
@@ -109,7 +109,12 @@ impl WindowsProbe {
         self.ipv4.is_none() && self.ipv6.is_none()
     }
 
-    pub(super) fn measure(&mut self, target: &EchoTarget, timeoutMs: u32) -> EchoOutcome {
+    pub(super) fn measure(
+        &mut self,
+        source: Option<&EchoTarget>,
+        target: &EchoTarget,
+        timeoutMs: u32,
+    ) -> EchoOutcome {
         let start = Instant::now();
         let slot = match target.address {
             IpAddr::V4(_) => &mut self.ipv4,
@@ -132,6 +137,23 @@ impl WindowsProbe {
         let mut buffer = [0u64; REPLY_WORDS];
         let (count, lastError) = unsafe {
             let count = match target.address {
+                IpAddr::V4(address) if source.is_some() => IcmpSendEcho2Ex(
+                    handle,
+                    std::ptr::null_mut(),
+                    None,
+                    std::ptr::null(),
+                    match source.expect("validated source").address {
+                        IpAddr::V4(address) => u32::from_ne_bytes(address.octets()),
+                        _ => unreachable!("validated source family"),
+                    },
+                    u32::from_ne_bytes(address.octets()),
+                    PAYLOAD.as_ptr().cast(),
+                    PAYLOAD.len() as u16,
+                    std::ptr::null(),
+                    buffer.as_mut_ptr().cast(),
+                    size_of_val(&buffer) as u32,
+                    timeoutMs,
+                ),
                 IpAddr::V4(address) => IcmpSendEcho(
                     handle,
                     u32::from_ne_bytes(address.octets()),
@@ -147,7 +169,13 @@ impl WindowsProbe {
                     std::ptr::null_mut(),
                     None,
                     std::ptr::null(),
-                    &socketAddress(Ipv6Addr::UNSPECIFIED, target.scopeId),
+                    &socketAddress(
+                        source.map_or(Ipv6Addr::UNSPECIFIED, |source| match source.address {
+                            IpAddr::V6(address) => address,
+                            _ => unreachable!("validated source family"),
+                        }),
+                        source.map_or(target.scopeId, |source| source.scopeId),
+                    ),
                     &socketAddress(address, target.scopeId),
                     PAYLOAD.as_ptr().cast(),
                     PAYLOAD.len() as u16,
@@ -206,7 +234,9 @@ mod tests {
     #[test]
     fn buffersIncludeErrorPayloadAndIpv6IoStatusSpace() {
         let size = REPLY_WORDS * size_of::<u64>();
-        assert!(size >= size_of::<ICMP_ECHO_REPLY>() + PAYLOAD.len() + 8);
+        assert!(
+            size >= size_of::<ICMP_ECHO_REPLY>() + PAYLOAD.len() + 8 + size_of::<IO_STATUS_BLOCK>()
+        );
         assert!(
             size >= size_of::<ICMPV6_ECHO_REPLY_LH>()
                 + PAYLOAD.len()

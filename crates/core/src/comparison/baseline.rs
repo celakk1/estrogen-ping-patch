@@ -72,7 +72,14 @@ pub fn cohortSha256(run: &BenchmarkRun, selections: &[Selection]) -> AppResult<S
         run.config.sessionMinutes,
         selections,
     ))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    let legacy = format!("{:x}", Sha256::digest(bytes));
+    if let Some(bindings) = &run.sourceBindings {
+        crate::benchmark::validateSourceBindings(&endpoints, bindings)?;
+        let bytes = serde_json::to_vec(&("source-bound-baseline-cohort-v1", legacy, bindings))?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    } else {
+        Ok(legacy)
+    }
 }
 
 fn timestamp(value: &str) -> AppResult<u64> {

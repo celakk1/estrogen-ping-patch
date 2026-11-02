@@ -100,8 +100,29 @@ pub struct EchoProbe {
 }
 
 impl EchoProbe {
+    pub fn measureFrom(
+        &mut self,
+        source: &EchoTarget,
+        target: &EchoTarget,
+        timeout: Duration,
+        cancelled: &AtomicBool,
+    ) -> AppResult<EchoOutcome> {
+        validateSource(source, target)?;
+        self.measureWithSource(Some(source), target, timeout, cancelled)
+    }
+
     pub fn measure(
         &mut self,
+        target: &EchoTarget,
+        timeout: Duration,
+        cancelled: &AtomicBool,
+    ) -> AppResult<EchoOutcome> {
+        self.measureWithSource(None, target, timeout, cancelled)
+    }
+
+    fn measureWithSource(
+        &mut self,
+        source: Option<&EchoTarget>,
         target: &EchoTarget,
         timeout: Duration,
         cancelled: &AtomicBool,
@@ -115,11 +136,27 @@ impl EchoProbe {
         }
         #[cfg(windows)]
         {
-            Ok(self.native.measure(target, timeout.as_millis() as u32))
+            Ok(self
+                .native
+                .measure(source, target, timeout.as_millis() as u32))
         }
         #[cfg(not(windows))]
-        Ok(EchoOutcome::unavailable(EchoStatus::Unsupported))
+        {
+            let _ = source;
+            Ok(EchoOutcome::unavailable(EchoStatus::Unsupported))
+        }
     }
+}
+
+pub(crate) fn validateSource(source: &EchoTarget, target: &EchoTarget) -> AppResult<()> {
+    source.validate()?;
+    target.validate()?;
+    if source.address.is_ipv4() != target.address.is_ipv4()
+        || matches!((source.address, target.address), (IpAddr::V6(sourceAddress), IpAddr::V6(targetAddress)) if sourceAddress.is_unicast_link_local() && targetAddress.is_unicast_link_local() && source.scopeId != target.scopeId)
+    {
+        return Err("Echo source and destination must have matching families and compatible interface scopes".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -131,6 +168,36 @@ mod tests {
             address: address.parse().unwrap(),
             scopeId,
         }
+    }
+
+    #[test]
+    fn boundSourcesRequireMatchingFamiliesAndLinkLocalScopes() {
+        let mut probe = EchoProbe::default();
+        let cancelled = AtomicBool::new(true);
+        for (source, destination) in [
+            (target("127.0.0.1", 0), target("::1", 0)),
+            (target("0.0.0.0", 0), target("127.0.0.1", 0)),
+            (target("fe80::1", 12), target("fe80::2", 13)),
+        ] {
+            assert!(
+                probe
+                    .measureFrom(
+                        &source,
+                        &destination,
+                        Duration::from_millis(100),
+                        &cancelled
+                    )
+                    .is_err()
+            );
+        }
+        let local = target("127.0.0.1", 0);
+        assert_eq!(
+            probe
+                .measureFrom(&local, &local, Duration::from_millis(100), &cancelled)
+                .unwrap()
+                .status,
+            EchoStatus::Cancelled
+        );
     }
 
     #[test]

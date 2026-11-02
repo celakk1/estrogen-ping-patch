@@ -44,6 +44,7 @@ fn fixture() -> (BenchmarkRun, Vec<Selection>, Plan) {
         results,
         samples,
         routing: None,
+        sourceBindings: None,
     };
     let selections = vec![
         Selection {
