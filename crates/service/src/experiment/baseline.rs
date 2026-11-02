@@ -352,24 +352,40 @@ impl Collector<'_> {
             return Err("Native measurement receipt exceeds 128 KiB".into());
         }
         let checksum = epp_core::backups::checksum(&payload);
-        self.database.execute("INSERT INTO adapter_measurements(run_id,experiment_id,payload_json,sha256) VALUES(?1,?2,?3,?4)", (run.id, &self.plan.id, &payload, &checksum))?;
-        let saved: (String, String) = self.database.query_row(
+        let transaction = self
+            .database
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        transaction.execute("INSERT INTO adapter_measurements(run_id,experiment_id,payload_json,sha256) VALUES(?1,?2,?3,?4)", (run.id, &self.plan.id, &payload, &checksum))?;
+        Self::verifySaved(&transaction, run, &payload, &checksum)?;
+        transaction.commit()?;
+        Self::verifySaved(self.database, run, &payload, &checksum)?;
+        Ok(session)
+    }
+
+    fn verifySaved(
+        database: &Connection,
+        run: &BenchmarkRun,
+        payload: &str,
+        checksum: &str,
+    ) -> ServiceResult<()> {
+        let saved: (String, String) = database.query_row(
             "SELECT payload_json,sha256 FROM adapter_measurements WHERE run_id=?1",
             [run.id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let raw: String = self.database.query_row(
+        let raw: String = database.query_row(
             "SELECT report_json FROM benchmark_runs WHERE id=?1",
             [run.id],
             |row| row.get(0),
         )?;
-        if saved != (payload, checksum)
+        if saved.0 != payload
+            || saved.1 != checksum
             || hash(&serde_json::from_str::<BenchmarkRun>(&raw)?)? != hash(run)?
         {
             return Err("Measurement durable readback differs from the captured raw session or native receipt".into());
         }
 
-        let mut statement = self.database.prepare(
+        let mut statement = database.prepare(
             "SELECT sample_json FROM benchmark_samples WHERE run_id=?1 ORDER BY ordinal",
         )?;
         let samples = statement
@@ -382,7 +398,7 @@ impl Collector<'_> {
         {
             return Err("Durable raw sample rows differ from the accepted report".into());
         }
-        Ok(session)
+        Ok(())
     }
 }
 

@@ -466,6 +466,17 @@ fn failedOrAlteredDurableEvidenceNeverReturnsAnAcceptedSession() {
                 .unwrap(),
             1
         );
+        assert_eq!(
+            collector
+                .database
+                .query_row("SELECT count(*) FROM adapter_measurements", [], |row| row
+                    .get::<_, u32>(
+                    0
+                ))
+                .unwrap(),
+            0,
+            "fault {failure} left a receipt after failed admission"
+        );
     }
 }
 
