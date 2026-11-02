@@ -30,6 +30,54 @@ fn grantCount(fixture: &Fixture) -> u32 {
 }
 
 #[test]
+fn approvalIsConsumedBeforeOpeningStorageAndExpiresWhileStorageIsUnavailable() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    let mut consent = MtuConsent::new(OWNER).unwrap();
+    let preview = consent.preview(document(), OWNER, 1000).unwrap();
+    let approval = consent
+        .takeApproval(preview.previewId, &preview.checkpointSha256, OWNER, 1001)
+        .unwrap();
+    drop(approval);
+    assert!(
+        consent
+            .approve(
+                preview.previewId,
+                &preview.checkpointSha256,
+                OWNER,
+                &mut store,
+                1002
+            )
+            .is_err()
+    );
+    let next = consent.preview(document(), OWNER, 1002).unwrap();
+    let mut approval = consent
+        .takeApproval(next.previewId, &next.checkpointSha256, OWNER, 1003)
+        .unwrap();
+    approval.pending.deadline = Instant::now() - Duration::from_millis(1);
+    assert!(approval.issue(&mut store, 1004).is_err());
+    assert_eq!(grantCount(&fixture), 0);
+}
+
+#[test]
+fn issuedApprovalPreservesTheExactOriginalForFutureDurablePreparation() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    let mut consent = MtuConsent::new(OWNER).unwrap();
+    let original = document();
+    let preview = consent.preview(original.clone(), OWNER, 1000).unwrap();
+    let approval = consent
+        .takeApproval(preview.previewId, &preview.checkpointSha256, OWNER, 1001)
+        .unwrap();
+    let (grant, preserved) = approval.issueWithOriginal(&mut store, 1002).unwrap();
+    assert_eq!(preserved, original);
+    assert_eq!(
+        checkpointChecksum(&preserved).unwrap(),
+        grant.checkpointSha256
+    );
+}
+
+#[test]
 fn approvalBindsTheExactReviewedOriginalAndCannotGrantRetentionOrReplay() {
     let fixture = Fixture::new();
     let mut store = fixture.open();

@@ -19,13 +19,10 @@ pub(crate) struct OwnedJournal {
     _journal: Journal,
     _directory: File,
     _parent: File,
-    #[cfg(feature = "native-mtu-lab")]
     directoryPath: PathBuf,
-    #[cfg(feature = "native-mtu-lab")]
     serviceSid: String,
 }
 
-#[cfg(feature = "native-mtu-lab")]
 pub(crate) struct OwnedAuthorization {
     pub(crate) store: crate::authorization::AuthorizationStore,
     _directory: File,
@@ -99,9 +96,7 @@ fn openNamed(serviceSid: &str, directoryName: &str) -> ServiceResult<OwnedJourna
         _journal: journal,
         _directory: directoryGuard,
         _parent: parentGuard,
-        #[cfg(feature = "native-mtu-lab")]
         directoryPath: directory,
-        #[cfg(feature = "native-mtu-lab")]
         serviceSid: serviceSid.into(),
     })
 }
@@ -111,8 +106,12 @@ pub(crate) fn openMtuLab(serviceSid: &str) -> ServiceResult<OwnedJournal> {
     openNamed(serviceSid, "estrogen-ping-patch-mtu-lab")
 }
 
-#[cfg(feature = "native-mtu-lab")]
 impl OwnedJournal {
+    pub(crate) fn hasPendingWork(&self) -> ServiceResult<bool> {
+        Ok(!self._journal.pendingRecovery()?.is_empty()
+            || !self._journal.pendingPolicyVerification()?.is_empty())
+    }
+    #[cfg(feature = "native-mtu-lab")]
     pub(crate) fn journal(&mut self) -> &mut Journal {
         &mut self._journal
     }
@@ -134,6 +133,7 @@ impl OwnedJournal {
         })
     }
 
+    #[cfg(feature = "native-mtu-lab")]
     pub(crate) fn experiments(&self) -> ServiceResult<OwnedExperiments> {
         let names = [
             "experiments.sqlite3",

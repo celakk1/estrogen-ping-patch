@@ -31,6 +31,23 @@ fn execute() -> epp_service::ServiceResult<()> {
             );
             Ok(())
         }
+        [mode, guid, family, mtu, duration] if mode == "--preview-mtu" => {
+            let addressFamily = match family.as_str() { "ipv4" => epp_service::journal::AddressFamily::Ipv4, "ipv6" => epp_service::journal::AddressFamily::Ipv6, _ => return Err("MTU family must be ipv4 or ipv6".into()) };
+            let proposal = epp_service::preview::Proposal { adapterGuid: guid.parse()?, addressFamily, proposedMtu: mtu.parse()?, trialDurationMs: duration.parse()? };
+            println!("{}", serde_json::to_string_pretty(&epp_service::previewBlocking(epp_service::protocol::Operation::StartMtuPreview(proposal))?)?);
+            Ok(())
+        }
+        [mode, jobId] if mode == "--preview-status" || mode == "--cancel-mtu-preview" => {
+            let jobId = jobId.parse()?;
+            let operation = if mode == "--preview-status" { epp_service::protocol::Operation::GetMtuPreview { jobId } } else { epp_service::protocol::Operation::CancelMtuPreview { jobId } };
+            println!("{}", serde_json::to_string_pretty(&epp_service::previewBlocking(operation)?)?);
+            Ok(())
+        }
+        [mode, jobId, previewId, checkpointSha256] if mode == "--approve-mtu-preview" => {
+            let operation = epp_service::protocol::Operation::ApproveMtuPreview { jobId: jobId.parse()?, previewId: previewId.parse()?, checkpointSha256: checkpointSha256.clone() };
+            println!("{}", serde_json::to_string_pretty(&epp_service::previewBlocking(operation)?)?);
+            Ok(())
+        }
         [mode] if mode=="--mtu-inventory" => {
             println!("{}",serde_json::to_string_pretty(&epp_service::mtu::inventory(&std::sync::atomic::AtomicBool::new(false))?)?);
             Ok(())

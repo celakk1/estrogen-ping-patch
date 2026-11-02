@@ -301,7 +301,7 @@ impl Drop for Impersonation {
     }
 }
 
-pub(crate) fn authenticateClient(pipe: HANDLE, ownerSid: &str) -> ServiceResult<()> {
+pub(crate) fn authenticateClient(pipe: HANDLE, ownerSid: &str) -> ServiceResult<String> {
     if unsafe { ImpersonateNamedPipeClient(pipe) } == 0 {
         return Err("Windows could not authenticate the pipe client".into());
     }
@@ -311,10 +311,11 @@ pub(crate) fn authenticateClient(pipe: HANDLE, ownerSid: &str) -> ServiceResult<
         return Err(std::io::Error::last_os_error().into());
     }
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
-    if tokenSid(token.as_raw_handle())? != ownerSid {
+    let actorSid = tokenSid(token.as_raw_handle())?;
+    if actorSid != ownerSid {
         return Err("Pipe client is not the authorized Windows user".into());
     }
-    Ok(())
+    Ok(actorSid)
 }
 
 #[cfg(test)]

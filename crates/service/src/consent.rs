@@ -32,6 +32,37 @@ struct Pending {
     highWaterUnixMs: u64,
 }
 
+pub(crate) struct ApprovedMtu {
+    pending: Pending,
+    actorSid: String,
+}
+
+impl ApprovedMtu {
+    pub(crate) fn issue(
+        self,
+        store: &mut AuthorizationStore,
+        nowUnixMs: u64,
+    ) -> ServiceResult<MtuGrant> {
+        self.issueWithOriginal(store, nowUnixMs)
+            .map(|(grant, _)| grant)
+    }
+
+    pub(crate) fn issueWithOriginal(
+        self,
+        store: &mut AuthorizationStore,
+        nowUnixMs: u64,
+    ) -> ServiceResult<(MtuGrant, MtuCheckpoint)> {
+        if nowUnixMs < self.pending.highWaterUnixMs
+            || nowUnixMs >= self.pending.preview.expiresAtUnixMs
+            || Instant::now() >= self.pending.deadline
+        {
+            return Err("MTU approval expired before grant storage became available".into());
+        }
+        let grant = store.issue(&self.pending.document, &self.actorSid, false, nowUnixMs)?;
+        Ok((grant, self.pending.document))
+    }
+}
+
 pub struct MtuConsent {
     ownerSid: String,
     pending: Option<Pending>,
@@ -65,6 +96,11 @@ impl MtuConsent {
             // rejected requests must still advance the clock fence.
             pending.highWaterUnixMs = nowUnixMs;
         }
+    }
+
+    pub(crate) fn currentPreview(&mut self, nowUnixMs: u64) -> Option<&MtuPreview> {
+        self.expire(nowUnixMs);
+        self.pending.as_ref().map(|pending| &pending.preview)
     }
 
     pub fn preview(
@@ -125,6 +161,17 @@ impl MtuConsent {
         store: &mut AuthorizationStore,
         nowUnixMs: u64,
     ) -> ServiceResult<MtuGrant> {
+        self.takeApproval(previewId, expectedSha256, actorSid, nowUnixMs)?
+            .issue(store, nowUnixMs)
+    }
+
+    pub(crate) fn takeApproval(
+        &mut self,
+        previewId: Uuid,
+        expectedSha256: &str,
+        actorSid: &str,
+        nowUnixMs: u64,
+    ) -> ServiceResult<ApprovedMtu> {
         self.checkActor(actorSid)?;
         self.expire(nowUnixMs);
         let pending = self
@@ -138,7 +185,10 @@ impl MtuConsent {
         }
         // consume approval before storage so a failed write cannot silently retry it.
         let pending = self.pending.take().ok_or("MTU preview was consumed")?;
-        store.issue(&pending.document, actorSid, false, nowUnixMs)
+        Ok(ApprovedMtu {
+            pending,
+            actorSid: actorSid.into(),
+        })
     }
 
     pub fn cancel(&mut self, previewId: Uuid, actorSid: &str) -> ServiceResult<()> {

@@ -74,13 +74,48 @@ async fn serveClient(
     pipe: &mut NamedPipeServer,
     ownerSid: &str,
     checkpointStore: &CheckpointStoreStatus,
+    preview: Option<&crate::preview::Control>,
 ) -> ServiceResult<()> {
     let frame = readFrame(pipe).await?;
-    security::authenticateClient(pipe.as_raw_handle(), ownerSid)?;
+    let actorSid = security::authenticateClient(pipe.as_raw_handle(), ownerSid)?;
     let request = protocol::decodeRequest(&frame, nowUnixMs()?)?;
+    let result = match &request.operation {
+        protocol::Operation::GetStatus => {
+            protocol::ReplyBody::Status(protocol::response(&request, checkpointStore))
+        }
+        operation => {
+            let result = (|| {
+                let preview = preview.ok_or("MTU preview worker is unavailable")?;
+                match operation {
+                    protocol::Operation::StartMtuPreview(proposal) => {
+                        preview.start(proposal.clone(), &actorSid)
+                    }
+                    protocol::Operation::GetMtuPreview { jobId } => preview.get(*jobId, &actorSid),
+                    protocol::Operation::ApproveMtuPreview {
+                        jobId,
+                        previewId,
+                        checkpointSha256,
+                    } => preview.approve(*jobId, *previewId, checkpointSha256, &actorSid),
+                    protocol::Operation::CancelMtuPreview { jobId } => {
+                        preview.cancel(*jobId, &actorSid)
+                    }
+                    protocol::Operation::GetStatus => unreachable!(),
+                }
+            })();
+            match result {
+                Ok(report) => {
+                    report.validate()?;
+                    protocol::ReplyBody::MtuPreview(report)
+                }
+                Err(error) => protocol::ReplyBody::Rejected {
+                    detail: error.to_string().chars().take(256).collect(),
+                },
+            }
+        }
+    };
     writeFrame(
         pipe,
-        &serde_json::to_vec(&protocol::response(&request, checkpointStore))?,
+        &serde_json::to_vec(&protocol::Reply::new(&request, result))?,
     )
     .await
 }
@@ -92,6 +127,7 @@ pub(crate) async fn serve(
     serverSid: String,
     mut stop: watch::Receiver<bool>,
     checkpointStore: CheckpointStoreStatus,
+    preview: Option<crate::preview::Control>,
 ) -> ServiceResult<()> {
     loop {
         if *stop.borrow() {
@@ -105,7 +141,7 @@ pub(crate) async fn serve(
         let next = createServer(&pipeName, &ownerSid, &serverSid, false)?;
         let mut connected = std::mem::replace(&mut pipe, next);
         tokio::select! {
-            _ = tokio::time::timeout(Duration::from_millis(protocol::MAX_REQUEST_LIFETIME_MS), serveClient(&mut connected, &ownerSid, &checkpointStore)) => {},
+            _ = tokio::time::timeout(Duration::from_millis(protocol::MAX_REQUEST_LIFETIME_MS), serveClient(&mut connected, &ownerSid, &checkpointStore, preview.as_ref())) => {},
             _ = stop.changed() => return Ok(()),
         }
     }
@@ -143,11 +179,12 @@ pub(crate) fn serverIdentity(client: &NamedPipeClient) -> ServiceResult<(u32, u3
     Ok((pid, session))
 }
 
-pub(crate) async fn query(
+pub(crate) async fn exchange(
     pipeName: &str,
     expectedPid: u32,
     expectedSession: u32,
-) -> ServiceResult<ServiceStatus> {
+    operation: protocol::Operation,
+) -> ServiceResult<protocol::Reply> {
     tokio::time::timeout(
         Duration::from_millis(protocol::MAX_REQUEST_LIFETIME_MS),
         async {
@@ -173,20 +210,14 @@ pub(crate) async fn query(
                 requestId: format!("{}-{now}", std::process::id()),
                 issuedAtUnixMs: now,
                 expiresAtUnixMs: now.saturating_add(protocol::MAX_REQUEST_LIFETIME_MS),
-                operation: protocol::Operation::GetStatus,
+                operation,
             };
+            request.validate(now)?;
             writeFrame(&mut client, &serde_json::to_vec(&request)?).await?;
-            let response: ServiceStatus = serde_json::from_slice(&readFrame(&mut client).await?)?;
+            let response: protocol::Reply = serde_json::from_slice(&readFrame(&mut client).await?)?;
             if response.schemaVersion != protocol::SCHEMA_VERSION
                 || response.requestId != request.requestId
                 || response.servicePid != expectedPid
-                || response.mode != "readOnly"
-                || response.modificationsPermitted
-                || response.rollbackAvailable
-                || response.checkpointStore.schemaVersion != crate::journal::SCHEMA_VERSION
-                || response.checkpointStore.verifiedAtUnixMs == 0
-                || response.checkpointStore.verifiedAtUnixMs > i64::MAX as u64
-                || response.checkpointStore.pendingRecoveryCount > 2000
             {
                 return Err("Service response failed protocol or safety validation".into());
             }
@@ -195,6 +226,70 @@ pub(crate) async fn query(
     )
     .await
     .map_err(|_| "Dedicated service exceeded its five-second communication deadline")?
+}
+
+pub(crate) async fn query(
+    pipeName: &str,
+    expectedPid: u32,
+    expectedSession: u32,
+) -> ServiceResult<ServiceStatus> {
+    let reply = exchange(
+        pipeName,
+        expectedPid,
+        expectedSession,
+        protocol::Operation::GetStatus,
+    )
+    .await?;
+    let protocol::ReplyBody::Status(response) = reply.result else {
+        return Err("Service returned an unexpected status response".into());
+    };
+    if response.schemaVersion != protocol::SCHEMA_VERSION
+        || response.requestId != reply.requestId
+        || response.servicePid != expectedPid
+        || response.mode != "readOnly"
+        || response.modificationsPermitted
+        || response.rollbackAvailable
+        || response.checkpointStore.schemaVersion != crate::journal::SCHEMA_VERSION
+        || response.checkpointStore.verifiedAtUnixMs == 0
+        || response.checkpointStore.verifiedAtUnixMs > i64::MAX as u64
+        || response.checkpointStore.pendingRecoveryCount > 2000
+    {
+        return Err("Service response failed protocol or safety validation".into());
+    }
+    Ok(response)
+}
+
+#[cfg(test)]
+pub(crate) async fn localTestExchange(
+    pipeName: &str,
+    operation: protocol::Operation,
+) -> ServiceResult<(protocol::Reply, u32)> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut client = openClient(pipeName)?;
+        let (pid, session) = serverIdentity(&client)?;
+        if pid != std::process::id() {
+            return Err("Test pipe belongs to another process".into());
+        }
+        let now = nowUnixMs()?;
+        let request = Request {
+            schemaVersion: protocol::SCHEMA_VERSION,
+            requestId: format!("{}-{now}", std::process::id()),
+            issuedAtUnixMs: now,
+            expiresAtUnixMs: now + protocol::MAX_REQUEST_LIFETIME_MS,
+            operation,
+        };
+        writeFrame(&mut client, &serde_json::to_vec(&request)?).await?;
+        let reply: protocol::Reply = serde_json::from_slice(&readFrame(&mut client).await?)?;
+        if reply.schemaVersion != protocol::SCHEMA_VERSION
+            || reply.requestId != request.requestId
+            || reply.servicePid != pid
+        {
+            return Err("Test pipe response identity mismatch".into());
+        }
+        Ok((reply, session))
+    })
+    .await
+    .map_err(|_| "Test pipe exchange expired")?
 }
 
 #[cfg(test)]
@@ -242,6 +337,7 @@ mod tests {
                 owner,
                 receiver,
                 checkpointStore(),
+                None,
             );
             let client = async {
                 let probe = openClient(&name).unwrap();
@@ -272,6 +368,7 @@ mod tests {
                 owner.clone(),
                 receiver,
                 checkpointStore(),
+                None,
             );
             let client = async {
                 let mut client = openClient(&name).unwrap();
@@ -307,6 +404,7 @@ mod tests {
                 owner,
                 receiver,
                 checkpointStore(),
+                None,
             );
             let client = async {
                 let probe = openClient(&name).unwrap();
@@ -356,6 +454,7 @@ mod tests {
                 owner,
                 receiver,
                 checkpointStore(),
+                None,
             );
             let client = async {
                 let mut client = openClient(&name).unwrap();
@@ -390,6 +489,7 @@ mod tests {
                 owner,
                 receiver,
                 checkpointStore(),
+                None,
             );
             let client = async {
                 let mut client = openClient(&name).unwrap();

@@ -10,6 +10,7 @@ pub mod mtu;
 pub mod mtu_lab;
 #[cfg(windows)]
 mod owned_process;
+pub mod preview;
 pub mod protocol;
 pub mod recovery;
 pub mod routing;
@@ -26,7 +27,7 @@ pub mod windows;
 
 pub type ServiceResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub const SERVICE_NAME: &str = "EstrogenPingPatch";
-pub const PIPE_NAME: &str = r"\\.\pipe\estrogen-ping-patch-service-v2";
+pub const PIPE_NAME: &str = r"\\.\pipe\estrogen-ping-patch-service-v3";
 pub const SERVICE_ACCOUNT_SID: &str = "S-1-5-19";
 
 #[derive(Debug, serde::Serialize)]
@@ -35,6 +36,18 @@ pub struct ServiceReport {
     pub state: String,
     pub detail: String,
     pub response: Option<protocol::ServiceStatus>,
+}
+
+pub fn previewBlocking(operation: protocol::Operation) -> ServiceResult<preview::Report> {
+    #[cfg(windows)]
+    {
+        windows::previewBlocking(operation)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = operation;
+        Err("The dedicated service requires Windows".into())
+    }
 }
 
 pub fn inspectBlocking() -> ServiceReport {

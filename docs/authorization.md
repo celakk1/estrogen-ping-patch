@@ -1,8 +1,8 @@
 # Operation authorization
 
-The service library records expiring MTU grants for one exact native checkpoint, Windows user SID, adapter GUID, OS/driver context, address family, and candidate value. It does not expose a production grant issuer, mutation pipe operation, or AI permission tool. Normal application builds still permit no setting changes.
+The service library records expiring MTU grants for one exact native checkpoint, Windows user SID, adapter GUID, OS/driver context, address family, and candidate value. The installed service can now record or revoke temporary grants through authenticated MTU preview operations. It exposes no setting mutation operation or AI permission tool. Normal application builds still permit no setting changes.
 
-Its [MTU consent controller](consent.md) now binds a single-use, expiring preview to the exact checkpoint hash before issuing a temporary, non-retaining grant. The native lab exercises that controller after its existing SCM/target checks. This is library integration, not an authenticated production consent endpoint or a completed desktop approval flow.
+Its [MTU consent controller](consent.md) binds a single-use, expiring preview to the exact checkpoint hash before issuing a temporary, non-retaining grant. The normal pipe handler obtains the actor SID from Windows impersonation and feeds an asynchronous worker; the client cannot supply an original snapshot or claimed identity. The native lab separately exercises the controller after its existing SCM/target checks. Desktop command bindings exist, but a completed review UI, session-wide consent, and production execution remain unfinished.
 
 ## Grant scope and lifetime
 

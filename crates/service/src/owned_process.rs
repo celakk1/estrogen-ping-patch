@@ -367,9 +367,7 @@ impl CommandJob {
                 return Err("Owned reader byte allowance must be between one and 65536".into());
             }
             check()?;
-            if unsafe { ResumeThread(self.thread.as_raw_handle()) } != 1 {
-                return Err("Cannot resume the owned reader exactly once".into());
-            }
+            self.resume("Cannot resume the owned reader exactly once")?;
             let mut bytes = Vec::new();
             loop {
                 check()?;
@@ -404,6 +402,25 @@ impl CommandJob {
         })();
         self.terminate()?;
         outcome
+    }
+
+    fn resume(&self, context: &str) -> ServiceResult<()> {
+        let previous = unsafe { ResumeThread(self.thread.as_raw_handle()) };
+        if previous == 1 {
+            return Ok(());
+        }
+        let resumeError = (previous == u32::MAX).then(std::io::Error::last_os_error);
+        let mut processExit = 0;
+        let processKnown =
+            unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut processExit) } != 0;
+        let mut threadExit = 0;
+        let threadKnown = unsafe {
+            windows_sys::Win32::System::Threading::GetExitCodeThread(
+                self.thread.as_raw_handle(),
+                &mut threadExit,
+            )
+        } != 0;
+        Err(format!("{context}: previous suspend count {previous}, Windows error {resumeError:?}, process exit {processKnown}:0x{processExit:08x}, thread exit {threadKnown}:0x{threadExit:08x}").into())
     }
 
     #[cfg(test)]
@@ -493,9 +510,7 @@ impl CommandJob {
             check()?;
             beforeResume()?;
             check()?;
-            if unsafe { ResumeThread(self.thread.as_raw_handle()) } != 1 {
-                return Err("Cannot resume the owned command thread exactly once".into());
-            }
+            self.resume("Cannot resume the owned command thread exactly once")?;
             loop {
                 check()?;
                 match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 20) } {

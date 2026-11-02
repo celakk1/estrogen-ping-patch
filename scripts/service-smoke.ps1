@@ -28,6 +28,26 @@ function readStatus {
     return ($json -join "`n") | ConvertFrom-Json
 }
 
+function failedPreview([string]$requiredDetail) {
+    $json = & $installedExe --preview-mtu ([Guid]::NewGuid().ToString('D')) ipv4 1400 120000
+    if ($LASTEXITCODE -ne 0) { throw 'The installed preview client failed to start a read-only job.' }
+    $report = ($json -join "`n") | ConvertFrom-Json
+    $jobId = $report.jobId
+    $deadline = (Get-Date).AddSeconds(30)
+    while ($report.phase -eq 'capturing') {
+        if ((Get-Date) -ge $deadline) { throw 'The read-only preview job exceeded its external test allowance.' }
+        Start-Sleep -Milliseconds 100
+        $json = & $installedExe --preview-status $jobId
+        if ($LASTEXITCODE -ne 0) { throw 'The installed preview status client failed.' }
+        $report = ($json -join "`n") | ConvertFrom-Json
+    }
+    if ($report.phase -ne 'failed' -or $report.executionAvailable -ne $false -or $null -ne $report.preview -or $null -ne $report.grant -or $report.detail -notmatch $requiredDetail) { throw 'A refused preview was hidden or exposed unexpected approval/execution state.' }
+    $json = & $installedExe --cancel-mtu-preview $jobId
+    if ($LASTEXITCODE -ne 0) { throw 'The installed preview cancellation client failed.' }
+    $cancelled = ($json -join "`n") | ConvertFrom-Json
+    if ($cancelled.phase -ne 'cancelled' -or $cancelled.executionAvailable -ne $false) { throw 'A failed preview could not be cleared without execution.' }
+}
+
 function seedCheckpoint([string]$phase) {
     $env:EPP_JOURNAL_LAB_ACK = 'disposable-lab-no-network-setter'
     $env:EPP_JOURNAL_LAB_PATH = $journalPath
@@ -55,8 +75,10 @@ try {
     }
     1..5 | ForEach-Object {
         $status = readStatus
-        if ($status.state -ne 'ready' -or $status.response.schemaVersion -ne 2 -or $status.response.servicePid -ne $configuration.ProcessId -or $status.response.mode -ne 'readOnly' -or $status.response.modificationsPermitted -ne $false -or $status.response.rollbackAvailable -ne $false -or $status.response.checkpointStore.schemaVersion -ne 4 -or $status.response.checkpointStore.pendingRecoveryCount -ne 0 -or $status.response.checkpointStore.verifiedAtUnixMs -le 0) { throw 'Service identity, storage, or safety response was unexpected.' }
+        if ($status.state -ne 'ready' -or $status.response.schemaVersion -ne 3 -or $status.response.servicePid -ne $configuration.ProcessId -or $status.response.mode -ne 'readOnly' -or $status.response.modificationsPermitted -ne $false -or $status.response.rollbackAvailable -ne $false -or $status.response.checkpointStore.schemaVersion -ne 4 -or $status.response.checkpointStore.pendingRecoveryCount -ne 0 -or $status.response.checkpointStore.verifiedAtUnixMs -le 0) { throw 'Service identity, storage, or safety response was unexpected.' }
     }
+    failedPreview '.'
+    if (Test-Path -LiteralPath (Join-Path $dataRoot 'authorization.sqlite3')) { throw 'A failed read-only preview unexpectedly initialized grant storage.' }
     if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) { throw 'The service did not initialize its recovery journal.' }
     $serviceSid = ([Security.Principal.NTAccount]::new('NT SERVICE', $serviceName)).Translate([Security.Principal.SecurityIdentifier]).Value
     $directoryAcl = Get-Acl -LiteralPath $dataRoot
@@ -77,6 +99,7 @@ try {
     manage 'start'
     $pending = readStatus
     if ($pending.state -ne 'recoveryRequired' -or $pending.response.checkpointStore.pendingRecoveryCount -ne 1 -or $pending.response.rollbackAvailable -ne $false) { throw 'An unresolved checkpoint was hidden or mistaken for available restoration.' }
+    failedPreview 'Unfinished recovery'
     manage 'stop'
     seedCheckpoint 'cancel'
     seedCheckpoint 'policy-pending'
@@ -108,7 +131,7 @@ try {
     if ((Get-FileHash -LiteralPath $journalPath -Algorithm SHA256).Hash -ne $journalHash) { throw 'Service removal changed the recovery journal.' }
     manage 'install'
     if ((readStatus).state -ne 'ready') { throw 'Reinstallation did not reopen the preserved journal.' }
-    Write-Host 'Service smoke passed: protected binary and journal, service SID, authenticated status, repeated connections, pending recovery and policy verification detection, corruption refusal, restart, preserved uninstall, and reinstall. No network setter or native restoration was exercised.'
+    Write-Host 'Service smoke passed: protected binary and journal, service SID, authenticated status, refused preview and cancellation, repeated connections, pending recovery and policy verification detection, corruption refusal, restart, preserved uninstall, and reinstall. No network setter or native restoration was exercised.'
 } catch {
     $failure = $_
     Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $serviceName; StartTime = $startedAt } -MaxEvents 3 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Message | Format-List | Out-Host

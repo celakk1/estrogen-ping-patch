@@ -1,7 +1,7 @@
 use crate::ServiceResult;
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const MAX_FRAME_BYTES: usize = 4096;
 pub const MAX_REQUEST_LIFETIME_MS: u64 = 5000;
 
@@ -9,6 +9,72 @@ pub const MAX_REQUEST_LIFETIME_MS: u64 = 5000;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Operation {
     GetStatus,
+    StartMtuPreview(crate::preview::Proposal),
+    GetMtuPreview {
+        jobId: uuid::Uuid,
+    },
+    ApproveMtuPreview {
+        jobId: uuid::Uuid,
+        previewId: uuid::Uuid,
+        checkpointSha256: String,
+    },
+    CancelMtuPreview {
+        jobId: uuid::Uuid,
+    },
+}
+
+impl Operation {
+    fn validate(&self) -> ServiceResult<()> {
+        let valid = match self {
+            Self::GetStatus => true,
+            Self::StartMtuPreview(proposal) => return proposal.validate(),
+            Self::GetMtuPreview { jobId } | Self::CancelMtuPreview { jobId } => !jobId.is_nil(),
+            Self::ApproveMtuPreview {
+                jobId,
+                previewId,
+                checkpointSha256,
+            } => {
+                !jobId.is_nil()
+                    && !previewId.is_nil()
+                    && checkpointSha256.len() == 64
+                    && checkpointSha256
+                        .bytes()
+                        .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
+            }
+        };
+        if !valid {
+            return Err("Invalid MTU preview identity or checkpoint hash".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ReplyBody {
+    Status(ServiceStatus),
+    MtuPreview(crate::preview::Report),
+    Rejected { detail: String },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Reply {
+    pub schemaVersion: u32,
+    pub requestId: String,
+    pub servicePid: u32,
+    pub result: ReplyBody,
+}
+
+impl Reply {
+    pub fn new(request: &Request, result: ReplyBody) -> Self {
+        Self {
+            schemaVersion: SCHEMA_VERSION,
+            requestId: request.requestId.clone(),
+            servicePid: std::process::id(),
+            result,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -77,7 +143,7 @@ impl Request {
         {
             return Err("Service request deadline expired or exceeded its bound".into());
         }
-        Ok(())
+        self.operation.validate()
     }
 }
 
@@ -109,6 +175,68 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn previewOperationsRejectClaimedActorsUnknownFieldsAndInvalidScope() {
+        let proposal = crate::preview::Proposal {
+            adapterGuid: uuid::Uuid::new_v4(),
+            addressFamily: crate::journal::AddressFamily::Ipv4,
+            proposedMtu: 1400,
+            trialDurationMs: 120_000,
+        };
+        let request = Request {
+            schemaVersion: SCHEMA_VERSION,
+            requestId: "12345678".into(),
+            issuedAtUnixMs: 1000,
+            expiresAtUnixMs: 2000,
+            operation: Operation::StartMtuPreview(proposal),
+        };
+        let valid = serde_json::to_value(&request).unwrap();
+        assert!(decodeRequest(&serde_json::to_vec(&valid).unwrap(), 1500).is_ok());
+        for field in [
+            "actorSid",
+            "ownerSid",
+            "command",
+            "registryPath",
+            "endpoint",
+        ] {
+            let mut invalid = valid.clone();
+            invalid["operation"]["startMtuPreview"][field] = json!("untrusted");
+            assert!(
+                decodeRequest(&serde_json::to_vec(&invalid).unwrap(), 1500).is_err(),
+                "{field}"
+            );
+        }
+        for (field, value) in [
+            ("proposedMtu", json!(1279)),
+            ("proposedMtu", json!(65536)),
+            ("trialDurationMs", json!(0)),
+            ("trialDurationMs", json!(300001)),
+            ("adapterGuid", json!(uuid::Uuid::nil())),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["operation"]["startMtuPreview"][field] = value;
+            assert!(
+                decodeRequest(&serde_json::to_vec(&invalid).unwrap(), 1500).is_err(),
+                "{field}"
+            );
+        }
+        for operation in [
+            Operation::GetMtuPreview {
+                jobId: uuid::Uuid::nil(),
+            },
+            Operation::ApproveMtuPreview {
+                jobId: uuid::Uuid::new_v4(),
+                previewId: uuid::Uuid::new_v4(),
+                checkpointSha256: "A".repeat(64),
+            },
+            Operation::CancelMtuPreview {
+                jobId: uuid::Uuid::nil(),
+            },
+        ] {
+            assert!(operation.validate().is_err());
+        }
+    }
+
+    #[test]
     fn strictAllowlistRejectsCommandsUnknownFieldsAndOversizedFrames() {
         let valid = json!({"schemaVersion":SCHEMA_VERSION,"requestId":"12345678","issuedAtUnixMs":1000,"expiresAtUnixMs":2000,"operation":"getStatus"});
         assert!(decodeRequest(&serde_json::to_vec(&valid).unwrap(), 1500).is_ok());
@@ -119,7 +247,7 @@ mod tests {
         unknown["command"] = json!("anything");
         assert!(decodeRequest(&serde_json::to_vec(&unknown).unwrap(), 1500).is_err());
         assert!(decodeRequest(&vec![b' '; MAX_FRAME_BYTES + 1], 1500).is_err());
-        assert!(decodeRequest(br#"{"schemaVersion":2,"schemaVersion":2,"requestId":"12345678","issuedAtUnixMs":1000,"expiresAtUnixMs":2000,"operation":"getStatus"}"#, 1500).is_err());
+        assert!(decodeRequest(br#"{"schemaVersion":3,"schemaVersion":3,"requestId":"12345678","issuedAtUnixMs":1000,"expiresAtUnixMs":2000,"operation":"getStatus"}"#, 1500).is_err());
     }
 
     #[test]
@@ -140,6 +268,8 @@ mod tests {
         assert!(request.validate(1500).is_err());
         request.requestId = "12345678".into();
         request.schemaVersion = 1;
+        assert!(request.validate(1500).is_err());
+        request.schemaVersion = 2;
         assert!(request.validate(1500).is_err());
     }
 

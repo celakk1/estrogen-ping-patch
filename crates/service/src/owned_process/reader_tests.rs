@@ -17,6 +17,19 @@ fn fixture(name: &str) -> CommandJob {
     child
 }
 
+#[test]
+fn unexpectedResumeCountReportsTheObservedProcessAndThreadState() {
+    let child = fixture("waits");
+    child.resume("test initial resume").unwrap();
+    let error = child
+        .resume("test repeated resume")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("previous suspend count 0"), "{error}");
+    assert!(error.contains("process exit true:0x00000103"), "{error}");
+    assert!(error.contains("thread exit true:"), "{error}");
+}
+
 fn within(deadline: Instant) -> ServiceResult<()> {
     if Instant::now() >= deadline {
         Err("test worker deadline".into())
@@ -123,7 +136,9 @@ fn readerOwnerFixture() {
     let marker = std::env::var_os("EPP_READER_OWNER_MARKER").unwrap();
     let child = fixture("waits");
     if std::env::var("EPP_READER_OWNER_STAGE").unwrap() == "running" {
-        assert_eq!(unsafe { ResumeThread(child.thread.as_raw_handle()) }, 1);
+        child
+            .resume("Cannot resume the reader owner fixture")
+            .unwrap();
     }
     std::fs::write(marker, child.id().to_string()).unwrap();
     std::thread::sleep(Duration::from_secs(60));
@@ -151,6 +166,8 @@ fn readerCannotOutliveItsOwnerEvenBeforeResume() {
             std::env::temp_dir().join(format!("epp-reader-owner-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let marker = directory.join("reader.pid");
+        let diagnostic = directory.join("owner.log");
+        let output = std::fs::File::create(&diagnostic).unwrap();
         let mut owner = Owner(
             Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -161,8 +178,8 @@ fn readerCannotOutliveItsOwnerEvenBeforeResume() {
                 .env("EPP_READER_OWNER_MARKER", &marker)
                 .env("EPP_READER_OWNER_STAGE", stage)
                 .creation_flags(CREATE_NO_WINDOW)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stdout(Stdio::from(output.try_clone().unwrap()))
+                .stderr(Stdio::from(output))
                 .spawn()
                 .unwrap(),
         );
@@ -177,10 +194,15 @@ fn readerCannotOutliveItsOwnerEvenBeforeResume() {
                 Instant::now() < deadline,
                 "reader owner did not become ready"
             );
-            assert!(
-                owner.0.try_wait().unwrap().is_none(),
-                "reader owner exited before readiness"
-            );
+            let status = owner.0.try_wait().unwrap();
+            if status.is_some() {
+                let detail: String = std::fs::read_to_string(&diagnostic)
+                    .unwrap()
+                    .chars()
+                    .take(4096)
+                    .collect();
+                panic!("reader owner exited before readiness: {status:?}: {detail}");
+            }
             std::thread::sleep(Duration::from_millis(10));
         };
         let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, processId) };
@@ -198,6 +220,7 @@ fn readerCannotOutliveItsOwnerEvenBeforeResume() {
             "{stage}"
         );
         std::fs::remove_file(marker).unwrap();
+        std::fs::remove_file(diagnostic).unwrap();
         std::fs::remove_dir(directory).unwrap();
     }
 }

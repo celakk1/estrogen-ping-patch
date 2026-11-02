@@ -70,6 +70,60 @@ async fn getPrivilegedService() -> Result<epp_service::ServiceReport, String> {
         .map_err(|error| error.to_string())
 }
 
+async fn servicePreviewRequest(
+    operation: epp_service::protocol::Operation,
+) -> Result<epp_service::preview::Report, String> {
+    tauri::async_runtime::spawn_blocking(move || epp_service::previewBlocking(operation))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn startServiceMtuPreview(
+    proposal: epp_service::preview::Proposal,
+) -> Result<epp_service::preview::Report, String> {
+    servicePreviewRequest(epp_service::protocol::Operation::StartMtuPreview(proposal)).await
+}
+
+#[tauri::command]
+async fn getServiceMtuPreview(jobId: String) -> Result<epp_service::preview::Report, String> {
+    servicePreviewRequest(epp_service::protocol::Operation::GetMtuPreview {
+        jobId: jobId
+            .parse()
+            .map_err(|error| format!("Invalid MTU preview job identifier: {error}"))?,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn approveServiceMtuPreview(
+    jobId: String,
+    previewId: String,
+    checkpointSha256: String,
+) -> Result<epp_service::preview::Report, String> {
+    servicePreviewRequest(epp_service::protocol::Operation::ApproveMtuPreview {
+        jobId: jobId
+            .parse()
+            .map_err(|error| format!("Invalid MTU preview job identifier: {error}"))?,
+        previewId: previewId
+            .parse()
+            .map_err(|error| format!("Invalid MTU approval identifier: {error}"))?,
+        checkpointSha256,
+    })
+    .await
+}
+
+#[tauri::command]
+async fn cancelServiceMtuPreview(jobId: String) -> Result<epp_service::preview::Report, String> {
+    servicePreviewRequest(epp_service::protocol::Operation::CancelMtuPreview {
+        jobId: jobId
+            .parse()
+            .map_err(|error| format!("Invalid MTU preview job identifier: {error}"))?,
+    })
+    .await
+}
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ServiceAction {
@@ -363,7 +417,7 @@ fn main() {
             app.manage(LocalService { directory, busy: Arc::new(AtomicBool::new(false)), cancelled: Arc::new(AtomicBool::new(false)) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![status, getPrivilegedService, manageService, getInventory, getHistory, getBackups, captureBackup, exportBackup, runBaseline, cancelBaseline, getLoadHistory, runLoadSession, runPacketCheck, getPacketHistory])
+        .invoke_handler(tauri::generate_handler![status, getPrivilegedService, startServiceMtuPreview, getServiceMtuPreview, approveServiceMtuPreview, cancelServiceMtuPreview, manageService, getInventory, getHistory, getBackups, captureBackup, exportBackup, runBaseline, cancelBaseline, getLoadHistory, runLoadSession, runPacketCheck, getPacketHistory])
         .build(tauri::generate_context!());
     let app = match app {
         Ok(app) => app,

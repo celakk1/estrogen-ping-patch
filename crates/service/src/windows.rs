@@ -94,6 +94,8 @@ fn serviceLoop() -> ServiceResult<()> {
             .clone();
         let serviceSid = security::serviceSid()?;
         let journal = storage::open(&serviceSid)?;
+        let checkpointStore = journal.status.clone();
+        let previewWorker = crate::preview::Worker::start(&ownerSid, journal)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -106,7 +108,8 @@ fn serviceLoop() -> ServiceResult<()> {
                 ownerSid,
                 serviceSid,
                 receiver,
-                journal.status.clone(),
+                checkpointStore,
+                Some(previewWorker.control()),
             )
             .await;
             setState(handle, ServiceState::StopPending, result.is_err())?;
@@ -204,4 +207,50 @@ pub fn inspectBlocking() -> ServiceResult<ServiceReport> {
         .enable_all()
         .build()?;
     runtime.block_on(inspect())
+}
+
+pub fn previewBlocking(
+    operation: crate::protocol::Operation,
+) -> ServiceResult<crate::preview::Report> {
+    let expectedJobId = match &operation {
+        crate::protocol::Operation::GetStatus => {
+            return Err("Expected an MTU preview operation".into());
+        }
+        crate::protocol::Operation::StartMtuPreview(_) => None,
+        crate::protocol::Operation::GetMtuPreview { jobId }
+        | crate::protocol::Operation::ApproveMtuPreview { jobId, .. }
+        | crate::protocol::Operation::CancelMtuPreview { jobId } => Some(*jobId),
+    };
+    let before = inspectBlocking()?;
+    let status = before.response.ok_or(
+        "The dedicated service must be installed and running before reviewing an MTU trial",
+    )?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let reply = runtime.block_on(transport::exchange(
+        PIPE_NAME,
+        status.servicePid,
+        0,
+        operation,
+    ))?;
+    let after = inspectBlocking()?;
+    if after
+        .response
+        .as_ref()
+        .is_none_or(|confirmed| confirmed.servicePid != status.servicePid)
+    {
+        return Err("Service identity changed during the MTU preview request".into());
+    }
+    match reply.result {
+        crate::protocol::ReplyBody::MtuPreview(report) => {
+            report.validate()?;
+            if expectedJobId.is_some_and(|expected| expected != report.jobId) {
+                return Err("Service returned another MTU preview job".into());
+            }
+            Ok(report)
+        }
+        crate::protocol::ReplyBody::Rejected { detail } => Err(detail.into()),
+        _ => Err("Service returned an unexpected or unsafe MTU preview response".into()),
+    }
 }

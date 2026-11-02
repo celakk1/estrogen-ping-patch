@@ -1,6 +1,6 @@
 # MTU trial consent
 
-The service library includes `MtuConsent`, a preview-and-approval controller for temporary MTU trials. It does not expose a production pipe operation or enable settings changes in the desktop. The normal installed service still accepts only read-only status requests.
+The service library includes `MtuConsent`, a preview-and-approval controller for temporary MTU trials. The normal installed service now exposes authenticated preview, approval-recording, status, and cancellation operations through the version-three pipe. These operations can write private permission records, but cannot change Windows network settings. Desktop command bindings are present; the review screen and autonomous session workflow remain unfinished.
 
 ## Reviewed scope
 
@@ -8,7 +8,7 @@ A preview contains a random identifier, the exact version-four checkpoint hash, 
 
 Only one preview can await approval in a controller. It owns the original checkpoint; editing the returned preview cannot change that original. Approval requires the matching preview identifier and checkpoint hash from the same Windows owner. Cancelling, expiry, clock rollback, or a new controller instance makes the old identifier unusable. A monotonic deadline and the highest observed wall-clock time prevent old approval from being revived by a clock change, including after a rejected attempt to replace a pending preview.
 
-The owner and actor SIDs are trusted service inputs, not identity evidence supplied in request JSON. Production integration must use the pipe caller authenticated by Windows. The current native lab uses its already validated SCM owner; that fixture does not establish human consent.
+The owner and actor SIDs are trusted service inputs, not identity evidence supplied in request JSON. The pipe handler supplies the actual Windows token SID after authenticating the caller. Request bodies accept no actor/owner SID, original snapshot, command, registry path, or endpoint. The native lab separately uses its already validated SCM owner; that fixture does not establish human consent.
 
 ## Grant and recovery boundaries
 
@@ -18,8 +18,12 @@ A preview is not a durable backup. A recorded grant is permission, not proof of 
 
 ## Integration and limits
 
-The owned-loopback lab now obtains grants through preview and approval for both single and repeated trials. It immediately approves its own fixed fixture scope after SCM and target admission. There is no production auto-approval path, mutation IPC, arbitrary command, registry path, executable, or endpoint added by this change. Older grant storage remains readable; the preview controller itself admits only version-four policy-bound checkpoints.
+The owned-loopback lab obtains grants through preview and approval for both single and repeated trials. It immediately approves its own fixed fixture scope after SCM and target admission. The normal service instead captures a requested GUID/family itself, verifies complete native policy evidence, and waits for a matching authenticated approval request. Approval is consumed before opening grant storage; failed initialization cannot leave a reusable approval. Older grant storage remains readable; new previews admit only version-four policy-bound checkpoints.
 
-Six focused tests cover exact scope and returned-data tampering, user/identifier/hash mismatch, cancellation, wall/monotonic expiry, clock rollback, restart, failed grant commits, single-use approval, and trial-lease bounds. Production authenticated IPC, asynchronous preview capture, desktop review, deterministic candidate admission, privileged execution, retention approval, and physical-adapter recovery remain unfinished.
+The worker runs one job with one queued command and releases its state lock during provider/storage work. Status and cancellation remain responsive during capture. Cancelling approval either prevents grant creation or durably revokes a grant that committed while cancellation arrived. A failed revocation stays failed with its grant evidence retained. New work is refused until the current preview/approval is cancelled; unfinished recovery also blocks capture and grant issuance. The original backup is not committed by this preview path.
+
+The CLI developer interface is `--preview-mtu GUID ipv4|ipv6 MTU LEASE_MS`, `--preview-status JOB_ID`, `--approve-mtu-preview JOB_ID PREVIEW_ID SHA256`, and `--cancel-mtu-preview JOB_ID`. Every result reports `executionAvailable: false`. Leases are bounded to 5..300 seconds and proposed MTUs to 1280..65535, strictly below the captured original. These are proposal inputs, not recommendations or enabled candidates. No setter, arbitrary command, registry path, executable, endpoint, or auto-approval path is exposed.
+
+Tests cover exact scope and returned-data tampering, user/identifier/hash mismatch, cancellation, wall/monotonic expiry, clock rollback, restart, failed grant commits, storage initialization delay, single-use approval, and trial-lease bounds. Real-pipe tests use the actual Windows caller with simulated capture/storage fixtures. Installed-service positive capture and grant storage, desktop review, session-wide consent, deterministic candidate admission, privileged execution, retention approval, and physical-adapter recovery still require implementation or validation.
 
 This per-checkpoint controller does not replace session-wide consent. The autonomous application still needs approval of a bounded experiment plan so it can issue permitted trial grants without asking the user to approve every measurement or repeated bracket. Keeping a winning setting requires separate retention permission. The operation-level preview must not be presented as a finished autonomous optimizer.
