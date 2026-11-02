@@ -33,7 +33,8 @@ function seedCheckpoint([string]$phase) {
     $env:EPP_JOURNAL_LAB_PATH = $journalPath
     $env:EPP_JOURNAL_LAB_PHASE = $phase
     try {
-        & cargo test --locked -p epp-service journal::tests::serviceLabPreparedCheckpoint -- --exact --ignored
+        $testName = if ($phase -in @('policy-pending', 'policy-verified')) { 'recovery::tests::policy_tests::receipt_tests::serviceLabPolicyCheckpoint' } else { 'journal::tests::serviceLabPreparedCheckpoint' }
+        & cargo test --locked -p epp-service $testName -- --exact --ignored
         if ($LASTEXITCODE -ne 0) { throw "Service lab checkpoint phase '$phase' failed." }
     } finally {
         Remove-Item Env:EPP_JOURNAL_LAB_ACK, Env:EPP_JOURNAL_LAB_PATH, Env:EPP_JOURNAL_LAB_PHASE -ErrorAction SilentlyContinue
@@ -78,6 +79,15 @@ try {
     if ($pending.state -ne 'recoveryRequired' -or $pending.response.checkpointStore.pendingRecoveryCount -ne 1 -or $pending.response.rollbackAvailable -ne $false) { throw 'An unresolved checkpoint was hidden or mistaken for available restoration.' }
     manage 'stop'
     seedCheckpoint 'cancel'
+    seedCheckpoint 'policy-pending'
+    manage 'start'
+    $pending = readStatus
+    if ($pending.state -ne 'recoveryRequired' -or $pending.response.checkpointStore.pendingRecoveryCount -ne 1 -or $pending.response.rollbackAvailable -ne $false) { throw 'Restored MTU with incomplete policy verification was hidden or mistaken for available restoration.' }
+    manage 'stop'
+    seedCheckpoint 'policy-verified'
+    manage 'start'
+    if ((readStatus).state -ne 'ready') { throw 'Completed policy verification did not clear the service attention status.' }
+    manage 'stop'
     $originalBytes = [IO.File]::ReadAllBytes($journalPath)
     try {
         $corruptedBytes = [byte[]]$originalBytes.Clone()
@@ -98,7 +108,7 @@ try {
     if ((Get-FileHash -LiteralPath $journalPath -Algorithm SHA256).Hash -ne $journalHash) { throw 'Service removal changed the recovery journal.' }
     manage 'install'
     if ((readStatus).state -ne 'ready') { throw 'Reinstallation did not reopen the preserved journal.' }
-    Write-Host 'Service smoke passed: protected binary and journal, service SID, authenticated status, repeated connections, pending checkpoint detection, corruption refusal, restart, preserved uninstall, and reinstall. No network setter or native restoration was exercised.'
+    Write-Host 'Service smoke passed: protected binary and journal, service SID, authenticated status, repeated connections, pending recovery and policy verification detection, corruption refusal, restart, preserved uninstall, and reinstall. No network setter or native restoration was exercised.'
 } catch {
     $failure = $_
     Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $serviceName; StartTime = $startedAt } -MaxEvents 3 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Message | Format-List | Out-Host

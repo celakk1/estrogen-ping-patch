@@ -42,6 +42,21 @@ pub struct CheckpointStoreStatus {
     pub pendingRecoveryCount: u32,
 }
 
+impl CheckpointStoreStatus {
+    pub(crate) fn fromJournal(
+        journal: &crate::journal::Journal,
+        verifiedAtUnixMs: u64,
+    ) -> ServiceResult<Self> {
+        Ok(Self {
+            schemaVersion: crate::journal::SCHEMA_VERSION,
+            verifiedAtUnixMs,
+            pendingRecoveryCount: (journal.pendingRecovery()?.len()
+                + journal.pendingPolicyVerification()?.len())
+            .try_into()?,
+        })
+    }
+}
+
 impl Request {
     pub fn validate(&self, nowUnixMs: u64) -> ServiceResult<()> {
         if self.schemaVersion != SCHEMA_VERSION {

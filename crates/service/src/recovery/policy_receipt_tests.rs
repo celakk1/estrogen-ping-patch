@@ -27,6 +27,86 @@ fn restored(fixture: &Fixture) -> (MtuCheckpoint, PolicyBackend, Journal) {
 }
 
 #[test]
+fn serviceStatusKeepsRestoredButUnverifiedCheckpointsVisibleAfterRestart() {
+    for commitFailed in [false, true] {
+        let fixture = Fixture::new();
+        let (document, mut backend, mut journal) = applied(&fixture);
+        let status = crate::protocol::CheckpointStoreStatus::fromJournal(&journal, 1000).unwrap();
+        assert_eq!(status.pendingRecoveryCount, 1);
+        if commitFailed {
+            Connection::open(&fixture.journal).unwrap().execute_batch("CREATE TRIGGER refuse_policy_receipt BEFORE INSERT ON checkpoint_policy_checks BEGIN SELECT RAISE(FAIL,'test refused policy receipt'); END;").unwrap();
+        } else {
+            backend.unavailable = true;
+        }
+        let result = MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+            .restore(document.id)
+            .unwrap();
+        assert!(result.originalMtuVerified && result.journalFinalized);
+        drop(journal);
+        let mut journal = fixture.open();
+        assert!(journal.pendingRecovery().unwrap().is_empty());
+        let status = crate::protocol::CheckpointStoreStatus::fromJournal(&journal, 2000).unwrap();
+        assert_eq!(status.pendingRecoveryCount, 1);
+        assert_eq!(status.verifiedAtUnixMs, 2000);
+        if commitFailed {
+            Connection::open(&fixture.journal)
+                .unwrap()
+                .execute_batch("DROP TRIGGER refuse_policy_receipt;")
+                .unwrap();
+        }
+        backend.unavailable = false;
+        let writes = backend.inner.writes.len();
+        MtuCoordinator::new(&mut journal, &mut backend, || Ok(2000))
+            .verifyRestoredPolicy(document.id)
+            .unwrap();
+        assert_eq!(backend.inner.writes.len(), writes);
+        let status = crate::protocol::CheckpointStoreStatus::fromJournal(&journal, 3000).unwrap();
+        assert_eq!(status.pendingRecoveryCount, 0);
+    }
+}
+
+#[test]
+#[ignore = "requires explicit disposable service lab acknowledgement"]
+fn serviceLabPolicyCheckpoint() {
+    assert_eq!(
+        std::env::var("EPP_JOURNAL_LAB_ACK").unwrap(),
+        "disposable-lab-no-network-setter"
+    );
+    let path = PathBuf::from(std::env::var_os("EPP_JOURNAL_LAB_PATH").unwrap());
+    let fixture = Fixture::new();
+    let (document, mut backend) = setup(&fixture);
+    backend.inner.journal = path.clone();
+    let mut journal = Journal::open(&path).unwrap();
+    match std::env::var("EPP_JOURNAL_LAB_PHASE").unwrap().as_str() {
+        "policy-pending" => {
+            let mut coordinator = MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000));
+            coordinator.prepare(document.clone()).unwrap();
+            assert!(matches!(
+                coordinator.apply(document.id).unwrap(),
+                ApplyResult::Applied { .. }
+            ));
+            backend.unavailable = true;
+            let result = MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+                .restore(document.id)
+                .unwrap();
+            assert!(result.originalMtuVerified && result.journalFinalized);
+            assert_eq!(result.policyOriginalVerified, Some(false));
+            assert!(journal.pendingRecovery().unwrap().is_empty());
+            assert_eq!(journal.pendingPolicyVerification().unwrap().len(), 1);
+        }
+        "policy-verified" => {
+            let result = MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+                .verifyRestoredPolicy(document.id)
+                .unwrap();
+            assert_eq!(result.policyOriginalVerified, Some(true));
+            assert!(backend.inner.writes.is_empty());
+            assert!(journal.pendingPolicyVerification().unwrap().is_empty());
+        }
+        _ => panic!("Unknown service lab policy phase"),
+    }
+}
+
+#[test]
 fn matchedPolicyReceiptBindsTheOriginalAndCommittedRestoredEvent() {
     let fixture = Fixture::new();
     let (document, _, journal) = restored(&fixture);

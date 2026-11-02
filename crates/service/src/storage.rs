@@ -94,13 +94,8 @@ fn openNamed(serviceSid: &str, directoryName: &str) -> ServiceResult<OwnedJourna
     verifyFiles(&directory, serviceSid)?;
     let journal = Journal::open(&directory.join("recovery.sqlite3"))?;
     verifyFiles(&directory, serviceSid)?;
-    let pending = journal.pendingRecovery()?.len().try_into()?;
     Ok(OwnedJournal {
-        status: CheckpointStoreStatus {
-            schemaVersion: crate::journal::SCHEMA_VERSION,
-            verifiedAtUnixMs: crate::transport::nowUnixMs()?,
-            pendingRecoveryCount: pending,
-        },
+        status: CheckpointStoreStatus::fromJournal(&journal, crate::transport::nowUnixMs()?)?,
         _journal: journal,
         _directory: directoryGuard,
         _parent: parentGuard,

@@ -182,7 +182,7 @@ pub async fn inspect() -> ServiceResult<ServiceReport> {
         (
             "recoveryRequired",
             format!(
-                "Authenticated read-only service found {pending} unresolved checkpoint(s). Preserve the recovery journal for investigation. Automatic restoration and network changes remain disabled."
+                "The read-only service found {pending} network recovery record(s) needing attention. Restoring a setting and completing its final verification are separate checks. Preserve the recovery journal for investigation. Automatic restoration and network changes remain disabled."
             ),
         )
     } else {
