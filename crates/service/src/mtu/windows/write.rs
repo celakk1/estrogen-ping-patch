@@ -4,13 +4,26 @@ use crate::mtu_lab::ServicePermit;
 use command::CommandJob;
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, time::Instant};
 use windows_sys::Win32::{
-    NetworkManagement::IpHelper::{ConvertInterfaceLuidToNameW, ConvertInterfaceNameToLuidW},
+    Foundation::ERROR_INVALID_PARAMETER,
+    NetworkManagement::IpHelper::{
+        ConvertInterfaceAliasToLuid, ConvertInterfaceLuidToNameW, ConvertInterfaceNameToLuidW,
+    },
     System::SystemInformation::GetSystemDirectoryW,
 };
 
 #[derive(PartialEq, Eq)]
 struct InterfaceTarget {
     name: String,
+}
+
+fn validateAliasTarget(code: u32, aliasLuid: u64, expectedLuid: u64) -> ServiceResult<()> {
+    match code {
+        0 if aliasLuid == expectedLuid => Ok(()),
+        0 => Err("Native command target is also another adapter's alias".into()),
+        // a validated native name need not exist in the separate alias namespace.
+        ERROR_INVALID_PARAMETER if aliasLuid == 0 => Ok(()),
+        _ => errorCode("ConvertInterfaceAliasToLuid", code),
+    }
 }
 
 impl InterfaceTarget {
@@ -45,6 +58,11 @@ impl InterfaceTarget {
         {
             return Err("Native command target failed its name/LUID/GUID round trip".into());
         }
+        let mut aliasLuid = NET_LUID_LH::default();
+        let aliasCode = unsafe { ConvertInterfaceAliasToLuid(buffer.as_ptr(), &mut aliasLuid) };
+        validateAliasTarget(aliasCode, unsafe { aliasLuid.Value }, unsafe {
+            expectedLuid.Value
+        })?;
         Ok(Self { name })
     }
 }
@@ -243,6 +261,16 @@ mod tests {
         assert!(!target.name.is_empty());
         assert!(InterfaceTarget::capture(Uuid::nil(), &row.InterfaceLuid).is_err());
         assert!(InterfaceTarget::capture(uuid(guid), &NET_LUID_LH::default()).is_err());
+    }
+
+    #[test]
+    fn nativeTargetRefusesAliasCollisionsAndUncertainAliasLookups() {
+        assert!(validateAliasTarget(0, 123, 123).is_ok());
+        assert!(validateAliasTarget(ERROR_INVALID_PARAMETER, 0, 123).is_ok());
+        assert!(validateAliasTarget(0, 456, 123).is_err());
+        assert!(validateAliasTarget(0, 0, 123).is_err());
+        assert!(validateAliasTarget(ERROR_INVALID_PARAMETER, 456, 123).is_err());
+        assert!(validateAliasTarget(5, 0, 123).is_err());
     }
 
     #[test]
