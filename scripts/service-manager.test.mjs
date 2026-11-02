@@ -16,6 +16,49 @@ const shell = path.join(
 );
 
 test(
+  'installed preview lab refuses missing consent and non-hosted execution before setup',
+  {
+    skip: process.platform !== 'win32',
+  },
+  () => {
+    const cases = [
+      { consent: false, actions: 'true', runner: 'github-hosted' },
+      { consent: true, actions: 'false', runner: 'github-hosted' },
+      { consent: true, actions: 'true', runner: 'self-hosted' },
+      { consent: true, actions: '', runner: '' },
+    ];
+    for (const fixture of cases) {
+      const result = spawnSync(
+        shell,
+        [
+          '-NoLogo',
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          path.join(projectRoot, 'scripts/service-preview-smoke.ps1'),
+          ...(fixture.consent ? ['-allowNetworkChanges'] : []),
+        ],
+        {
+          env: {
+            ...process.env,
+            GITHUB_ACTIONS: fixture.actions,
+            RUNNER_ENVIRONMENT: fixture.runner,
+          },
+          encoding: 'utf8',
+          windowsHide: true,
+          timeout: 10_000,
+        },
+      );
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Development-machine execution is refused/);
+      assert.equal(result.stdout, '');
+    }
+  },
+);
+
+test(
   'checkout service management selects the latest build while packaged resources stay together',
   {
     skip: process.platform !== 'win32',
