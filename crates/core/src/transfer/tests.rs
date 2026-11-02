@@ -10,6 +10,9 @@ use std::{
 #[path = "source_bound_tests.rs"]
 mod source_bound_tests;
 
+#[path = "source_bound_session_tests.rs"]
+mod source_bound_session_tests;
+
 #[derive(Clone, Copy)]
 enum Behavior {
     Normal,
@@ -412,6 +415,12 @@ fn sessionsKeepProviderCohortsAndConcurrentRequestLatencySeparate() {
     .unwrap();
     firstWorker.join().unwrap();
     secondWorker.join().unwrap();
+    assert!(
+        serde_json::to_value(&result)
+            .unwrap()
+            .get("sourceBindings")
+            .is_none()
+    );
     assert_eq!(result.status, "completed");
     assert_eq!(result.transfers.len(), 4);
     assert!(

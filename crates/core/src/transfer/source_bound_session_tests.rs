@@ -1,0 +1,227 @@
+use super::*;
+use crate::{
+    benchmark,
+    config::Config,
+    icmp::{EchoStatus, EchoTarget},
+};
+use session::{Phase, SessionPlan, SourceBindings, runSourceBoundSession};
+
+fn scopedPlan(provider: Provider) -> (SessionPlan, SourceBindings) {
+    let origin = reqwest::Url::parse(&provider.info().unwrap().origin).unwrap();
+    let peer = format!("{}:{}", origin.host_str().unwrap(), origin.port().unwrap())
+        .parse::<std::net::SocketAddr>()
+        .unwrap();
+    let endpoints: Vec<_> = ["127.0.0.1", "::1"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, address)| benchmark::Endpoint {
+            id: format!("echo-{index}"),
+            address: address.into(),
+            protocol: benchmark::ProbeProtocol::IcmpEcho,
+            dnsQuery: None,
+        })
+        .collect();
+    let bindings = SourceBindings {
+        transfers: vec![SourceBinding {
+            source: peer.ip(),
+            peer,
+        }],
+        latency: endpoints
+            .iter()
+            .map(|endpoint| benchmark::SourceBinding {
+                endpointId: endpoint.id.clone(),
+                source: EchoTarget::parse(&endpoint.address).unwrap(),
+            })
+            .collect(),
+    };
+    (
+        SessionPlan {
+            providers: vec![provider],
+            downloadBytesPerProvider: 4096,
+            uploadBytesPerProvider: 4096,
+            streams: 1,
+            phaseTimeoutMs: 2000,
+            idleRounds: 3,
+            intervalMs: 250,
+            probeTimeoutMs: 100,
+            latencyEndpoints: endpoints,
+        },
+        bindings,
+    )
+}
+
+#[cfg(windows)]
+#[test]
+fn completeLoadSessionsBindTransfersAndEveryLatencyPhaseAndPersistTheirCohort() {
+    let (provider, worker) = fixture(Behavior::Slow, 2);
+    let (plan, bindings) = scopedPlan(provider);
+    let mut run = runSourceBoundSession(
+        Config::default(),
+        plan,
+        bindings.clone(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    worker.join().unwrap();
+    assert_eq!(run.status, "completed");
+    assert_eq!(run.sourceBindings, Some(bindings.clone()));
+    assert_eq!(run.transfers.len(), 2);
+    for phase in &run.transfers {
+        let transfer = phase.result.as_ref().unwrap();
+        assert_eq!(transfer.sourceBinding, Some(bindings.transfers[0]));
+        assert_eq!(transfer.status, TransferStatus::Completed);
+        assert_eq!(transfer.acceptedPayloadBytes, 4096);
+    }
+    for phase in [Phase::Idle, Phase::Download, Phase::Upload, Phase::Recovery] {
+        let samples: Vec<_> = run
+            .latencySamples
+            .iter()
+            .filter(|sample| sample.phase == phase)
+            .collect();
+        assert!(!samples.is_empty(), "missing {phase:?} probes");
+        assert!(
+            samples
+                .iter()
+                .all(|sample| sample.sample.echo.as_ref().unwrap().status == EchoStatus::Reply)
+        );
+    }
+    assert!(run.latencySamples.iter().any(|sample| matches!(
+        sample.phase,
+        Phase::Download | Phase::Upload
+    ) && sample.inFlightRequestsAtStart > 0
+        && sample.inFlightRequestsAtEnd > 0));
+    let mut database = crate::storage::openDatabase(std::path::Path::new(":memory:")).unwrap();
+    crate::storage::saveLoadSession(&mut database, &mut run).unwrap();
+    let saved = crate::storage::loadSessionHistory(&database, 1)
+        .unwrap()
+        .remove(0);
+    assert_eq!(saved.sourceBindings, Some(bindings));
+    assert_eq!(
+        serde_json::to_value(saved).unwrap(),
+        serde_json::to_value(run).unwrap()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn unavailableLatencySourceNeverTurnsIntoSuccessfulDefaultRouteProbes() {
+    let (provider, worker) = fixture(Behavior::Normal, 2);
+    let (plan, mut bindings) = scopedPlan(provider);
+    bindings.latency[0].source = EchoTarget::parse("192.0.2.254").unwrap();
+    let run = runSourceBoundSession(
+        Config::default(),
+        plan,
+        bindings,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    worker.join().unwrap();
+    assert_eq!(run.status, "completed");
+    let samples: Vec<_> = run
+        .latencySamples
+        .iter()
+        .filter(|sample| sample.sample.endpointId == "echo-0")
+        .collect();
+    assert!(!samples.is_empty());
+    assert!(samples.iter().all(|sample| {
+        let echo = sample.sample.echo.as_ref().unwrap();
+        echo.status != EchoStatus::Reply && echo.rttMs.is_none() && sample.sample.error.is_some()
+    }));
+    assert!(
+        run.latencySamples
+            .iter()
+            .any(|sample| sample.sample.endpointId == "echo-1"
+                && sample.sample.echo.as_ref().unwrap().status == EchoStatus::Reply)
+    );
+    for summary in run
+        .latencySummaries
+        .iter()
+        .filter(|summary| matches!(summary.phase, Phase::Idle | Phase::Recovery))
+    {
+        assert!(summary.results[0].summary.p95Ms.is_none());
+        assert!(summary.results[0].summary.echoTimeoutPercent.is_none());
+    }
+}
+
+#[test]
+fn incompleteReorderedAndNonEchoLoadBindingsAreRejectedBeforeProgressOrTraffic() {
+    let provider = Provider::UserOwnedHttp {
+        origin: "http://127.0.0.1:43210/".into(),
+    };
+    let (plan, bindings) = scopedPlan(provider);
+    for failure in 0..6 {
+        let mut plan = plan.clone();
+        let mut bindings = bindings.clone();
+        match failure {
+            0 => bindings.transfers.clear(),
+            1 => {
+                bindings.latency.pop();
+            }
+            2 => bindings.latency.reverse(),
+            3 => bindings.latency[0].endpointId = "different".into(),
+            4 => bindings.latency[0].source = EchoTarget::parse("::1").unwrap(),
+            _ => {
+                for endpoint in &mut plan.latencyEndpoints {
+                    endpoint.protocol = benchmark::ProbeProtocol::TcpConnect;
+                    endpoint.address = if endpoint.id == "echo-0" {
+                        "127.0.0.1:43210"
+                    } else {
+                        "[::1]:43210"
+                    }
+                    .into();
+                }
+            }
+        }
+        assert!(
+            runSourceBoundSession(
+                Config::default(),
+                plan,
+                bindings,
+                &AtomicBool::new(true),
+                |_| panic!("invalid scope reported progress")
+            )
+            .is_err(),
+            "failure {failure}"
+        );
+    }
+    let mut two = plan;
+    two.providers.push(Provider::UserOwnedHttp {
+        origin: "http://127.0.0.1:43211/".into(),
+    });
+    let mut bindings = bindings;
+    bindings.transfers.push(SourceBinding {
+        source: "127.0.0.1".parse().unwrap(),
+        peer: "127.0.0.1:43211".parse().unwrap(),
+    });
+    bindings.validate(&two).unwrap();
+    bindings.transfers.reverse();
+    assert!(bindings.validate(&two).is_err());
+}
+
+#[test]
+fn cancelledBoundSessionsPreserveScopeWithoutStartingAnyRequest() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let provider = Provider::UserOwnedHttp {
+        origin: format!("http://{}/", listener.local_addr().unwrap()),
+    };
+    let (plan, bindings) = scopedPlan(provider);
+    let run = runSourceBoundSession(
+        Config::default(),
+        plan,
+        bindings.clone(),
+        &AtomicBool::new(true),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(run.status, "cancelled");
+    assert!(run.transfers.is_empty());
+    assert!(run.latencySamples.is_empty());
+    assert_eq!(run.sourceBindings, Some(bindings));
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}

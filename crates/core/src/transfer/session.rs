@@ -88,6 +88,25 @@ impl SessionPlan {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceBindings {
+    pub transfers: Vec<super::SourceBinding>,
+    pub latency: Vec<crate::benchmark::SourceBinding>,
+}
+
+impl SourceBindings {
+    pub fn validate(&self, plan: &SessionPlan) -> AppResult<()> {
+        if self.transfers.len() != plan.providers.len() {
+            return Err("Every load provider needs one complete ordered transfer binding".into());
+        }
+        for (binding, provider) in self.transfers.iter().zip(&plan.providers) {
+            binding.validate(provider)?;
+        }
+        crate::benchmark::validateSourceBindings(&plan.latencyEndpoints, &self.latency)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Phase {
@@ -130,6 +149,8 @@ pub struct SessionRun {
     pub transfers: Vec<PhaseResult>,
     pub latencySamples: Vec<LatencySample>,
     pub latencySummaries: Vec<LatencySummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sourceBindings: Option<SourceBindings>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -160,6 +181,7 @@ impl Drop for Completion {
 
 struct Observer<'a, F: FnMut(SessionProgress)> {
     plan: &'a SessionPlan,
+    sourceBindings: Option<&'a SourceBindings>,
     cancelled: &'a AtomicBool,
     deadline: Instant,
     echoProbe: EchoProbe,
@@ -222,6 +244,8 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
             timeout,
             self.cancelled,
             &mut self.echoProbe,
+            self.sourceBindings
+                .map(|bindings| &bindings.latency[endpointIndex].source),
         )? {
             let after = progress.downloadBytesRead.load(Ordering::SeqCst)
                 + progress.uploadBodyBytesProvided.load(Ordering::SeqCst);
@@ -279,13 +303,20 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
         self.notify(providerIndex, phase, &progress, None);
         let done = Arc::new(AtomicBool::new(false));
         let phaseCancelled = AtomicBool::new(self.stopped());
+        let binding = self
+            .sourceBindings
+            .map(|bindings| bindings.transfers[providerIndex]);
         let result = thread::scope(|scope| {
             let completion = Completion(done.clone());
             let progress = &progress;
             let cancelled = &phaseCancelled;
             let worker = scope.spawn(move || {
                 let _completion = completion;
-                measure(plan, cancelled, progress)
+                if let Some(binding) = binding {
+                    super::measureFrom(plan, binding, cancelled, progress)
+                } else {
+                    measure(plan, cancelled, progress)
+                }
             });
             let mut observationError = None;
             let mut endpointIndex = 0;
@@ -330,10 +361,34 @@ pub fn runSession(
     cancelled: &AtomicBool,
     onProgress: impl FnMut(SessionProgress),
 ) -> AppResult<SessionRun> {
+    runSessionInternal(config, plan, None, cancelled, onProgress)
+}
+
+pub fn runSourceBoundSession(
+    config: Config,
+    plan: SessionPlan,
+    bindings: SourceBindings,
+    cancelled: &AtomicBool,
+    onProgress: impl FnMut(SessionProgress),
+) -> AppResult<SessionRun> {
+    runSessionInternal(config, plan, Some(bindings), cancelled, onProgress)
+}
+
+fn runSessionInternal(
+    config: Config,
+    plan: SessionPlan,
+    sourceBindings: Option<SourceBindings>,
+    cancelled: &AtomicBool,
+    onProgress: impl FnMut(SessionProgress),
+) -> AppResult<SessionRun> {
     plan.validate(&config)?;
+    if let Some(bindings) = &sourceBindings {
+        bindings.validate(&plan)?;
+    }
     let startedAt = chrono::Utc::now().to_rfc3339();
     let mut observer = Observer {
         plan: &plan,
+        sourceBindings: sourceBindings.as_ref(),
         cancelled,
         deadline: Instant::now() + Duration::from_secs(u64::from(config.sessionMinutes) * 60),
         echoProbe: EchoProbe::default(),
@@ -424,5 +479,6 @@ pub fn runSession(
         transfers,
         latencySamples,
         latencySummaries,
+        sourceBindings,
     })
 }

@@ -273,7 +273,11 @@ pub(crate) fn measureOnce(
     timeout: Duration,
     cancelled: &AtomicBool,
     echoProbe: &mut EchoProbe,
+    source: Option<&EchoTarget>,
 ) -> AppResult<Option<Sample>> {
+    if source.is_some() && endpoint.protocol != ProbeProtocol::IcmpEcho {
+        return Err("Source-bound latency samples require ICMP echo".into());
+    }
     if cancelled.load(Ordering::SeqCst) {
         return Ok(None);
     }
@@ -283,7 +287,7 @@ pub(crate) fn measureOnce(
         timeout,
         cancelled,
         echoProbe,
-        None,
+        source,
     )
 }
 pub fn validateEndpoints(endpoints: &[Endpoint]) -> AppResult<()> {

@@ -33,6 +33,10 @@ The internal `transfer::measureFrom` API accepts a fixed local unicast source an
 
 This is a building block for matched loaded measurements. A production collector must derive these addresses from trusted route/resolution evidence, enforce adapter/cohort/provider budgets, and verify the environment around collection. Binding alone does not establish physical-adapter traversal, unchanged routing, link saturation, or optimization benefit. The current desktop load-session workflow does not yet use this API automatically.
 
+The companion `transfer::session::runSourceBoundSession` API validates a complete ordered set of provider and echo-source bindings before progress or traffic begins. It uses those bindings for both transfer directions and for every idle, download, upload, and recovery latency phase. Raw sessions preserve the full binding cohort, and each transfer preserves its own pair. Bound latency supports ICMP echo; an unsupported TCP binding is refused rather than measured without the requested source. Ordinary manual sessions keep their existing TCP/ICMP support and omit the optional binding metadata.
+
+Session completion describes the transfer lifecycle. Unavailable echo sources still produce explicit error samples and unavailable latency metrics; they never become zero latency or proven packet loss. A future optimization collector must reject incomplete or unsuitable metrics and verify adapter/environment evidence independently. These APIs do not enable application setting changes or retention.
+
 ## Remaining scope
 
 Independent public provider discovery, NDT7, permitted iperf3 integration, provider eligibility policies for automatic sessions, bidirectional load, sustained/ramp-up methodology, retransmission/CPU/adapter utilization, metered/managed-network detection, drift checks, repeated-session comparisons, confidence intervals, and automatic optimization remain unfinished. M-Lab's [NDT documentation](https://www.measurementlab.net/tests/ndt/) describes published measurement data and IP collection; any future adapter requires a clear opt-in privacy decision. No M-Lab or Ookla traffic is enabled.
