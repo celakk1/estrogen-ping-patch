@@ -34,6 +34,7 @@ const LAB_DEADLINE: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
+    Alternate,
     Apply,
     Restore,
     PolicyCommit,
@@ -57,6 +58,13 @@ struct Config {
 }
 
 impl Config {
+    fn candidateMtu(&self) -> u32 {
+        if self.phase == Phase::Alternate {
+            1372
+        } else {
+            1400
+        }
+    }
     fn leaseMs(&self) -> u64 {
         if self.phase == Phase::Repeated {
             30_000
@@ -126,6 +134,12 @@ impl ServicePermit {
     }
 }
 
+impl mtu::write_scope::TargetGuard for ServicePermit {
+    fn validateTarget(&self, snapshot: &Snapshot) -> ServiceResult<()> {
+        ServicePermit::validateTarget(self, snapshot)
+    }
+}
+
 fn config(arguments: &[String]) -> ServiceResult<Config> {
     let [ownerSid, guid, family, phase, trialId] = arguments else {
         return Err("Native lab service requires SID GUID ipv4|ipv6 PHASE TRIAL_ID".into());
@@ -149,6 +163,7 @@ fn config(arguments: &[String]) -> ServiceResult<Config> {
             "restore" => Phase::Restore,
             "policy-commit" => Phase::PolicyCommit,
             "complete" => Phase::Complete,
+            "alternate" => Phase::Alternate,
             "repeated" => Phase::Repeated,
             "revoke" => Phase::Revoke,
             "authorization-unavailable" => Phase::AuthorizationUnavailable,
@@ -340,7 +355,7 @@ impl Backend<'_> {
             || document.authorizedUserSid != self.config.ownerSid
             || document.context.adapterGuid != self.config.guid
             || document.addressFamily != self.config.family
-            || document.proposedMtu != 1400
+            || document.proposedMtu != self.config.candidateMtu()
             || document.leaseExpiresAtUnixMs - document.createdAtUnixMs != self.config.leaseMs()
             || action == AuthorizationAction::Retain
             || now < document.createdAtUnixMs
@@ -466,17 +481,9 @@ impl MtuBackend for Backend<'_> {
         purpose: WritePurpose,
         register: &mut crate::recovery::MutatorRegistrar<'_>,
     ) -> ServiceResult<()> {
+        let scope = mtu::write_scope::WriteScope::new(document, purpose, value)?;
         if purpose == WritePurpose::Apply {
             self.authorize(document, AuthorizationAction::Apply, nowUnixMs()?)?;
-        }
-        let original = document
-            .nativeOriginal
-            .as_ref()
-            .ok_or("Native lab original is missing")?;
-        if (purpose == WritePurpose::Apply && value != 1400)
-            || (purpose == WritePurpose::Restore && value != original.settings.nlMtu)
-        {
-            return Err("Native lab write does not match its typed purpose".into());
         }
         {
             let mut authorization = self.authorization.as_deref_mut();
@@ -517,12 +524,11 @@ impl MtuBackend for Backend<'_> {
             };
             mtu::writeLabMtu(
                 &self.permit,
-                original,
+                &scope,
                 expected
                     .native
                     .as_ref()
                     .ok_or("Native lab expected observation is missing")?,
-                value,
                 deadline,
                 if purpose == WritePurpose::Apply {
                     Some(&mut check as &mut dyn FnMut() -> ServiceResult<()>)
@@ -625,7 +631,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
             context: original.journalContext()?,
             addressFamily: config.family,
             originalMtu: original.settings.nlMtu,
-            proposedMtu: 1400,
+            proposedMtu: config.candidateMtu(),
             nativeOriginal: Some(original),
             policyOriginal: Some(policyOriginal),
         };
@@ -642,7 +648,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         event(
             json!({"phase":"grantIssued", "trialId":document.id, "grantId":grant.id, "checkpointSha256":grant.checkpointSha256}),
         )?;
-        if config.phase == Phase::Complete {
+        if matches!(config.phase, Phase::Complete | Phase::Alternate) {
             let stop = backend.stop.clone();
             let report = crate::trial::execute(
                 journal,
@@ -690,6 +696,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
                 }
                 Phase::Restore => Some(WritePurpose::Restore),
                 Phase::Complete
+                | Phase::Alternate
                 | Phase::PolicyCommit
                 | Phase::Repeated
                 | Phase::Registered
@@ -783,7 +790,7 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
     }
     event(
         json!({"phase":"complete", "trialId":config.trialId, "state":checkpoint.state(), "original":original,
-        "checkpointSchemaVersion":checkpoint.document().schemaVersion, "policyOriginal":checkpoint.document().policyOriginal,
+        "checkpointSchemaVersion":checkpoint.document().schemaVersion, "candidateMtu":checkpoint.document().proposedMtu, "policyOriginal":checkpoint.document().policyOriginal,
         "policyVerificationCount":checkpoint.policyVerifications().len(), "policyOriginalVerified":checkpoint.policyVerifications().last().is_some_and(|record| record.matchesOriginal), "pendingPolicyVerificationCount":journal.pendingPolicyVerification()?.len(),
         "after":after.native, "writesThisProcess":backend.writes, "pendingRecoveryCount":journal.pendingRecovery()?.len(), "mutators":mutators, "processId":std::process::id()}),
     )
@@ -844,6 +851,26 @@ mod tests {
         assert!(permit.validateTarget(&snapshot).is_ok());
         snapshot.adapterGuid = Uuid::nil();
         assert!(permit.validateTarget(&snapshot).is_err());
+    }
+
+    #[test]
+    fn alternateCandidateIsFixedByTheOwnedFixtureRatherThanAnArgument() {
+        for family in ["ipv4", "ipv6"] {
+            let mut arguments: Vec<String> = [
+                "S-1-5-21-1-2-3-1000".into(),
+                Uuid::new_v4().to_string(),
+                family.into(),
+                "alternate".into(),
+                Uuid::new_v4().to_string(),
+            ]
+            .into();
+            let alternate = config(&arguments).unwrap();
+            assert_eq!(alternate.candidateMtu(), 1372);
+            arguments[3] = "complete".into();
+            assert_eq!(config(&arguments).unwrap().candidateMtu(), 1400);
+            arguments[3] = "candidate=1300".into();
+            assert!(config(&arguments).is_err());
+        }
     }
 
     #[test]

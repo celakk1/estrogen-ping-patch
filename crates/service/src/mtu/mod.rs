@@ -7,6 +7,8 @@ pub mod origins;
 pub mod policy;
 #[cfg(windows)]
 mod windows;
+#[cfg(all(windows, feature = "native-mtu-lab"))]
+pub(crate) mod write_scope;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -239,17 +241,14 @@ pub(crate) fn waitForLabMutator(identity: &crate::journal::MutatorIdentity) -> S
 
 #[cfg(all(windows, feature = "native-mtu-lab"))]
 pub(crate) fn writeLabMtu(
-    permit: &crate::mtu_lab::ServicePermit,
-    original: &Snapshot,
+    permit: &dyn write_scope::TargetGuard,
+    scope: &write_scope::WriteScope<'_>,
     expected: &Snapshot,
-    value: u32,
     deadline: std::time::Instant,
     authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
     register: &mut crate::recovery::MutatorRegistrar<'_>,
 ) -> ServiceResult<()> {
-    windows::writeLabMtu(
-        permit, original, expected, value, deadline, authorize, register,
-    )
+    windows::writeScopedMtu(permit, scope, expected, deadline, authorize, register)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -1,6 +1,6 @@
 mod command;
 use super::*;
-use crate::mtu_lab::ServicePermit;
+use crate::mtu::write_scope::{TargetGuard, WriteScope};
 use command::CommandJob;
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, time::Instant};
 use windows_sys::Win32::{
@@ -113,7 +113,7 @@ pub(crate) fn waitForLabMutator(identity: &crate::journal::MutatorIdentity) -> S
 }
 
 fn validateBeforeWrite(
-    permit: &ServicePermit,
+    permit: &dyn TargetGuard,
     original: &Snapshot,
     expected: &Snapshot,
 ) -> ServiceResult<InterfaceTarget> {
@@ -159,20 +159,19 @@ fn validateBeforeWrite(
     InterfaceTarget::capture(original.adapterGuid, &luid)
 }
 
-pub(crate) fn writeLabMtu(
-    permit: &ServicePermit,
-    original: &Snapshot,
+pub(crate) fn writeScopedMtu(
+    permit: &dyn TargetGuard,
+    scope: &WriteScope<'_>,
     expected: &Snapshot,
-    value: u32,
     deadline: Instant,
     mut authorize: Option<&mut dyn FnMut() -> ServiceResult<()>>,
     register: &mut crate::recovery::MutatorRegistrar<'_>,
 ) -> ServiceResult<()> {
     ensureLabCommandStopped()?;
+    scope.validateAuthorization(authorize.is_some())?;
+    let original = scope.original();
+    let value = scope.value();
     permit.validateTarget(original)?;
-    if value != original.settings.nlMtu && (value != 1400 || authorize.is_none()) {
-        return Err("Native lab permits only its fixed candidate or exact original MTU".into());
-    }
     let mut check = || -> ServiceResult<()> {
         if Instant::now() >= deadline {
             return Err("Windows MTU command deadline expired".into());

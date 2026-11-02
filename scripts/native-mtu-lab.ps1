@@ -218,7 +218,7 @@ try {
         $original = captureNative $guid $family
         if ($original.driver.status -ne 'captured' -or $original.driver.identity.infPath -ine 'netloop.inf' -or $original.driver.identity.deviceInstanceId -ine $instanceId) { throw 'Native evidence does not match the newly created loopback device.' }
         Write-Host "Native pre-trial evidence: family=$family; MTU=$($original.settings.nlMtu); SitePrefixLength=$($original.settings.sitePrefixLength)."
-        foreach ($phase in @('complete', 'apply', 'restore', 'policy-commit', 'revoke', 'authorization-unavailable', 'registered', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop', 'watchdog-crash', 'repeated')) {
+        foreach ($phase in @('complete', 'alternate', 'apply', 'restore', 'policy-commit', 'revoke', 'authorization-unavailable', 'registered', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop', 'watchdog-crash', 'repeated')) {
             $trialId = [Guid]::NewGuid().ToString('D')
             $imagePath = "`"$installedExe`" --native-mtu-lab-service $ownerSid $($guid.ToString('D')) $family $phase $trialId"
             if ($phase -eq 'watchdog-crash') {
@@ -253,7 +253,7 @@ try {
                 }
                 if ($phase -eq 'watchdog-stop') { invokeSc -arguments @('stop', $serviceName) }
             }
-            if ($phase -notin @('complete', 'repeated', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) {
+            if ($phase -notin @('complete', 'alternate', 'repeated', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) {
                 $purpose = $(if ($phase -eq 'policy-commit') { '' } elseif ($phase -eq 'restore') { 'Restore' } else { 'Apply' })
                 $marker = $(if ($phase -eq 'policy-commit') { 'policyVerificationPending' } elseif ($phase -eq 'registered') { 'mutatorRegistered' } else { 'nativeWriteReturned' })
                 $written = waitEvent $startedAt $trialId $marker $purpose
@@ -301,7 +301,10 @@ try {
                 & node.exe --no-warnings (Join-Path $PSScriptRoot 'native-repeated-evidence.mjs') $dataRoot $trialId ($guid.ToString('D')) $family
                 if ($LASTEXITCODE -ne 0) { throw 'Independent repeated native evidence verification failed.' }
             }
-            if ($phase -eq 'complete') {
+            if ($phase -in @('complete', 'alternate')) {
+                $candidateMtu = $(if ($phase -eq 'alternate') { 1372 } else { 1400 })
+                $applied = @(readEvents $startedAt $trialId | Where-Object { $_.phase -eq 'nativeWriteReturned' -and $_.purpose -eq 'Apply' })
+                if ($complete.candidateMtu -ne $candidateMtu -or $applied.Count -ne 1 -or $applied[0].value -ne $candidateMtu) { throw 'Native candidate did not match the exact checkpoint-bound trial value.' }
                 $automatic = waitEvent $startedAt $trialId 'automaticTrialComplete' ''
                 if ($automatic.report.outcome -ne 'completed' -or @($automatic.report.measurement).Count -ne 6 -or $automatic.report.watchdog.trigger -ne 'trialFinished' -or -not $automatic.report.watchdog.recovery.originalMtuVerified -or -not $automatic.report.watchdog.recovery.journalFinalized -or $automatic.report.watchdog.recovery.unrelatedSettingsDrifted -or $automatic.report.watchdog.recovery.error -or $automatic.report.watchdog.recoveryError) { throw 'Automatic native trial did not finish measurement with verified recovery.' }
                 $peers = @($automatic.report.measurement | Select-Object -ExpandProperty endpoint -Unique)
