@@ -16,6 +16,52 @@ const shell = path.join(
 );
 
 test(
+  'owned recovery identity compares GUID values across Windows string representations',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const result = spawnSync(
+      shell,
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `
+    $ErrorActionPreference = 'Stop'
+    $tokens = $null; $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($env:EPP_IDENTITY_SCRIPT, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -ne 0) { throw 'Harness syntax errors' }
+    $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'matchesOwnedAdapter' }, $true)
+    if (-not $function) { throw 'Missing owned identity check' }
+    Invoke-Expression $function.Extent.Text
+    $guid = [Guid]'12345678-1234-4567-8123-123456789abc'
+    $instanceId = 'ROOT\\NET\\0001'
+    foreach ($value in @($guid, $guid.ToString('D'), $guid.ToString('B').ToUpperInvariant())) {
+      $adapter = [PSCustomObject]@{ InterfaceGuid = $value; PnPDeviceID = $instanceId; Name = "epp-recovery-lab-$guid" }
+      if (-not (matchesOwnedAdapter $adapter)) { throw 'Exact owned GUID was refused' }
+    }
+    foreach ($field in @('InterfaceGuid', 'PnPDeviceID', 'Name')) {
+      $adapter = [PSCustomObject]@{ InterfaceGuid = $guid.ToString('B'); PnPDeviceID = $instanceId; Name = "epp-recovery-lab-$guid" }
+      $adapter.$field = if ($field -eq 'InterfaceGuid') { [Guid]::NewGuid().ToString('B') } else { 'different' }
+      if (matchesOwnedAdapter $adapter) { throw "Foreign $field was accepted" }
+    }
+  `,
+      ],
+      {
+        env: {
+          ...process.env,
+          EPP_IDENTITY_SCRIPT: path.join(projectRoot, 'scripts/service-recovery-smoke.ps1'),
+        },
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+  },
+);
+
+test(
   'installed native labs refuse missing consent and non-hosted execution before setup',
   {
     skip: process.platform !== 'win32',

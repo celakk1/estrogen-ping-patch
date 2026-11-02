@@ -69,8 +69,12 @@ function journalFixture([string]$phase, [string]$family) {
     if ($LASTEXITCODE -ne 0) { throw "Protected recovery journal fixture failed during $phase." }
 }
 
+function matchesOwnedAdapter($adapter) {
+    $adapter.PnPDeviceID -ieq $instanceId -and [Guid]$adapter.InterfaceGuid -eq $guid -and $adapter.Name -ceq "epp-recovery-lab-$guid"
+}
+
 function stageOwnedCandidate([string]$family) {
-    $adapters = @(Get-NetAdapter -IncludeHidden | Where-Object { $_.PnPDeviceID -ieq $instanceId -and $_.InterfaceGuid -eq $guid -and $_.Name -ceq "epp-recovery-lab-$guid" })
+    $adapters = @(Get-NetAdapter -IncludeHidden | Where-Object { matchesOwnedAdapter $_ })
     if ($adapters.Count -ne 1) { throw 'The owned adapter identity changed before fixture setup.' }
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = Join-Path ([Environment]::SystemDirectory) 'netsh.exe'
