@@ -210,27 +210,27 @@ fn serviceLoop() -> ServiceResult<()> {
         let serviceSid = security::serviceSid()?;
         let journal = storage::open(&serviceSid)?;
         let checkpointStore = journal.status.clone();
-        let mut worker = match entry.mode {
-            Mode::ReadOnly => {
-                ServiceWorker::Preview(crate::preview::Worker::start(&ownerSid, journal)?)
-            }
-            Mode::RecoveryOnly => {
-                #[cfg(feature = "native-recovery")]
-                {
-                    ServiceWorker::Recovery(recovery_worker::Worker::start(&ownerSid, journal)?)
-                }
-                #[cfg(not(feature = "native-recovery"))]
-                {
-                    return Err("This service build does not include native recovery".into());
-                }
-            }
-        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let result = runtime.block_on(async {
+        runtime.block_on(async {
             let pipe = transport::createServer(PIPE_NAME, &ownerSid, &serviceSid, true)?;
             setState(handle, ServiceState::Running, false)?;
+            let mut worker = match entry.mode {
+                Mode::ReadOnly => {
+                    ServiceWorker::Preview(crate::preview::Worker::start(&ownerSid, journal)?)
+                }
+                Mode::RecoveryOnly => {
+                    #[cfg(feature = "native-recovery")]
+                    {
+                        ServiceWorker::Recovery(recovery_worker::Worker::start(&ownerSid, journal)?)
+                    }
+                    #[cfg(not(feature = "native-recovery"))]
+                    {
+                        return Err("This service build does not include native recovery".into());
+                    }
+                }
+            };
             let result = transport::serve(
                 pipe,
                 PIPE_NAME.into(),
@@ -241,10 +241,9 @@ fn serviceLoop() -> ServiceResult<()> {
             )
             .await;
             setState(handle, ServiceState::StopPending, result.is_err())?;
+            worker.finish(handle)?;
             result
-        });
-        worker.finish(handle)?;
-        result
+        })
     })();
     setState(handle, ServiceState::Stopped, result.is_err())?;
     result

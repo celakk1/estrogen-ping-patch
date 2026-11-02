@@ -147,7 +147,11 @@ try {
     [ordered]@{ originalMtu = 1500; candidateMtu = 1372; restoredCount = 2; pendingCount = 0; session = 0; automaticCrashRestart = $true; applyAuthorizationRequired = $false; retained = $false; configurationPreserved = $true } | ConvertTo-Json -Compress
 } catch {
     $failure = $_
-    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $serviceName; StartTime = $startedAt } -MaxEvents 3 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Message | Format-List | Out-Host
+    foreach ($log in @('Application', 'System')) {
+        try {
+            Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $startedAt } -MaxEvents 80 -ErrorAction Stop | Where-Object { $_.ProviderName -eq $serviceName -or $_.Message -match 'EstrogenPingPatch|estrogen ping patch|Dedicated service' } | Select-Object -First 5 TimeCreated, ProviderName, Message | Format-List | Out-Host
+        } catch { Write-Host "Additional $log service diagnostics unavailable: $($_.Exception.Message)" }
+    }
     throw $failure
 } finally {
     try {
