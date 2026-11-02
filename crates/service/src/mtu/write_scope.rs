@@ -1,7 +1,7 @@
 use super::Snapshot;
 use crate::{ServiceResult, journal::MtuCheckpoint, recovery::WritePurpose};
 
-pub(crate) trait TargetGuard {
+pub(crate) trait TargetGuard: Send + Sync {
     fn validateTarget(&self, snapshot: &Snapshot) -> ServiceResult<()>;
 }
 

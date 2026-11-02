@@ -331,6 +331,26 @@ struct Backend<'a> {
 }
 
 impl Backend<'_> {
+    fn nativeBackend<'a>(
+        &'a mut self,
+        document: &'a MtuCheckpoint,
+    ) -> ServiceResult<mtu::native_backend::NativeBackend<'a>> {
+        let authorization = match (self.authorization.as_deref_mut(), self.grantId) {
+            (Some(store), Some(grantId)) => Some(mtu::native_backend::ApplyAuthorization {
+                store,
+                grantId,
+                actorSid: &self.config.ownerSid,
+            }),
+            _ => None,
+        };
+        mtu::native_backend::NativeBackend::new(
+            document,
+            &self.permit,
+            &self.stop,
+            authorization,
+            self.started + self.config.deadline(),
+        )
+    }
     fn policyOriginal(&mut self, original: &mtu::Snapshot) -> ServiceResult<mtu::policy::Evidence> {
         let capture = mtu::policy::inspect(self.config.guid, self.config.family, &self.stop)?;
         self.permit.validateTarget(&capture.native)?;
@@ -393,36 +413,19 @@ impl MtuBackend for Backend<'_> {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-        mtu::ensureLabCommandStopped()?;
         if document.context.adapterGuid != self.config.guid
             || document.addressFamily != self.config.family
         {
             return Err("IP policy observation target is outside the native trial".into());
         }
-        let recovering = AtomicBool::new(false);
-        let cancelled = if purpose == crate::recovery::PolicyPurpose::VerifyRestored {
-            &recovering
-        } else {
-            &self.stop
-        };
-        let capture = mtu::policy::inspect(self.config.guid, self.config.family, cancelled)?;
-        self.permit.validateTarget(&capture.native)?;
-        Ok(capture)
+        self.nativeBackend(document)?
+            .observePolicy(document, purpose)
     }
 
     fn checkAuthorization(&mut self, document: &MtuCheckpoint, now: u64) -> ServiceResult<()> {
         self.validateAuthorizationScope(document, AuthorizationAction::Apply, now)?;
-        self.authorization
-            .as_deref_mut()
-            .ok_or("Native operation has no authorization store")?
-            .check(
-                self.grantId
-                    .ok_or("Native operation has no authorization grant")?,
-                document,
-                &self.config.ownerSid,
-                AuthorizationAction::Apply,
-                now,
-            )
+        self.nativeBackend(document)?
+            .checkAuthorization(document, now)
     }
 
     fn authorize(
@@ -432,37 +435,16 @@ impl MtuBackend for Backend<'_> {
         now: u64,
     ) -> ServiceResult<()> {
         self.validateAuthorizationScope(document, action, now)?;
-        self.authorization
-            .as_deref_mut()
-            .ok_or("Native application requires the protected authorization store")?
-            .authorize(
-                self.grantId
-                    .ok_or("Native operation has no authorization grant")?,
-                document,
-                &self.config.ownerSid,
-                action,
-                now,
-            )
+        self.nativeBackend(document)?
+            .authorize(document, action, now)
     }
     fn observe(&mut self, document: &MtuCheckpoint) -> ServiceResult<Observation> {
-        mtu::ensureLabCommandStopped()?;
         if document.context.adapterGuid != self.config.guid
             || document.addressFamily != self.config.family
         {
             return Err("Native lab observation target is outside its fixed adapter scope".into());
         }
-        let native = mtu::capture(
-            self.config.guid,
-            self.config.family,
-            &AtomicBool::new(false),
-        )?;
-        self.permit.validateTarget(&native)?;
-        Ok(Observation {
-            context: native.journalContext()?,
-            addressFamily: native.addressFamily,
-            mtu: native.settings.nlMtu,
-            native: Some(native),
-        })
+        self.nativeBackend(document)?.observe(document)
     }
     fn waitForMutator(&mut self, record: &crate::journal::MutatorRecord) -> ServiceResult<()> {
         if !self.checkpointIds.contains(&record.checkpointId) {
@@ -481,62 +463,28 @@ impl MtuBackend for Backend<'_> {
         purpose: WritePurpose,
         register: &mut crate::recovery::MutatorRegistrar<'_>,
     ) -> ServiceResult<()> {
-        let scope = mtu::write_scope::WriteScope::new(document, purpose, value)?;
         if purpose == WritePurpose::Apply {
-            self.authorize(document, AuthorizationAction::Apply, nowUnixMs()?)?;
+            self.validateAuthorizationScope(document, AuthorizationAction::Apply, nowUnixMs()?)?;
         }
         {
-            let mut authorization = self.authorization.as_deref_mut();
-            let grantId = self.grantId;
-            let ownerSid = &self.config.ownerSid;
-            let stop = &self.stop;
-            let deadline = if purpose == WritePurpose::Apply {
-                (Instant::now() + Duration::from_secs(5)).min(self.started + self.config.deadline())
-            } else {
-                Instant::now() + Duration::from_secs(5)
-            };
+            let stop = self.stop.clone();
+            let phase = self.config.phase;
+            let mut backend = self.nativeBackend(document)?;
+            let deadline = backend.commandDeadline(purpose)?;
+            backend.limitCommandDeadline(deadline);
             let mut record = |identity: crate::journal::MutatorIdentity| -> ServiceResult<()> {
                 register(identity.clone())?;
                 event(
                     json!({"phase":"mutatorRegistered", "trialId":document.id, "purpose":format!("{purpose:?}"), "mutator":identity, "processId":std::process::id()}),
                 )?;
-                if self.config.phase == Phase::Registered && purpose == WritePurpose::Apply {
+                if phase == Phase::Registered && purpose == WritePurpose::Apply {
                     while !stop.load(Ordering::SeqCst) && Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(10));
                     }
                 }
                 Ok(())
             };
-            let mut check = || -> ServiceResult<()> {
-                if stop.load(Ordering::SeqCst) {
-                    return Err("Native lab application was stopped".into());
-                }
-                authorization
-                    .as_deref_mut()
-                    .ok_or("Native application requires a protected authorization store")?
-                    .check(
-                        grantId.ok_or("Native operation has no authorization grant")?,
-                        document,
-                        ownerSid,
-                        AuthorizationAction::Apply,
-                        nowUnixMs()?,
-                    )
-            };
-            mtu::writeLabMtu(
-                &self.permit,
-                &scope,
-                expected
-                    .native
-                    .as_ref()
-                    .ok_or("Native lab expected observation is missing")?,
-                deadline,
-                if purpose == WritePurpose::Apply {
-                    Some(&mut check as &mut dyn FnMut() -> ServiceResult<()>)
-                } else {
-                    None
-                },
-                &mut record,
-            )?;
+            backend.writeMtu(document, expected, value, purpose, &mut record)?;
         }
         self.writes += 1;
         if self.config.phase == Phase::Revoke && purpose == WritePurpose::Apply {

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use uuid::Uuid;
 
+#[cfg(all(windows, feature = "native-mtu-lab"))]
+pub(crate) mod native_backend;
 pub mod origins;
 pub mod policy;
 #[cfg(windows)]
