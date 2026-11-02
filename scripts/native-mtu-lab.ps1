@@ -326,8 +326,8 @@ try {
             if ($complete.state -ne 'restored' -or $complete.pendingRecoveryCount -ne 0 -or $current.settings.nlMtu -ne $original.settings.nlMtu -or (settingsJson $current.settings) -cne (settingsJson $original.settings)) { throw 'Native recovery failed exact MTU/unrelated-settings verification.' }
             if ((settingsJson $complete.original.settings) -cne (settingsJson $original.settings)) { throw 'Durable native original does not match the independent pre-trial capture.' }
             if ((persistentPolicy $interfaceIndex) -cne $policyBefore -or (dnsPolicy $guid $interfaceIndex) -cne $dnsBefore) { throw 'Native trial changed persistent interface or automatic/static DNS origin values.' }
-            $expectedWrites = $(if ($phase -eq 'repeated') { 24 } elseif ($phase -in @('complete', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) { 2 } elseif ($phase -in @('restore', 'policy-commit', 'registered')) { 0 } else { 1 })
-            if ($complete.writesThisProcess -ne $expectedWrites) { throw 'Restart recovery wrote an unexpected number of MTU values.' }
+            $expectedWrites = $(if ($phase -eq 'repeated') { 24 } elseif ($phase -in @('complete', 'alternate', 'watchdog-deadline', 'watchdog-heartbeat', 'watchdog-stop')) { 2 } elseif ($phase -in @('restore', 'policy-commit', 'registered')) { 0 } else { 1 })
+            if ($complete.writesThisProcess -ne $expectedWrites) { throw "Native phase '$phase' returned $($complete.writesThisProcess) setting writes; expected $expectedWrites." }
             $mutators = @($complete.mutators)
             $expectedMutators = $(if ($phase -eq 'repeated') { 24 } elseif ($phase -eq 'registered') { 1 } else { 2 })
             if ($mutators.Count -ne $expectedMutators) { throw 'A native write is missing its durable process record.' }

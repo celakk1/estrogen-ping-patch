@@ -39,6 +39,24 @@ function powershell(script, environment = {}) {
   );
 }
 
+test('alternate native trial requires both apply and restore writes', options, () => {
+  const result = powershell(String.raw`
+$ErrorActionPreference = 'Stop'
+$tokens = $null
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($env:EPP_LAB_SCRIPT, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Native harness syntax is invalid.' }
+$assignment = $ast.Find({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$expectedWrites' }, $true)
+if ($null -eq $assignment) { throw 'Native write-count check is missing.' }
+foreach ($phase in @('complete', 'alternate')) {
+    . ([scriptblock]::Create($assignment.Extent.Text))
+    if ($expectedWrites -ne 2) { throw "Phase $phase must require two writes; observed $expectedWrites." }
+}
+`);
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test(
   'native MTU lab refuses missing consent and development-machine execution before setup',
   options,
