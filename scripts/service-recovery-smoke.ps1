@@ -149,7 +149,7 @@ try {
     $failure = $_
     foreach ($log in @('Application', 'System')) {
         try {
-            Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $startedAt } -MaxEvents 80 -ErrorAction Stop | Where-Object { $_.ProviderName -eq $serviceName -or $_.Message -match 'EstrogenPingPatch|estrogen ping patch|Dedicated service' } | Select-Object -First 5 TimeCreated, ProviderName, Message | Format-List | Out-Host
+            Get-WinEvent -FilterHashtable @{ LogName = $log; StartTime = $startedAt } -MaxEvents 80 -ErrorAction Stop | Where-Object { $_.ProviderName -eq $serviceName -or $_.Message -match 'EstrogenPingPatch|estrogen ping patch|Dedicated service' } | Select-Object -First 5 TimeCreated, ProviderName, Message, @{ Name = 'Details'; Expression = { ($_.Properties | ForEach-Object { [string]$_.Value }) -join '; ' } } | Format-List | Out-Host
         } catch { Write-Host "Additional $log service diagnostics unavailable: $($_.Exception.Message)" }
     }
     throw $failure

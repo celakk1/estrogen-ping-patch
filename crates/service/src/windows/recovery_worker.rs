@@ -42,7 +42,8 @@ impl Permit {
             SERVICE_NAME,
             ServiceAccess::QUERY_CONFIG
                 | ServiceAccess::QUERY_STATUS
-                | ServiceAccess::CHANGE_CONFIG,
+                | ServiceAccess::CHANGE_CONFIG
+                | ServiceAccess::START,
         )?;
         let config = service.query_config()?;
         let status = service.query_status()?;
@@ -51,15 +52,27 @@ impl Permit {
             "\"{}\" --recovery-service --owner-sid {ownerSid}",
             executable.display()
         );
-        if config.service_type != ServiceType::OWN_PROCESS
-            || status.process_id != Some(std::process::id())
-            || !isSystemAccount(config.account_name.as_deref())
-            || config.executable_path.as_os_str() != std::ffi::OsStr::new(&expected)
-        {
-            return Err(
-                "Recovery process differs from its exact SCM binary, owner, mode, account, or PID"
-                    .into(),
-            );
+        if config.service_type != ServiceType::OWN_PROCESS {
+            return Err("Recovery service must use its own process".into());
+        }
+        if status.process_id != Some(std::process::id()) {
+            return Err(format!(
+                "Recovery SCM PID mismatch: state {:?}, reported {:?}, expected {}",
+                status.current_state,
+                status.process_id,
+                std::process::id()
+            )
+            .into());
+        }
+        if !isSystemAccount(config.account_name.as_deref()) {
+            return Err(format!("Recovery SCM account mismatch: {:?}", config.account_name).into());
+        }
+        if config.executable_path.as_os_str() != std::ffi::OsStr::new(&expected) {
+            return Err(format!(
+                "Recovery SCM command mismatch: registered {:?}, current {:?}",
+                config.executable_path, expected
+            )
+            .into());
         }
         if service.get_failure_actions_on_non_crash_failures()? {
             return Err("Recovery service refuses unexpected non-crash restart policy".into());
@@ -74,12 +87,16 @@ impl Permit {
                 delay: Duration::ZERO,
             },
         ];
-        service.update_failure_actions(ServiceFailureActions {
-            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(60)),
-            reboot_msg: Some(OsString::new()),
-            command: Some(OsString::new()),
-            actions: Some(actions.clone()),
-        })?;
+        service
+            .update_failure_actions(ServiceFailureActions {
+                reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(60)),
+                reboot_msg: Some(OsString::new()),
+                command: Some(OsString::new()),
+                actions: Some(actions.clone()),
+            })
+            .map_err(|error| {
+                format!("Cannot configure bounded recovery restart actions: {error}")
+            })?;
         let actual = service.get_failure_actions()?;
         if actual.actions != Some(actions)
             || actual.command.is_some_and(|value| !value.is_empty())
