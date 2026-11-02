@@ -11,6 +11,8 @@ use std::{
     },
 };
 
+#[path = "only_tests.rs"]
+mod only_tests;
 #[path = "policy_tests.rs"]
 mod policy_tests;
 

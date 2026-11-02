@@ -548,7 +548,10 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
         }) {
             return Err("Native lab requires current tracked-process checkpoints; preserving legacy or unrelated recovery work without new writes".into());
         }
-        let results = MtuCoordinator::new(journal, &mut backend, nowUnixMs).restoreAllPending()?;
+        let results = {
+            let mut recovery = crate::recovery::only::RecoveryOnly::capture(journal, &mut backend)?;
+            MtuCoordinator::new(journal, &mut recovery, nowUnixMs).restoreAllPending()?
+        };
         if results
             .iter()
             .any(|result| !result.originalMtuVerified || !result.journalFinalized)

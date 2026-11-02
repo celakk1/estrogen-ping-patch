@@ -53,7 +53,10 @@ pub(super) fn recover(journal: &mut Journal, backend: &mut Backend<'_>) -> Servi
         }
     }
     if !pending.is_empty() {
-        let results = MtuCoordinator::new(journal, backend, nowUnixMs).restoreAllPending()?;
+        let results = {
+            let mut recovery = crate::recovery::only::RecoveryOnly::capture(journal, backend)?;
+            MtuCoordinator::new(journal, &mut recovery, nowUnixMs).restoreAllPending()?
+        };
         if results.iter().any(|result| {
             !result.originalMtuVerified
                 || !result.journalFinalized

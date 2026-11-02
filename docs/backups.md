@@ -90,6 +90,8 @@ Journal migration validates version-three mutator history before committing the 
 
 ### Production change requirements
 
+The internal recovery-only backend freezes the exact pending recovery and policy-verification documents from a verified journal. It refuses preparation, application, retention, new or changed documents, mismatched mutator hashes, and every write except that checkpoint's exact original MTU. Recovery does not need an unexpired apply lease or available authorization storage. Both native lab restart paths now use this boundary. This is an internal recovery boundary; the installed LocalService still has no native recovery worker or setter.
+
 Before any setter is enabled, the privileged service must perform all of these steps:
 
 1. Match the target adapter by GUID and verify its current OS, driver, capability, management-policy, VPN, and remote-administration context.

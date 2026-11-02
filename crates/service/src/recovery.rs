@@ -30,6 +30,9 @@ pub enum PolicyPurpose {
 
 pub type MutatorRegistrar<'a> = dyn FnMut(MutatorIdentity) -> ServiceResult<()> + 'a;
 
+#[cfg(any(test, all(windows, feature = "native-mtu-lab")))]
+pub(crate) mod only;
+
 pub trait MtuBackend {
     fn checkAuthorization(&mut self, _: &MtuCheckpoint, _: u64) -> ServiceResult<()> {
         Err("This backend cannot recheck an active operation's authorization".into())
