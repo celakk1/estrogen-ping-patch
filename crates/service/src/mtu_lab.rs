@@ -286,6 +286,23 @@ fn servicePermit(config: &Config) -> ServiceResult<ServicePermit> {
     })
 }
 
+fn issueLabConsent(
+    document: &MtuCheckpoint,
+    ownerSid: &str,
+    authorization: &mut crate::authorization::AuthorizationStore,
+    now: u64,
+) -> ServiceResult<crate::authorization::MtuGrant> {
+    let mut consent = crate::consent::MtuConsent::new(ownerSid)?;
+    let preview = consent.preview(document.clone(), ownerSid, now)?;
+    consent.approve(
+        preview.previewId,
+        &preview.checkpointSha256,
+        ownerSid,
+        authorization,
+        now,
+    )
+}
+
 struct Backend<'a> {
     config: &'a Config,
     permit: ServicePermit,
@@ -612,11 +629,15 @@ fn trial(config: &Config, stop: Arc<AtomicBool>) -> ServiceResult<()> {
             nativeOriginal: Some(original),
             policyOriginal: Some(policyOriginal),
         };
-        let grant = backend
-            .authorization
-            .as_deref_mut()
-            .ok_or("Native operation has no authorization store")?
-            .issue(&document, &config.ownerSid, false, nowUnixMs()?)?;
+        let grant = issueLabConsent(
+            &document,
+            &config.ownerSid,
+            backend
+                .authorization
+                .as_deref_mut()
+                .ok_or("Native operation has no authorization store")?,
+            nowUnixMs()?,
+        )?;
         backend.grantId = Some(grant.id);
         event(
             json!({"phase":"grantIssued", "trialId":document.id, "grantId":grant.id, "checkpointSha256":grant.checkpointSha256}),

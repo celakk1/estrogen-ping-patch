@@ -594,11 +594,15 @@ pub(super) fn run(
             document.leaseExpiresAtUnixMs = expires;
             document.nativeOriginal = Some(fresh.clone());
             document.policyOriginal = Some(policyOriginal);
-            let grant = backend
-                .authorization
-                .as_deref_mut()
-                .ok_or("Repeated native trial has no protected authorization store")?
-                .issue(&document, &backend.config.ownerSid, false, now)?;
+            let grant = issueLabConsent(
+                &document,
+                &backend.config.ownerSid,
+                backend
+                    .authorization
+                    .as_deref_mut()
+                    .ok_or("Repeated native trial has no protected authorization store")?,
+                now,
+            )?;
             backend.grantId = Some(grant.id);
             *activeCheckpoint
                 .lock()

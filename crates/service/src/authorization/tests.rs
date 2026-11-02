@@ -17,7 +17,7 @@ impl Fixture {
         std::fs::create_dir(&directory).unwrap();
         Self { directory }
     }
-    fn path(&self) -> PathBuf {
+    pub(crate) fn path(&self) -> PathBuf {
         self.directory.join("authorization.sqlite3")
     }
     pub(crate) fn open(&self) -> AuthorizationStore {

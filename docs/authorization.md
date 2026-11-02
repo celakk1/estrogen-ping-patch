@@ -2,6 +2,8 @@
 
 The service library records expiring MTU grants for one exact native checkpoint, Windows user SID, adapter GUID, OS/driver context, address family, and candidate value. It does not expose a production grant issuer, mutation pipe operation, or AI permission tool. Normal application builds still permit no setting changes.
 
+Its [MTU consent controller](consent.md) now binds a single-use, expiring preview to the exact checkpoint hash before issuing a temporary, non-retaining grant. The native lab exercises that controller after its existing SCM/target checks. This is library integration, not an authenticated production consent endpoint or a completed desktop approval flow.
+
 ## Grant scope and lifetime
 
 A grant contains a random identifier and service-instance identifier, the exact checkpoint SHA-256 used by the recovery journal, the approved operation scope, an expiry, and a separate retention permission. Checkpoint preparation and apply admission are recorded. Apply requires a durable claim; claiming permission is not evidence that a setting was changed. Retention requires its own permission and remains prohibited in the native lab.

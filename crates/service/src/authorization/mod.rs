@@ -66,7 +66,7 @@ impl MtuGrant {
     }
 }
 
-fn validateSid(value: &str) -> ServiceResult<()> {
+pub(crate) fn validateSid(value: &str) -> ServiceResult<()> {
     if !value.starts_with("S-1-")
         || value.len() > 184
         || value
@@ -86,7 +86,7 @@ fn checksum(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
-fn checkpointChecksum(document: &MtuCheckpoint) -> ServiceResult<String> {
+pub(crate) fn checkpointChecksum(document: &MtuCheckpoint) -> ServiceResult<String> {
     Ok(checksum(&serde_json::to_string_pretty(document)?))
 }
 

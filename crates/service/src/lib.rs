@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 
 pub mod authorization;
+pub mod consent;
 #[cfg(feature = "automatic-trials")]
 pub mod experiment;
 pub mod journal;
