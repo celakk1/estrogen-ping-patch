@@ -132,7 +132,20 @@ fn installedRecoveryJournalFixture() {
     {
         let id = Uuid::from_u128(guid.as_u128() ^ (0x45505001 + index as u128));
         if phase == "seed" {
-            let capture = mtu::policy::inspect(guid, family, &AtomicBool::new(false)).unwrap();
+            let selected = std::env::var("EPP_RECOVERY_LAB_FAMILY").unwrap();
+            let expected = match family {
+                crate::journal::AddressFamily::Ipv4 => "ipv4",
+                crate::journal::AddressFamily::Ipv6 => "ipv6",
+            };
+            assert!(matches!(selected.as_str(), "ipv4" | "ipv6"));
+            if selected != expected {
+                continue;
+            }
+            let capture: mtu::policy::Capture =
+                serde_json::from_str(&std::env::var("EPP_RECOVERY_LAB_CAPTURE").unwrap()).unwrap();
+            capture.validate().unwrap();
+            assert_eq!(capture.native.adapterGuid, guid);
+            assert_eq!(capture.native.addressFamily, family);
             assert_eq!(capture.native.alias, format!("epp-recovery-lab-{guid}"));
             let mtu::DriverContext::Captured { identity } = &capture.native.driver else {
                 panic!("missing owned driver");
@@ -146,6 +159,8 @@ fn installedRecoveryJournalFixture() {
             );
             assert_eq!(capture.native.settings.nlMtu, 1500);
             let now = crate::transport::nowUnixMs().unwrap();
+            assert!(capture.native.capturedAtUnixMs <= now);
+            assert!(now - capture.native.capturedAtUnixMs <= 5000);
             let document = MtuCheckpoint {
                 schemaVersion: 4,
                 id,

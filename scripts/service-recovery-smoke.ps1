@@ -54,12 +54,17 @@ function capturePolicy([string]$family) {
     $capture | ConvertTo-Json -Depth 24 -Compress
 }
 
-function journalFixture([string]$phase) {
+function journalFixture([string]$phase, [string]$family) {
     $env:EPP_RECOVERY_LAB_ACK = 'owned-loopback-recovery-only'
     $env:EPP_RECOVERY_LAB_GUID = $guid.ToString('D')
     $env:EPP_RECOVERY_LAB_PATH = Join-Path $dataRoot 'recovery.sqlite3'
     $env:EPP_RECOVERY_LAB_OWNER = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $env:EPP_RECOVERY_LAB_PHASE = $phase
+    $env:EPP_RECOVERY_LAB_FAMILY = $family
+    if ($phase -eq 'seed') {
+        $capture = client -arguments @('--inspect-ip-policy', $guid.ToString('D'), $family)
+        $env:EPP_RECOVERY_LAB_CAPTURE = $capture | ConvertTo-Json -Depth 24 -Compress
+    }
     & cargo.exe test --locked -p epp-service --features native-recovery recovery::native::tests::installedRecoveryJournalFixture -- --ignored --exact --nocapture
     if ($LASTEXITCODE -ne 0) { throw "Protected recovery journal fixture failed during $phase." }
 }
@@ -123,16 +128,18 @@ try {
     if ($empty.state -ne 'ready' -or $empty.response.checkpointStore.pendingRecoveryCount -ne 0) { throw 'The automatically restarted recovery service did not finish its empty check.' }
     $before = @{}
     foreach ($family in @('ipv4', 'ipv6')) { $before[$family] = capturePolicy $family }
-    manage 'stop'
-    journalFixture 'seed'
-    foreach ($family in @('ipv4', 'ipv6')) { stageOwnedCandidate $family }
-    Start-Sleep -Milliseconds 1200
-    if (Test-Path -LiteralPath (Join-Path $dataRoot 'authorization.sqlite3')) { throw 'Recovery fixture unexpectedly has apply authorization storage.' }
-    manage 'start'
-    $restored = waitRecovery
-    if ($restored.state -ne 'ready' -or $restored.response.recovery.phase -ne 'completed' -or $restored.response.recovery.verifiedCount -ne 2 -or $restored.response.checkpointStore.pendingRecoveryCount -ne 0) { throw "Recovery did not verify both originals: $($restored | ConvertTo-Json -Depth 8 -Compress)" }
     foreach ($family in @('ipv4', 'ipv6')) {
-        if ((capturePolicy $family) -cne $before[$family]) { throw "Recovery changed unrelated native, driver, registry, or persistent policy evidence for $family." }
+        manage 'stop'
+        journalFixture 'seed' $family
+        stageOwnedCandidate $family
+        Start-Sleep -Milliseconds 1200
+        if (Test-Path -LiteralPath (Join-Path $dataRoot 'authorization.sqlite3')) { throw 'Recovery fixture unexpectedly has apply authorization storage.' }
+        manage 'start'
+        $restored = waitRecovery
+        if ($restored.state -ne 'ready' -or $restored.response.recovery.phase -ne 'completed' -or $restored.response.recovery.verifiedCount -ne 1 -or $restored.response.checkpointStore.pendingRecoveryCount -ne 0) { throw "Recovery did not verify the $family original: $($restored | ConvertTo-Json -Depth 8 -Compress)" }
+        foreach ($checkedFamily in @('ipv4', 'ipv6')) {
+            if ((capturePolicy $checkedFamily) -cne $before[$checkedFamily]) { throw "Recovery changed unrelated native, driver, registry, or persistent policy evidence for $checkedFamily." }
+        }
     }
     if (Test-Path -LiteralPath (Join-Path $dataRoot 'authorization.sqlite3')) { throw 'Exact-original recovery opened or created apply authorization storage.' }
     manage 'stop'
@@ -158,6 +165,6 @@ try {
         if ($installationAttempted -and (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { manage 'uninstall' }
     } finally {
         if ($instanceId) { [NativeMtuLabDevice]::remove($instanceId) }
-        foreach ($name in @('EPP_RECOVERY_LAB_ACK', 'EPP_RECOVERY_LAB_GUID', 'EPP_RECOVERY_LAB_PATH', 'EPP_RECOVERY_LAB_OWNER', 'EPP_RECOVERY_LAB_PHASE')) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        foreach ($name in @('EPP_RECOVERY_LAB_ACK', 'EPP_RECOVERY_LAB_GUID', 'EPP_RECOVERY_LAB_PATH', 'EPP_RECOVERY_LAB_OWNER', 'EPP_RECOVERY_LAB_PHASE', 'EPP_RECOVERY_LAB_FAMILY', 'EPP_RECOVERY_LAB_CAPTURE')) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
     }
 }
