@@ -13,6 +13,8 @@ use epp_core::{
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod baseline;
+pub mod load;
+mod measurement;
 
 #[cfg(test)]
 mod tests;

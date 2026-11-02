@@ -32,6 +32,8 @@ The owner's clarified product direction is system-wide networking optimization w
 
 Use camelCase variables, functions, and fields except externally mandated names. Preserve Rust type/module/constant conventions and serialize public JSON as camelCase. Comments must be minimal and lowercase. No emojis in workspace files or commit messages. Preserve unrelated changes and avoid broad formatting/refactoring.
 
+Optional adapter-bound echo and load collectors now preserve native policy/route evidence, exact candidate checkpoint identity, fixed source bindings, and durable raw/receipt readback. Raw load conversion recomputes metrics and refuses inadequate request overlap or successful replies. These are internal library components; production service session/storage/worker integration, complete profile guards, candidate generation, calibrated confirmation, and retention remain unfinished.
+
 Current measured evidence and its limits are recorded in [validation](validation.md).
 
 Run `test.bat`, `build.bat`, and `package.bat` as appropriate. Inspect the complete staged diff and run `node scripts/scan-staged.mjs` before a meaningful validated milestone commit. Never commit secrets or private runtime data. Do not mark unfinished requirements complete because compilation or unit tests pass. Do not publish releases automatically.

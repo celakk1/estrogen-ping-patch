@@ -1,5 +1,7 @@
+pub use super::measurement::ScopeHashes;
+use super::measurement::{self, AdapterScope, hash};
 use super::*;
-use crate::{mtu::policy, recovery::policyObservationMatches, routing};
+use crate::{mtu::policy, routing};
 use epp_core::{
     benchmark::{
         self, BenchmarkRun, Endpoint, ProbeProtocol, RoutingEvidence, RoutingStatus, SourceBinding,
@@ -9,25 +11,10 @@ use epp_core::{
     experiment::budget::Resources,
 };
 use rusqlite::Connection;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-fn hash(value: &impl Serialize) -> ServiceResult<String> {
-    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScopeHashes {
-    pub cohortSha256: String,
-    pub environmentSha256: String,
-    pub originalConfigurationSha256: String,
-    pub candidateConfigurationSha256: String,
-}
-
 pub struct Scope {
-    template: MtuCheckpoint,
+    adapter: AdapterScope,
     config: Config,
     endpoints: Vec<Endpoint>,
     selections: Vec<Selection>,
@@ -46,49 +33,6 @@ fn destinations(endpoints: &[Endpoint]) -> ServiceResult<Vec<routing::Address>> 
         .collect()
 }
 
-fn routeSources(
-    endpoints: &[Endpoint],
-    captures: &[routing::Capture],
-    native: &Snapshot,
-) -> ServiceResult<Vec<SourceBinding>> {
-    if endpoints.len() != captures.len() {
-        return Err("Every benchmark endpoint requires its own native route".into());
-    }
-    endpoints.iter().zip(captures).map(|(endpoint, capture)| {
-        let routing::Capture::Captured { snapshot } = capture else { return Err("A selected benchmark route is unavailable".into()); };
-        snapshot.matchesInterface(native)?;
-        let (ip, scopeId) = endpoint.destinationAddress()?;
-        if endpoint.protocol != ProbeProtocol::IcmpEcho || snapshot.destination != (routing::Address { ip, scopeId }) || snapshot.loopback || ip.is_loopback() {
-            return Err("Optimization measurements require non-loopback echo routes through the exact changed adapter".into());
-        }
-        Ok(SourceBinding { endpointId: endpoint.id.clone(), source: epp_core::icmp::EchoTarget { address: snapshot.source.ip, scopeId: snapshot.source.scopeId } })
-    }).collect()
-}
-
-fn environment(template: &MtuCheckpoint, captures: &[routing::Capture]) -> ServiceResult<String> {
-    let native = template
-        .nativeOriginal
-        .as_ref()
-        .ok_or("Missing native original")?;
-    let policy = template
-        .policyOriginal
-        .as_ref()
-        .ok_or("Missing policy original")?;
-    let fingerprint =
-        routing::fingerprint(captures)?.ok_or("Benchmark routes could not be verified")?;
-    hash(&(
-        "source-bound-adapter-baseline-v1",
-        native.adapterGuid,
-        native.addressFamily,
-        &native.os,
-        &native.driver,
-        &native.registryOrigins,
-        &policy.active,
-        &policy.persistent,
-        fingerprint,
-    ))
-}
-
 impl Scope {
     pub fn capture(
         template: MtuCheckpoint,
@@ -98,13 +42,8 @@ impl Scope {
         cancelled: &AtomicBool,
     ) -> ServiceResult<Self> {
         Self::validateInput(&template, &config, &endpoints, &selections)?;
-        let current = policy::inspect(
-            template.context.adapterGuid,
-            template.addressFamily,
-            cancelled,
-        )?;
-        let routes = routing::capture(&destinations(&endpoints)?, cancelled)?;
-        Self::fromEvidence(template, config, endpoints, selections, current, routes)
+        let adapter = AdapterScope::capture(template, destinations(&endpoints)?, cancelled)?;
+        Self::fromAdapter(adapter, config, endpoints, selections)
     }
 
     fn validateInput(
@@ -159,6 +98,7 @@ impl Scope {
         Ok(())
     }
 
+    #[cfg(test)]
     fn fromEvidence(
         template: MtuCheckpoint,
         config: Config,
@@ -168,8 +108,32 @@ impl Scope {
         routes: Vec<routing::Capture>,
     ) -> ServiceResult<Self> {
         Self::validateInput(&template, &config, &endpoints, &selections)?;
-        policyObservationMatches(&template, &current, template.originalMtu, nowUnixMs()?)?;
-        let sources = routeSources(&endpoints, &routes, &current.native)?;
+        let adapter =
+            AdapterScope::fromEvidence(template, destinations(&endpoints)?, current, routes)?;
+        Self::fromAdapter(adapter, config, endpoints, selections)
+    }
+
+    fn fromAdapter(
+        adapter: AdapterScope,
+        config: Config,
+        endpoints: Vec<Endpoint>,
+        selections: Vec<Selection>,
+    ) -> ServiceResult<Self> {
+        Self::validateInput(&adapter.template, &config, &endpoints, &selections)?;
+        if adapter.targets != destinations(&endpoints)? {
+            return Err("Echo targets differ from the captured adapter scope".into());
+        }
+        let sources: Vec<_> = endpoints
+            .iter()
+            .zip(&adapter.sources)
+            .map(|(endpoint, source)| SourceBinding {
+                endpointId: endpoint.id.clone(),
+                source: epp_core::icmp::EchoTarget {
+                    address: source.ip,
+                    scopeId: source.scopeId,
+                },
+            })
+            .collect();
         let blueprint = benchmark::runSourceBoundEchoBenchmark(
             config.clone(),
             endpoints.clone(),
@@ -177,14 +141,7 @@ impl Scope {
             &AtomicBool::new(true),
             |_, _, _| {},
         )?;
-        let mut candidate = current.native.settings.clone();
-        candidate.nlMtu = template.proposedMtu;
-        let hashes = ScopeHashes {
-            cohortSha256: baseline::cohortSha256(&blueprint, &selections)?,
-            environmentSha256: environment(&template, &routes)?,
-            originalConfigurationSha256: hash(&current.native.settings)?,
-            candidateConfigurationSha256: hash(&candidate)?,
-        };
+        let hashes = adapter.hashes(baseline::cohortSha256(&blueprint, &selections)?);
         let costs = endpoints
             .iter()
             .map(|endpoint| {
@@ -198,7 +155,7 @@ impl Scope {
             })
             .collect();
         Ok(Self {
-            template,
+            adapter,
             config,
             endpoints,
             selections,
@@ -216,26 +173,7 @@ impl Scope {
     }
 
     pub fn bind(self, database: &mut Connection, plan: Plan) -> ServiceResult<Collector<'_>> {
-        plan.validate()?;
-        if plan.comparison.cohortSha256 != self.hashes.cohortSha256
-            || plan.comparison.environmentSha256 != self.hashes.environmentSha256
-            || plan.comparison.originalConfigurationSha256
-                != self.hashes.originalConfigurationSha256
-            || plan.comparison.candidateConfigurationSha256
-                != self.hashes.candidateConfigurationSha256
-        {
-            return Err(
-                "Experiment plan differs from the captured source-bound measurement scope".into(),
-            );
-        }
-        let budget = plan
-            .trafficBudget
-            .as_ref()
-            .ok_or("Collection requires explicit traffic limits")?;
-        budget.bind(&self.costs)?;
-        if !budget.allows(plan.blockCount as u32)? {
-            return Err("Traffic limits cannot cover every approved bracket".into());
-        }
+        measurement::validatePlan(&plan, &self.hashes, &self.costs)?;
         if plan.comparison.metrics.len() != self.selections.len()
             || plan
                 .comparison
@@ -257,14 +195,7 @@ impl Scope {
         {
             return Err("Measurement rules differ from the captured p95/failure selections or native resolution".into());
         }
-        let durable: u32 = database.pragma_query_value(None, "synchronous", |row| row.get(0))?;
-        let foreignKeys: bool =
-            database.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
-        let mode: String = database.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
-        let version: u32 = database.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if durable != 2 || !foreignKeys || !mode.eq_ignore_ascii_case("wal") || version != 6 {
-            return Err("Measurement storage must be the validated application database with FULL durability, foreign keys, and WAL".into());
-        }
+        measurement::validateStorage(database)?;
         database.execute_batch("CREATE TABLE IF NOT EXISTS adapter_measurements(run_id INTEGER PRIMARY KEY REFERENCES benchmark_runs(id), experiment_id TEXT NOT NULL, payload_json TEXT NOT NULL, sha256 TEXT NOT NULL)")?;
         Ok(Collector {
             scope: self,
@@ -287,39 +218,9 @@ impl Collector<'_> {
         &self,
         configuration: Configuration,
     ) -> ServiceResult<(policy::Capture, Vec<routing::Capture>)> {
-        let template = &self.scope.template;
-        let cancelled = AtomicBool::new(false);
-        let current = policy::inspect(
-            template.context.adapterGuid,
-            template.addressFamily,
-            &cancelled,
-        )?;
-        let routes = routing::capture(&destinations(&self.scope.endpoints)?, &cancelled)?;
-        self.verify(&current, &routes, configuration)?;
-        Ok((current, routes))
+        self.scope.adapter.observe(configuration)
     }
 
-    fn verify(
-        &self,
-        current: &policy::Capture,
-        routes: &[routing::Capture],
-        configuration: Configuration,
-    ) -> ServiceResult<()> {
-        let expectedMtu = if configuration == Configuration::Original {
-            self.scope.template.originalMtu
-        } else {
-            self.scope.template.proposedMtu
-        };
-        policyObservationMatches(&self.scope.template, current, expectedMtu, nowUnixMs()?)?;
-        if current.native.operationalStatus != 1
-            || current.native.mediaConnectState != 1
-            || routeSources(&self.scope.endpoints, routes, &current.native)? != self.scope.sources
-            || environment(&self.scope.template, routes)? != self.scope.hashes.environmentSha256
-        {
-            return Err("Native link, selected source, adapter route, or environment changed during collection".into());
-        }
-        Ok(())
-    }
     fn acceptRaw(
         &mut self,
         run: &BenchmarkRun,
@@ -424,33 +325,9 @@ impl Measurements for Collector<'_> {
 
     fn bindCheckpoint(&mut self, checkpoint: Option<&MtuCheckpoint>) -> ServiceResult<()> {
         if let Some(document) = checkpoint {
-            document.validate()?;
-            let original = &self.scope.template;
-            if document.schemaVersion != 4
-                || document.context != original.context
-                || document.addressFamily != original.addressFamily
-                || document.authorizedUserSid != original.authorizedUserSid
-                || document.originalMtu != original.originalMtu
-                || document.proposedMtu != original.proposedMtu
-                || document.leaseExpiresAtUnixMs > self.plan.expiresAtUnixMs
-            {
-                return Err(
-                    "Measurement checkpoint differs from its captured experiment scope".into(),
-                );
-            }
-            document
-                .nativeOriginal
-                .as_ref()
-                .ok_or("Missing checkpoint native original")?
-                .validateMtuObservation(original.nativeOriginal.as_ref().unwrap())?;
-            let first = document
-                .policyOriginal
-                .as_ref()
-                .ok_or("Missing checkpoint policy")?;
-            let expected = original.policyOriginal.as_ref().unwrap();
-            if first.active != expected.active || first.persistent != expected.persistent {
-                return Err("Measurement checkpoint policy changed".into());
-            }
+            self.scope
+                .adapter
+                .verifyCheckpoint(document, self.plan.expiresAtUnixMs)?;
         }
         self.checkpoint = checkpoint.cloned();
         Ok(())
@@ -531,4 +408,4 @@ impl Measurements for Collector<'_> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -7,16 +7,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
 
-struct Database {
+pub(crate) struct Database {
     directory: PathBuf,
 }
 impl Database {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let directory = std::env::temp_dir().join(format!("epp-bound-baseline-{}", Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         Self { directory }
     }
-    fn open(&self) -> Connection {
+    pub(crate) fn open(&self) -> Connection {
         epp_core::storage::openDatabase(&self.directory.join("measurements.sqlite3")).unwrap()
     }
 }
@@ -36,7 +36,7 @@ impl Drop for Database {
     }
 }
 
-fn evidence() -> (
+pub(crate) fn evidence() -> (
     MtuCheckpoint,
     Config,
     Vec<Endpoint>,
@@ -318,7 +318,7 @@ fn contextAndCheckpointDriftAreRefusedBeforeAnyCandidateMeasurement() {
     let scope = scope();
     let plan = plan(&scope);
     let mut collector = scope.bind(&mut database, plan).unwrap();
-    let mut document = collector.scope.template.clone();
+    let mut document = collector.scope.adapter.template.clone();
     document.id = Uuid::new_v4();
     collector.bindCheckpoint(Some(&document)).unwrap();
     let saved = collector.checkpoint.as_ref().unwrap().id;
@@ -331,14 +331,28 @@ fn contextAndCheckpointDriftAreRefusedBeforeAnyCandidateMeasurement() {
     current.native.adapterGuid = Uuid::new_v4();
     assert!(
         collector
+            .scope
+            .adapter
             .verify(&current, &routes, Configuration::Original)
             .is_err()
     );
 }
 
 fn savedRaw(collector: &mut Collector<'_>) -> (BenchmarkRun, policy::Capture, policy::Capture) {
-    let original = collector.scope.template.nativeOriginal.as_ref().unwrap();
-    let policy = collector.scope.template.policyOriginal.as_ref().unwrap();
+    let original = collector
+        .scope
+        .adapter
+        .template
+        .nativeOriginal
+        .as_ref()
+        .unwrap();
+    let policy = collector
+        .scope
+        .adapter
+        .template
+        .policyOriginal
+        .as_ref()
+        .unwrap();
     let mut before = policy::Capture {
         schemaVersion: 1,
         native: original.clone(),
@@ -544,4 +558,32 @@ fn tooFewSuccessfulEchoesCannotProduceATrustedLatencyReceipt() {
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn sharedAdapterScopePreservesThePublishedEchoHashPreimages() {
+    let (template, config, endpoints, selections, current, routes) = evidence();
+    let native = template.nativeOriginal.as_ref().unwrap();
+    let policy = template.policyOriginal.as_ref().unwrap();
+    let legacy = hash(&(
+        "source-bound-adapter-baseline-v1",
+        native.adapterGuid,
+        native.addressFamily,
+        &native.os,
+        &native.driver,
+        &native.registryOrigins,
+        &policy.active,
+        &policy.persistent,
+        routing::fingerprint(&routes).unwrap().unwrap(),
+    ))
+    .unwrap();
+    let original = hash(&current.native.settings).unwrap();
+    let mut candidate = current.native.settings.clone();
+    candidate.nlMtu = template.proposedMtu;
+    let candidate = hash(&candidate).unwrap();
+    let scope =
+        Scope::fromEvidence(template, config, endpoints, selections, current, routes).unwrap();
+    assert_eq!(scope.hashes.environmentSha256, legacy);
+    assert_eq!(scope.hashes.originalConfigurationSha256, original);
+    assert_eq!(scope.hashes.candidateConfigurationSha256, candidate);
 }
