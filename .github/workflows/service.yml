@@ -8,6 +8,8 @@ on:
       - 'scripts/manage-service.ps1'
       - 'scripts/service-manager.test.mjs'
       - 'scripts/service-smoke.ps1'
+      - 'scripts/service-preview-smoke.ps1'
+      - 'scripts/native-mtu-lab-device.cs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/service.yml'
@@ -17,6 +19,8 @@ on:
       - 'scripts/manage-service.ps1'
       - 'scripts/service-manager.test.mjs'
       - 'scripts/service-smoke.ps1'
+      - 'scripts/service-preview-smoke.ps1'
+      - 'scripts/native-mtu-lab-device.cs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/service.yml'
@@ -47,3 +51,14 @@ jobs:
       - name: SCM install, identity, restart, and removal
         shell: powershell
         run: ./scripts/service-smoke.ps1 -allowServiceInstallation
+
+  preview:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production read-only service
+        run: cargo build --release --locked -p epp-service
+      - name: Installed previews on an owned adapter
+        shell: powershell
+        run: ./scripts/service-preview-smoke.ps1 -allowNetworkChanges
