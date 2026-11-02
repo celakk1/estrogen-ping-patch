@@ -513,3 +513,35 @@ fn unbracketedNativeEvidenceAndIncompleteRunsCannotBecomeMeasurements() {
         );
     }
 }
+
+#[test]
+fn tooFewSuccessfulEchoesCannotProduceATrustedLatencyReceipt() {
+    let storage = Database::new();
+    let mut database = storage.open();
+    let scope = scope();
+    let plan = plan(&scope);
+    let mut collector = scope.bind(&mut database, plan).unwrap();
+    let (mut run, before, after) = savedRaw(&mut collector);
+    let sample = &mut run.samples[0];
+    sample.error = Some("timeout".into());
+    let echo = sample.echo.as_mut().unwrap();
+    echo.status = epp_core::icmp::EchoStatus::TimedOut;
+    echo.rttMs = None;
+    echo.responder = None;
+    echo.nativeCode = Some(11010);
+    epp_core::storage::saveRun(collector.database, &mut run).unwrap();
+    let error = collector
+        .acceptRaw(&run, &before, &after, Configuration::Original)
+        .unwrap_err();
+    assert!(error.to_string().contains("twelve successful"));
+    assert_eq!(
+        collector
+            .database
+            .query_row("SELECT count(*) FROM adapter_measurements", [], |row| row
+                .get::<_, u32>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
+}

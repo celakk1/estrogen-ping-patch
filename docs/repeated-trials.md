@@ -32,6 +32,8 @@ Raw sessions are saved even when collection stops or final verification fails. A
 
 This collector covers small unloaded ICMP probes only. It does not establish large-packet behavior, loaded responsiveness, independent confirmation, internet-path stability, physical adapter traversal, or an MTU benefit. Blocking native policy inspection can still cause watchdog recovery rather than progress. Production collection/session wiring and those additional measurement stages remain unfinished.
 
+Trusted unloaded latency admission also requires twelve successful replies per endpoint. Twelve attempts with fewer replies cannot supply that latency evidence; the raw run remains saved and no native receipt is issued. Ordinary manual diagnostics retain their existing reporting behavior. The separate [load adapter](comparisons.md#source-bound-load-adapter) applies the same successful-reply floor to its selected p95 metrics.
+
 The repeated native fixture now obtains its trial grants from one [bounded session approval](consent.md#bounded-repeated-session-approval). The approved plan and exact original/candidate scope remain fixed across all twelve brackets. Every grant is durably revoked when execution returns, including failure paths; a revocation failure prevents successful completion. The independent evidence inspector checks the persisted grant scopes and complete event chains in addition to recovery and measurement evidence. This is fixture integration; normal-service session approval and production execution remain unfinished.
 
 ## Validation and limits

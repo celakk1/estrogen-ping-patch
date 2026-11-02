@@ -340,6 +340,21 @@ impl Collector<'_> {
                 },
             },
         )?;
+        if self.scope.endpoints.iter().any(|endpoint| {
+            run.samples
+                .iter()
+                .filter(|sample| {
+                    sample.endpointId == endpoint.id
+                        && sample
+                            .echo
+                            .as_ref()
+                            .is_some_and(|echo| echo.status == epp_core::icmp::EchoStatus::Reply)
+                })
+                .count()
+                < 12
+        }) {
+            return Err("Trusted latency evidence requires at least twelve successful echo replies per endpoint".into());
+        }
 
         if before.native.capturedAtUnixMs > session.startedAtUnixMs.saturating_add(250)
             || after.native.capturedAtUnixMs.saturating_add(250) < session.finishedAtUnixMs

@@ -225,3 +225,138 @@ fn cancelledBoundSessionsPreserveScopeWithoutStartingAnyRequest() {
         std::io::ErrorKind::WouldBlock
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn actualSavedBoundSessionsAdmitQuietMetricsAndRefuseInsufficientLoadedSamples() {
+    use crate::comparison::{
+        self,
+        load::{Selection, Statistic},
+    };
+    let (provider, worker) = fixture(Behavior::Slow, 2);
+    let (mut plan, bindings) = scopedPlan(provider);
+    plan.idleRounds = 12;
+    let mut run = runSourceBoundSession(
+        Config::default(),
+        plan,
+        bindings,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    worker.join().unwrap();
+    assert_eq!(run.status, "completed");
+    let mut database = crate::storage::openDatabase(std::path::Path::new(":memory:")).unwrap();
+    crate::storage::saveLoadSession(&mut database, &mut run).unwrap();
+    let mut selections = vec![
+        Selection {
+            metricId: "download".into(),
+            providerIndex: 0,
+            statistic: Statistic::GoodputMbps {
+                direction: Direction::Download,
+            },
+        },
+        Selection {
+            metricId: "upload".into(),
+            providerIndex: 0,
+            statistic: Statistic::GoodputMbps {
+                direction: Direction::Upload,
+            },
+        },
+        Selection {
+            metricId: "idle-p95".into(),
+            providerIndex: 0,
+            statistic: Statistic::P95Ms {
+                phase: Phase::Idle,
+                endpointId: "echo-0".into(),
+            },
+        },
+        Selection {
+            metricId: "recovery-failures".into(),
+            providerIndex: 0,
+            statistic: Statistic::FailurePercent {
+                phase: Phase::Recovery,
+                endpointId: "echo-0".into(),
+            },
+        },
+    ];
+    let threshold = |absolute| comparison::Threshold {
+        absolute,
+        relativeFraction: 0.0,
+    };
+    let mut comparison = comparison::Plan {
+        maximumBlockDurationMs: 120_000,
+        cohortSha256: comparison::load::cohortSha256(&run, &selections).unwrap(),
+        environmentSha256: "b".repeat(64),
+        originalConfigurationSha256: "c".repeat(64),
+        candidateConfigurationSha256: "d".repeat(64),
+        metrics: selections
+            .iter()
+            .enumerate()
+            .map(|(index, selection)| comparison::MetricRule {
+                id: selection.metricId.clone(),
+                unit: if index < 2 {
+                    comparison::Unit::MegabitsPerSecond
+                } else if index == 2 {
+                    comparison::Unit::Milliseconds
+                } else {
+                    comparison::Unit::Percent
+                },
+                direction: if index < 2 {
+                    comparison::Direction::HigherIsBetter
+                } else {
+                    comparison::Direction::LowerIsBetter
+                },
+                role: if index == 2 {
+                    comparison::Role::Objective
+                } else {
+                    comparison::Role::Guard
+                },
+                resolution: if index == 3 { 100.0 / 12.0 } else { 1.0 },
+                minimumImprovement: threshold(10.0),
+                maximumRegression: threshold(1.0),
+                maximumBaselineDrift: threshold(5.0),
+            })
+            .collect(),
+    };
+    let context = || comparison::baseline::Context {
+        environmentSha256: &comparison.environmentSha256,
+        configurationSha256: &comparison.originalConfigurationSha256,
+    };
+    let measured = comparison::load::fromRun(&run, &selections, &comparison, context()).unwrap();
+    assert_eq!(
+        measured.values[0],
+        run.transfers[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .applicationGoodputMbps
+            .unwrap()
+    );
+    assert_eq!(
+        measured.values[1],
+        run.transfers[1]
+            .result
+            .as_ref()
+            .unwrap()
+            .applicationGoodputMbps
+            .unwrap()
+    );
+    assert_eq!(measured.values[3], 0.0);
+    selections[2].statistic = Statistic::P95Ms {
+        phase: Phase::Download,
+        endpointId: "echo-0".into(),
+    };
+    comparison.cohortSha256 = comparison::load::cohortSha256(&run, &selections).unwrap();
+    let error = comparison::load::fromRun(
+        &run,
+        &selections,
+        &comparison,
+        comparison::baseline::Context {
+            environmentSha256: &comparison.environmentSha256,
+            configurationSha256: &comparison.originalConfigurationSha256,
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("twelve qualifying"));
+}

@@ -16,7 +16,7 @@ Provider identities are fixed by the plan and bound to the trusted collector; th
 
 The experiment SQLite wrapper remains schema one. New experiment documents use payload schema two and save the number of reserved blocks alongside the immutable plan. Loading verifies that reservations agree with completed blocks, current phase, and all limits. Writes cannot reduce an existing reservation or change its schema or plan. Usage reports derive aggregate and per-provider totals from those fixed costs and reservations.
 
-Legacy payload-schema-one documents without traffic declarations remain readable. Interrupted legacy intent can be acknowledged only after trusted original-state verification; it cannot start new unbudgeted measurements or replay a candidate. Completed legacy records retain their original meaning without invented traffic totals. Older application builds refuse the newer payload rather than silently removing its limits. Application database six, recovery journal three, authorization one, and status pipe two are unchanged.
+Legacy payload-schema-one documents without traffic declarations remain readable. Interrupted legacy intent can be acknowledged only after trusted original-state verification; it cannot start new unbudgeted measurements or replay a candidate. Completed legacy records retain their original meaning without invented traffic totals. Older application builds refuse the newer payload rather than silently removing its limits. These payload/traffic changes are independent of the current application database six, recovery journal four, authorization database two, and status pipe four.
 
 ## Scope and remaining work
 

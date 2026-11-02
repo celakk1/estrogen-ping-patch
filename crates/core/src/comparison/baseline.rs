@@ -82,7 +82,7 @@ pub fn cohortSha256(run: &BenchmarkRun, selections: &[Selection]) -> AppResult<S
     }
 }
 
-fn timestamp(value: &str) -> AppResult<u64> {
+pub(super) fn timestamp(value: &str) -> AppResult<u64> {
     if value.len() > 64 {
         return Err("Baseline timestamp exceeds its supported size".into());
     }
@@ -91,7 +91,12 @@ fn timestamp(value: &str) -> AppResult<u64> {
         .try_into()?)
 }
 
-fn validateSample(sample: &Sample, endpoint: &Endpoint, start: u64, finish: u64) -> AppResult<u64> {
+pub(super) fn validateSample(
+    sample: &Sample,
+    endpoint: &Endpoint,
+    start: u64,
+    finish: u64,
+) -> AppResult<u64> {
     let time = timestamp(&sample.timestamp)?;
     if sample.address != endpoint.address || !(start..=finish).contains(&time) {
         return Err("Baseline sample target or timestamp does not match its session".into());
