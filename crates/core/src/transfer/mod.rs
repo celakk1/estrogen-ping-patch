@@ -6,12 +6,44 @@ use crate::AppResult;
 pub use provider::{Provider, ProviderInfo};
 use serde::{Deserialize, Serialize};
 use std::{
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64},
     },
     time::Duration,
 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceBinding {
+    pub source: IpAddr,
+    pub peer: SocketAddr,
+}
+
+impl SourceBinding {
+    pub fn validate(&self, provider: &Provider) -> AppResult<()> {
+        for address in [self.source, self.peer.ip()] {
+            crate::icmp::EchoTarget {
+                address,
+                scopeId: 0,
+            }
+            .validate()?;
+        }
+        let origin = reqwest::Url::parse(&provider.info()?.origin)?;
+        let literal = origin
+            .host_str()
+            .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok());
+        if self.source.is_ipv4() != self.peer.is_ipv4()
+            || Some(self.peer.port()) != origin.port_or_known_default()
+            || literal.is_some_and(|ip| ip != self.peer.ip())
+            || matches!(self.peer, SocketAddr::V6(peer) if peer.scope_id() != 0 || peer.flowinfo() != 0)
+        {
+            return Err("Transfer source and peer must use the same address family and the provider's exact port and literal address, without IPv6 scope or flow overrides".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +115,8 @@ pub struct TransferResult {
     pub acceptedPayloadBytes: u64,
     pub applicationGoodputMbps: Option<f64>,
     pub streams: Vec<StreamResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sourceBinding: Option<SourceBinding>,
 }
 
 #[derive(Clone, Default)]
@@ -97,12 +131,31 @@ pub fn measure(
     cancelled: &AtomicBool,
     progress: &TransferProgress,
 ) -> AppResult<TransferResult> {
+    measureBound(plan, None, cancelled, progress)
+}
+
+pub fn measureFrom(
+    plan: TransferPlan,
+    binding: SourceBinding,
+    cancelled: &AtomicBool,
+    progress: &TransferProgress,
+) -> AppResult<TransferResult> {
+    binding.validate(&plan.provider)?;
+    measureBound(plan, Some(binding), cancelled, progress)
+}
+
+fn measureBound(
+    plan: TransferPlan,
+    binding: Option<SourceBinding>,
+    cancelled: &AtomicBool,
+    progress: &TransferProgress,
+) -> AppResult<TransferResult> {
     plan.validate()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(4)
         .enable_all()
         .build()?;
-    let result = runtime.block_on(http::measure(plan, cancelled, progress));
+    let result = runtime.block_on(http::measure(plan, binding, cancelled, progress));
     runtime.shutdown_timeout(Duration::from_millis(100));
     result
 }

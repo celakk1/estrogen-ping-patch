@@ -27,6 +27,12 @@ Clients use HTTP/1.1 without application proxies, redirects, automatic retries, 
 
 The desktop, dedicated service, and MCP retain their existing trust boundaries. Transfers run unelevated. They never change network settings or install a server.
 
+## Source-bound transfer primitive
+
+The internal `transfer::measureFrom` API accepts a fixed local unicast source and one numeric peer for an existing validated provider. It requires matching address families, the provider's exact port, and an exact address match for literal-IP origins. Scoped/link-local IPv6 bindings are unsupported. The HTTP client binds the source and pins hostname resolution to that peer while preserving the original hostname, TLS validation, proxy refusal, and no-redirect/no-retry policy. A response from a different or unavailable recorded peer cannot produce accepted goodput. Raw transfer results preserve the requested source/peer binding; ordinary manual transfers omit this optional field and retain their existing behavior.
+
+This is a building block for matched loaded measurements. A production collector must derive these addresses from trusted route/resolution evidence, enforce adapter/cohort/provider budgets, and verify the environment around collection. Binding alone does not establish physical-adapter traversal, unchanged routing, link saturation, or optimization benefit. The current desktop load-session workflow does not yet use this API automatically.
+
 ## Remaining scope
 
 Independent public provider discovery, NDT7, permitted iperf3 integration, provider eligibility policies for automatic sessions, bidirectional load, sustained/ramp-up methodology, retransmission/CPU/adapter utilization, metered/managed-network detection, drift checks, repeated-session comparisons, confidence intervals, and automatic optimization remain unfinished. M-Lab's [NDT documentation](https://www.measurementlab.net/tests/ndt/) describes published measurement data and IP collection; any future adapter requires a clear opt-in privacy decision. No M-Lab or Ookla traffic is enabled.

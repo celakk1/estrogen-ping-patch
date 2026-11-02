@@ -7,6 +7,9 @@ use std::{
     time::Instant,
 };
 
+#[path = "source_bound_tests.rs"]
+mod source_bound_tests;
+
 #[derive(Clone, Copy)]
 enum Behavior {
     Normal,

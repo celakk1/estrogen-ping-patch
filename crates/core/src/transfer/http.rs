@@ -1,6 +1,6 @@
 use super::{
-    Direction, Provider, StreamResult, TransferPlan, TransferProgress, TransferResult,
-    TransferStatus, deadline,
+    Direction, Provider, SourceBinding, StreamResult, TransferPlan, TransferProgress,
+    TransferResult, TransferStatus, deadline,
 };
 use crate::AppResult;
 use bytes::Bytes;
@@ -17,6 +17,12 @@ use std::{
 
 const CHUNK_SIZE: usize = 32 * 1024;
 const ACK_LIMIT: usize = 4096;
+
+struct RequestContext<'a> {
+    client: &'a Client,
+    plan: &'a TransferPlan,
+    binding: Option<&'a SourceBinding>,
+}
 
 struct ActiveRequest<'a>(&'a AtomicU64);
 impl Drop for ActiveRequest<'_> {
@@ -45,11 +51,20 @@ fn protocolFailure(message: &str) -> Failure {
 
 fn validateHeaders(
     response: &Response,
-    plan: &TransferPlan,
+    context: &RequestContext<'_>,
     result: &mut StreamResult,
 ) -> Result<(), Failure> {
+    let plan = context.plan;
     result.httpStatus = Some(response.status().as_u16());
     result.remoteAddress = response.remote_addr().map(|address| address.to_string());
+    if context
+        .binding
+        .is_some_and(|binding| response.remote_addr() != Some(binding.peer))
+    {
+        return Err(protocolFailure(
+            "Transfer peer differs from the pinned benchmark destination",
+        ));
+    }
     result.retryAfter = response
         .headers()
         .get(header::RETRY_AFTER)
@@ -84,14 +99,15 @@ fn validateHeaders(
 }
 
 async fn exchange(
-    client: &Client,
-    plan: &TransferPlan,
+    context: &RequestContext<'_>,
     result: &mut StreamResult,
     download: &AtomicU64,
     upload: &Arc<AtomicU64>,
     progress: &TransferProgress,
     payload: Bytes,
 ) -> Result<(), Failure> {
+    let client = context.client;
+    let plan = context.plan;
     let url = plan
         .provider
         .requestUrl(plan.direction, result.requestedBytes)
@@ -128,7 +144,7 @@ async fn exchange(
                 .await?
         }
     };
-    validateHeaders(&response, plan, result)?;
+    validateHeaders(&response, context, result)?;
     match plan.direction {
         Direction::Download => {
             if response.status().as_u16() != 200
@@ -198,14 +214,14 @@ async fn waitForCancellation(cancelled: &AtomicBool) {
 }
 
 async fn measureStream(
-    client: &Client,
-    plan: &TransferPlan,
+    context: &RequestContext<'_>,
     ordinal: u8,
     started: Instant,
     cancelled: &AtomicBool,
     progress: &TransferProgress,
     payload: Bytes,
 ) -> StreamResult {
+    let plan = context.plan;
     let base = plan.bytes / u64::from(plan.streams);
     let requestedBytes =
         base + u64::from(u64::from(ordinal) < plan.bytes % u64::from(plan.streams));
@@ -234,7 +250,7 @@ async fn measureStream(
         biased;
         _ = waitForCancellation(cancelled) => Some(Failure(TransferStatus::Cancelled, "Transfer cancelled".into())),
         _ = tokio::time::sleep_until(tokio::time::Instant::from_std(started + deadline(plan))) => Some(Failure(TransferStatus::TimedOut, "Transfer deadline expired".into())),
-        response = exchange(client, plan, &mut result, &download, &upload, progress, payload) => response.err(),
+        response = exchange(context, &mut result, &download, &upload, progress, payload) => response.err(),
     };
     result.elapsedMs = streamStart.elapsed().as_secs_f64() * 1000.0;
     result.downloadBytesRead = download.load(Ordering::SeqCst);
@@ -251,6 +267,7 @@ async fn measureStream(
 
 pub(super) async fn measure(
     plan: TransferPlan,
+    binding: Option<SourceBinding>,
     cancelled: &AtomicBool,
     progress: &TransferProgress,
 ) -> AppResult<TransferResult> {
@@ -281,18 +298,31 @@ pub(super) async fn measure(
             ]
             .into_iter()
             .collect(),
+        );
+    let client = if let Some(binding) = binding {
+        let origin = reqwest::Url::parse(&provider.origin)?;
+        client.local_address(binding.source).resolve(
+            origin.host_str().ok_or("Missing provider hostname")?,
+            binding.peer,
         )
-        .build()?;
+    } else {
+        client
+    }
+    .build()?;
     let mut random = vec![0; CHUNK_SIZE];
     getrandom::fill(&mut random)
         .map_err(|error| format!("Transfer payload generation failed: {error}"))?;
     let payload = Bytes::from(random);
     let startedAt = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
+    let context = RequestContext {
+        client: &client,
+        plan: &plan,
+        binding: binding.as_ref(),
+    };
     let streams = join_all((0..plan.streams).map(|ordinal| {
         measureStream(
-            &client,
-            &plan,
+            &context,
             ordinal,
             started,
             cancelled,
@@ -329,5 +359,6 @@ pub(super) async fn measure(
         acceptedPayloadBytes,
         applicationGoodputMbps,
         streams,
+        sourceBinding: binding,
     })
 }
