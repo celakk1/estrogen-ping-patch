@@ -1,6 +1,6 @@
 mod context;
 mod origins;
-#[cfg(feature = "native-mtu-lab")]
+#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
 mod write;
 use super::{CaptureEntry, InterfaceSettings, Snapshot};
 use crate::{ServiceResult, journal::AddressFamily};
@@ -20,7 +20,7 @@ use windows_sys::{
     },
     core::GUID,
 };
-#[cfg(feature = "native-mtu-lab")]
+#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
 pub(super) use write::{ensureLabCommandStopped, waitForLabMutator, writeScopedMtu};
 
 fn checkCancellation(cancelled: &AtomicBool) -> ServiceResult<()> {

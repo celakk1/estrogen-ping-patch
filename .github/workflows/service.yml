@@ -9,6 +9,7 @@ on:
       - 'scripts/service-manager.test.mjs'
       - 'scripts/service-smoke.ps1'
       - 'scripts/service-preview-smoke.ps1'
+      - 'scripts/service-recovery-smoke.ps1'
       - 'scripts/native-mtu-lab-device.cs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -20,6 +21,7 @@ on:
       - 'scripts/service-manager.test.mjs'
       - 'scripts/service-smoke.ps1'
       - 'scripts/service-preview-smoke.ps1'
+      - 'scripts/service-recovery-smoke.ps1'
       - 'scripts/native-mtu-lab-device.cs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -62,3 +64,19 @@ jobs:
       - name: Installed previews on an owned adapter
         shell: powershell
         run: ./scripts/service-preview-smoke.ps1 -allowNetworkChanges
+
+  recovery:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated recovery-only service
+        run: cargo build --release --locked -p epp-service --features native-recovery --target-dir target/native-recovery
+      - name: Recovery-only tests and lint
+        run: |
+          cargo test --locked -p epp-service --features native-recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --locked -p epp-service --all-targets --features native-recovery -- -D warnings
+      - name: Installed exact-original recovery on an owned adapter
+        shell: powershell
+        run: ./scripts/service-recovery-smoke.ps1 -allowNetworkChanges

@@ -28,6 +28,52 @@ pub(crate) fn nowUnixMs() -> ServiceResult<u64> {
         .try_into()?)
 }
 
+pub(crate) struct ServerState {
+    checkpointStore: CheckpointStoreStatus,
+    preview: Option<crate::preview::Control>,
+    #[cfg(feature = "native-recovery")]
+    recovery: Option<crate::windows::recovery_worker::Control>,
+}
+
+impl ServerState {
+    pub(crate) fn readOnly(
+        checkpointStore: CheckpointStoreStatus,
+        preview: Option<crate::preview::Control>,
+    ) -> Self {
+        Self {
+            checkpointStore,
+            preview,
+            #[cfg(feature = "native-recovery")]
+            recovery: None,
+        }
+    }
+
+    #[cfg(feature = "native-recovery")]
+    pub(crate) fn recovery(
+        checkpointStore: CheckpointStoreStatus,
+        recovery: crate::windows::recovery_worker::Control,
+    ) -> Self {
+        Self {
+            checkpointStore,
+            preview: None,
+            recovery: Some(recovery),
+        }
+    }
+
+    fn status(&self, request: &Request) -> ServiceResult<ServiceStatus> {
+        #[cfg(feature = "native-recovery")]
+        if let Some(recovery) = &self.recovery {
+            let (checkpointStore, recovery) = recovery.snapshot()?;
+            let mut response = protocol::response(request, &checkpointStore);
+            response.mode = "recoveryOnly".into();
+            response.rollbackAvailable = true;
+            response.recovery = Some(recovery);
+            return Ok(response);
+        }
+        Ok(protocol::response(request, &self.checkpointStore))
+    }
+}
+
 async fn readFrame(reader: &mut (impl AsyncRead + Unpin)) -> ServiceResult<Vec<u8>> {
     let length = reader.read_u32().await? as usize;
     if length == 0 || length > protocol::MAX_FRAME_BYTES {
@@ -73,19 +119,19 @@ pub(crate) fn createServer(
 async fn serveClient(
     pipe: &mut NamedPipeServer,
     ownerSid: &str,
-    checkpointStore: &CheckpointStoreStatus,
-    preview: Option<&crate::preview::Control>,
+    state: &ServerState,
 ) -> ServiceResult<()> {
     let frame = readFrame(pipe).await?;
     let actorSid = security::authenticateClient(pipe.as_raw_handle(), ownerSid)?;
     let request = protocol::decodeRequest(&frame, nowUnixMs()?)?;
     let result = match &request.operation {
-        protocol::Operation::GetStatus => {
-            protocol::ReplyBody::Status(protocol::response(&request, checkpointStore))
-        }
+        protocol::Operation::GetStatus => protocol::ReplyBody::Status(state.status(&request)?),
         operation => {
             let result = (|| {
-                let preview = preview.ok_or("MTU preview worker is unavailable")?;
+                let preview = state
+                    .preview
+                    .as_ref()
+                    .ok_or("MTU preview worker is unavailable in this service mode")?;
                 match operation {
                     protocol::Operation::StartMtuPreview(proposal) => {
                         preview.start(proposal.clone(), &actorSid)
@@ -126,8 +172,7 @@ pub(crate) async fn serve(
     ownerSid: String,
     serverSid: String,
     mut stop: watch::Receiver<bool>,
-    checkpointStore: CheckpointStoreStatus,
-    preview: Option<crate::preview::Control>,
+    state: ServerState,
 ) -> ServiceResult<()> {
     loop {
         if *stop.borrow() {
@@ -141,7 +186,7 @@ pub(crate) async fn serve(
         let next = createServer(&pipeName, &ownerSid, &serverSid, false)?;
         let mut connected = std::mem::replace(&mut pipe, next);
         tokio::select! {
-            _ = tokio::time::timeout(Duration::from_millis(protocol::MAX_REQUEST_LIFETIME_MS), serveClient(&mut connected, &ownerSid, &checkpointStore, preview.as_ref())) => {},
+            _ = tokio::time::timeout(Duration::from_millis(protocol::MAX_REQUEST_LIFETIME_MS), serveClient(&mut connected, &ownerSid, &state)) => {},
             _ = stop.changed() => return Ok(()),
         }
     }
@@ -246,9 +291,6 @@ pub(crate) async fn query(
     if response.schemaVersion != protocol::SCHEMA_VERSION
         || response.requestId != reply.requestId
         || response.servicePid != expectedPid
-        || response.mode != "readOnly"
-        || response.modificationsPermitted
-        || response.rollbackAvailable
         || response.checkpointStore.schemaVersion != crate::journal::SCHEMA_VERSION
         || response.checkpointStore.verifiedAtUnixMs == 0
         || response.checkpointStore.verifiedAtUnixMs > i64::MAX as u64
@@ -256,6 +298,7 @@ pub(crate) async fn query(
     {
         return Err("Service response failed protocol or safety validation".into());
     }
+    response.validateSafety()?;
     Ok(response)
 }
 
@@ -336,8 +379,7 @@ mod tests {
                 owner.clone(),
                 owner,
                 receiver,
-                checkpointStore(),
-                None,
+                ServerState::readOnly(checkpointStore(), None),
             );
             let client = async {
                 let probe = openClient(&name).unwrap();
@@ -367,8 +409,7 @@ mod tests {
                 owner.clone(),
                 owner.clone(),
                 receiver,
-                checkpointStore(),
-                None,
+                ServerState::readOnly(checkpointStore(), None),
             );
             let client = async {
                 let mut client = openClient(&name).unwrap();
@@ -403,8 +444,7 @@ mod tests {
                 "S-1-5-19".into(),
                 owner,
                 receiver,
-                checkpointStore(),
-                None,
+                ServerState::readOnly(checkpointStore(), None),
             );
             let client = async {
                 let probe = openClient(&name).unwrap();
@@ -453,8 +493,7 @@ mod tests {
                 owner.clone(),
                 owner,
                 receiver,
-                checkpointStore(),
-                None,
+                ServerState::readOnly(checkpointStore(), None),
             );
             let client = async {
                 let mut client = openClient(&name).unwrap();
@@ -488,8 +527,7 @@ mod tests {
                 owner.clone(),
                 owner,
                 receiver,
-                checkpointStore(),
-                None,
+                ServerState::readOnly(checkpointStore(), None),
             );
             let client = async {
                 let mut client = openClient(&name).unwrap();

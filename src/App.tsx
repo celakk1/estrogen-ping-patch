@@ -178,6 +178,28 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (serviceReport?.state !== 'recovering' || managingService) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () => {
+      invoke<ServiceReport>('getPrivilegedService')
+        .then((report) => {
+          if (!active) return;
+          setServiceReport(report);
+          if (report.state === 'recovering') timer = setTimeout(poll, 1000);
+        })
+        .catch((error) => {
+          if (active) setError(String(error));
+        });
+    };
+    timer = setTimeout(poll, 1000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [serviceReport?.state, managingService]);
+
   async function startBaseline() {
     if (!config || running || loadRunning || packetRunning || capturingBackup || managingService)
       return;
@@ -651,7 +673,7 @@ export default function App() {
                 </div>
                 <div className="form-body">
                   <dl>
-                    <dt>System changes</dt>
+                    <dt>Automatic optimization</dt>
                     <dd>Disabled in this build</dd>
                     <dt>Optional background service</dt>
                     <dd>
@@ -661,6 +683,7 @@ export default function App() {
                               ready: 'Running',
                               notInstalled: 'Not installed',
                               stopped: 'Stopped',
+                              recovering: 'Restoring saved settings',
                               recoveryRequired: 'Recovery needs attention',
                               unavailable: 'Could not check status',
                               unsupported: 'Not supported on this system',
@@ -675,10 +698,15 @@ export default function App() {
                           {new Date(
                             serviceReport.response.checkpointStore.verifiedAtUnixMs,
                           ).toLocaleString()}
-                          {' at service startup'}
                         </dd>
                         <dt>Recovery records needing attention</dt>
                         <dd>{serviceReport.response.checkpointStore.pendingRecoveryCount}</dd>
+                        <dt>Saved-setting recovery</dt>
+                        <dd>
+                          {serviceReport.response.rollbackAvailable
+                            ? 'Can restore pending service-owned originals'
+                            : 'Not enabled in the installed service'}
+                        </dd>
                       </>
                     )}
                     <dt>AI mode</dt>
@@ -731,7 +759,11 @@ export default function App() {
                         serviceReport.state,
                       ) && (
                         <button
-                          disabled={managingService || networkTaskRunning}
+                          disabled={
+                            managingService ||
+                            networkTaskRunning ||
+                            serviceReport.state === 'recovering'
+                          }
                           onClick={() => void changeService('uninstall')}
                         >
                           Uninstall service
@@ -740,8 +772,11 @@ export default function App() {
                   </div>
                   <p>
                     Installing, removing, starting, or stopping the service asks for Windows
-                    administrator approval. It cannot change network settings in this version. You
-                    can run tests and save settings copies without it.
+                    administrator approval.{' '}
+                    {serviceReport?.response?.rollbackAvailable
+                      ? 'This recovery-only service can restore saved originals; new optimization changes remain disabled.'
+                      : 'The ordinary service cannot change network settings in this version.'}{' '}
+                    You can run tests and save settings copies without it.
                   </p>
                   {managingService && (
                     <p role="status">

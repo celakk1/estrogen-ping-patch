@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidateSet('install', 'uninstall', 'start', 'stop', 'status')][string]$action,
-    [string]$ownerSid
+    [string]$ownerSid,
+    [switch]$recoveryOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,9 +51,15 @@ function getRegisteredService {
     if ($service) {
         $configuration = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
         $expectedPrefix = '"' + $installedExe + '" --service --owner-sid '
-        if (-not $configuration.PathName.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -or $configuration.StartName -ine 'NT AUTHORITY\LocalService') {
+        $recoveryPrefix = '"' + $installedExe + '" --recovery-service --owner-sid '
+        $normal = $configuration.PathName.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase) -and $configuration.StartName -ieq 'NT AUTHORITY\LocalService'
+        $recovery = $configuration.PathName.StartsWith($recoveryPrefix, [StringComparison]::OrdinalIgnoreCase) -and $configuration.StartName -in @('LocalSystem', 'NT AUTHORITY\SYSTEM')
+        if (-not $normal -and -not $recovery) {
             throw 'An existing service with this name has an unexpected configuration. Inspect Windows Services; it will not be overwritten.'
         }
+        $prefix = if ($recovery) { $recoveryPrefix } else { $expectedPrefix }
+        $registeredOwner = $configuration.PathName.Substring($prefix.Length)
+        if (([Security.Principal.SecurityIdentifier]::new($registeredOwner)).Value -cne $registeredOwner) { throw 'The registered service owner is not a canonical Windows SID.' }
     }
     if ($service) { return [ServiceProcess.ServiceController]::new($serviceName) }
     return $null
@@ -71,6 +78,12 @@ try {
         $latestBuild = Get-Item -LiteralPath $buildPaths -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
         if ($latestBuild) { $sourceExe = $latestBuild.FullName }
     }
+    if ($recoveryOnly -and $action -eq 'install') {
+        $sourceExe = Join-Path $PSScriptRoot '..\target\native-recovery\release\epp-network-service.exe'
+        if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) { throw 'Build the isolated native-recovery feature before selecting recovery-only installation. Normal service binaries do not enable restoration.' }
+        $capabilities = & $sourceExe --capabilities | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $capabilities.nativeRecoveryAvailable -ne $true) { throw 'This service executable does not support the recovery-only mode.' }
+    }
     if ($action -eq 'status') {
         if (-not (Test-Path -LiteralPath $sourceExe)) { throw 'Build the service with build.bat, or run this helper from the installed application.' }
         & $sourceExe --status
@@ -83,6 +96,7 @@ try {
     $isAdministrator = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdministrator) {
         $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' + (quoteArgument $PSCommandPath) + ' -action ' + $action + ' -ownerSid ' + $ownerSid
+        if ($recoveryOnly) { $arguments += ' -recoveryOnly' }
         $systemPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
         $child = Start-Process -FilePath $systemPowerShell -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru
         exit $child.ExitCode
@@ -116,16 +130,22 @@ try {
                 try { $inputStream.CopyTo($outputStream); $outputStream.Flush($true) } finally { $outputStream.Dispose() }
             } finally { $inputStream.Dispose() }
             if ((Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash -ne $sourceHash) { throw 'Copied service executable checksum mismatch.' }
-            $binaryPath = '"' + $installedExe + '" --service --owner-sid ' + $ownerSid
-            $credential = [Management.Automation.PSCredential]::new('NT AUTHORITY\LocalService', [Security.SecureString]::new())
-            New-Service -Name $serviceName -DisplayName 'estrogen ping patch service' -Description 'Authenticated local read-only service. Network changes and automatic restoration are disabled.' -BinaryPathName $binaryPath -StartupType Automatic -Credential $credential | Out-Null
+            if ($recoveryOnly) {
+                $binaryPath = '"' + $installedExe + '" --recovery-service --owner-sid ' + $ownerSid
+                New-Service -Name $serviceName -DisplayName 'estrogen ping patch service' -Description 'Restores only exact pending service-owned MTU originals. Candidate application and retention are disabled.' -BinaryPathName $binaryPath -StartupType Automatic | Out-Null
+            } else {
+                $binaryPath = '"' + $installedExe + '" --service --owner-sid ' + $ownerSid
+                $credential = [Management.Automation.PSCredential]::new('NT AUTHORITY\LocalService', [Security.SecureString]::new())
+                New-Service -Name $serviceName -DisplayName 'estrogen ping patch service' -Description 'Authenticated local read-only service. Network changes and automatic restoration are disabled.' -BinaryPathName $binaryPath -StartupType Automatic -Credential $credential | Out-Null
+            }
             $registeredService = $true
             initializeRecoveryDirectory
             # windows powershell disposes the controller emitted by new-service.
             $service = [ServiceProcess.ServiceController]::new($serviceName)
             $service.Start()
             $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(20))
-            Write-Host "Service installed as LocalService for Windows user $ownerSid. Network changes remain disabled."
+            if ($recoveryOnly) { Write-Host "Recovery-only service installed as LocalSystem for Windows user $ownerSid. Only saved pending originals can be restored; candidate changes remain disabled." }
+            else { Write-Host "Service installed as LocalService for Windows user $ownerSid. Network changes remain disabled." }
         }
         'start' {
             if (-not $service) { throw 'The service is not installed. Run install-service.bat first.' }

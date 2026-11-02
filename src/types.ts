@@ -177,6 +177,11 @@ export interface ServiceReport {
     mode: string;
     modificationsPermitted: boolean;
     rollbackAvailable: boolean;
+    recovery: {
+      phase: 'running' | 'completed' | 'recoveryRequired';
+      verifiedCount: number;
+      detail: string | null;
+    } | null;
     checkpointStore: {
       schemaVersion: number;
       verifiedAtUnixMs: number;

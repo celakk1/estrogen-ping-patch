@@ -111,7 +111,7 @@ impl OwnedJournal {
         Ok(!self._journal.pendingRecovery()?.is_empty()
             || !self._journal.pendingPolicyVerification()?.is_empty())
     }
-    #[cfg(feature = "native-mtu-lab")]
+    #[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
     pub(crate) fn journal(&mut self) -> &mut Journal {
         &mut self._journal
     }

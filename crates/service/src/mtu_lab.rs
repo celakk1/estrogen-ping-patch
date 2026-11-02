@@ -469,9 +469,7 @@ impl MtuBackend for Backend<'_> {
         {
             let stop = self.stop.clone();
             let phase = self.config.phase;
-            let mut backend = self.nativeBackend(document)?;
-            let deadline = backend.commandDeadline(purpose)?;
-            backend.limitCommandDeadline(deadline);
+            let deadline = self.nativeBackend(document)?.commandDeadline(purpose)?;
             let mut record = |identity: crate::journal::MutatorIdentity| -> ServiceResult<()> {
                 register(identity.clone())?;
                 event(
@@ -484,7 +482,19 @@ impl MtuBackend for Backend<'_> {
                 }
                 Ok(())
             };
-            backend.writeMtu(document, expected, value, purpose, &mut record)?;
+            if purpose == WritePurpose::Restore {
+                crate::recovery::native::Dispatch::new(&self.permit).writeMtu(
+                    document,
+                    expected,
+                    value,
+                    purpose,
+                    &mut record,
+                )?;
+            } else {
+                let mut backend = self.nativeBackend(document)?;
+                backend.limitCommandDeadline(deadline);
+                backend.writeMtu(document, expected, value, purpose, &mut record)?;
+            }
         }
         self.writes += 1;
         if self.config.phase == Phase::Revoke && purpose == WritePurpose::Apply {

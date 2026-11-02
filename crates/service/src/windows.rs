@@ -18,20 +18,137 @@ use windows_service::{
 define_windows_service!(serviceEntry, serviceMain);
 
 pub fn run(ownerSid: String) -> ServiceResult<()> {
+    runMode(ownerSid, Mode::ReadOnly)
+}
+
+#[cfg(feature = "native-recovery")]
+pub(crate) mod recovery_worker;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mode {
+    ReadOnly,
+    RecoveryOnly,
+}
+
+struct Entry {
+    ownerSid: String,
+    mode: Mode,
+}
+
+#[cfg(feature = "native-recovery")]
+pub fn runRecovery(ownerSid: String) -> ServiceResult<()> {
+    runMode(ownerSid, Mode::RecoveryOnly)
+}
+
+fn runMode(ownerSid: String, mode: Mode) -> ServiceResult<()> {
     let ownerSid = security::canonicalSid(&ownerSid)?;
-    OWNER_SID
-        .set(ownerSid)
+    ENTRY
+        .set(Entry { ownerSid, mode })
         .map_err(|_| "Service entry was already initialized")?;
     service_dispatcher::start(SERVICE_NAME, serviceEntry)?;
     Ok(())
 }
 
-static OWNER_SID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static ENTRY: std::sync::OnceLock<Entry> = std::sync::OnceLock::new();
+
+fn isSystemAccount(account: Option<&std::ffi::OsStr>) -> bool {
+    account.is_some_and(|account| {
+        let text = account.to_string_lossy();
+        text.eq_ignore_ascii_case("LocalSystem")
+            || text.eq_ignore_ascii_case(r"NT AUTHORITY\SYSTEM")
+    })
+}
+
+fn registeredMode(config: &windows_service::service::ServiceConfig) -> ServiceResult<Mode> {
+    registrationMode(
+        config.service_type,
+        config.account_name.as_deref(),
+        &config.executable_path.to_string_lossy(),
+    )
+}
+
+fn registrationMode(
+    serviceType: ServiceType,
+    account: Option<&std::ffi::OsStr>,
+    command: &str,
+) -> ServiceResult<Mode> {
+    if serviceType != ServiceType::OWN_PROCESS {
+        return Err("Registered service has an unexpected process type".into());
+    }
+    let localService = account.is_some_and(|account| {
+        account
+            .to_string_lossy()
+            .eq_ignore_ascii_case(r"NT AUTHORITY\LocalService")
+    });
+    if localService && validServiceCommand(command, "--service") {
+        return Ok(Mode::ReadOnly);
+    }
+    if isSystemAccount(account) && validServiceCommand(command, "--recovery-service") {
+        return Ok(Mode::RecoveryOnly);
+    }
+    Err("Registered service has an unexpected account or recovery command".into())
+}
+
+fn validServiceCommand(command: &str, mode: &str) -> bool {
+    command
+        .rsplit_once(&format!(" {mode} --owner-sid "))
+        .is_some_and(|(binary, owner)| {
+            let Some(binary) = binary
+                .strip_prefix('"')
+                .and_then(|binary| binary.strip_suffix('"'))
+            else {
+                return false;
+            };
+            !binary.contains('"')
+                && std::path::Path::new(binary).is_absolute()
+                && security::canonicalSid(owner).is_ok()
+        })
+}
+
+enum ServiceWorker {
+    Preview(crate::preview::Worker),
+    #[cfg(feature = "native-recovery")]
+    Recovery(recovery_worker::Worker),
+}
+
+impl ServiceWorker {
+    fn state(
+        &self,
+        checkpointStore: crate::protocol::CheckpointStoreStatus,
+    ) -> transport::ServerState {
+        match self {
+            Self::Preview(worker) => {
+                transport::ServerState::readOnly(checkpointStore, Some(worker.control()))
+            }
+            #[cfg(feature = "native-recovery")]
+            Self::Recovery(worker) => {
+                transport::ServerState::recovery(checkpointStore, worker.control())
+            }
+        }
+    }
+
+    fn finish(&mut self, _handle: ServiceStatusHandle) -> ServiceResult<()> {
+        #[cfg(feature = "native-recovery")]
+        if let Self::Recovery(worker) = self {
+            worker.finish(_handle)?;
+        }
+        Ok(())
+    }
+}
 
 pub(crate) fn setState(
     handle: ServiceStatusHandle,
     state: ServiceState,
     failed: bool,
+) -> ServiceResult<()> {
+    setStateProgress(handle, state, failed, 1)
+}
+
+fn setStateProgress(
+    handle: ServiceStatusHandle,
+    state: ServiceState,
+    failed: bool,
+    checkpoint: u32,
 ) -> ServiceResult<()> {
     handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
@@ -50,7 +167,7 @@ pub(crate) fn setState(
             state,
             ServiceState::StartPending | ServiceState::StopPending
         ) {
-            1
+            checkpoint
         } else {
             0
         },
@@ -85,21 +202,33 @@ fn serviceLoop() -> ServiceResult<()> {
     })?;
     setState(handle, ServiceState::StartPending, false)?;
     let result = (|| {
-        if security::currentSid()? != SERVICE_ACCOUNT_SID {
+        let entry = ENTRY.get().ok_or("Missing service entry configuration")?;
+        if matches!(entry.mode, Mode::ReadOnly) && security::currentSid()? != SERVICE_ACCOUNT_SID {
             return Err("The service must run as NT AUTHORITY\\LocalService".into());
         }
-        let ownerSid = OWNER_SID
-            .get()
-            .ok_or("Missing authorized user SID")?
-            .clone();
+        let ownerSid = entry.ownerSid.clone();
         let serviceSid = security::serviceSid()?;
         let journal = storage::open(&serviceSid)?;
         let checkpointStore = journal.status.clone();
-        let previewWorker = crate::preview::Worker::start(&ownerSid, journal)?;
+        let mut worker = match entry.mode {
+            Mode::ReadOnly => {
+                ServiceWorker::Preview(crate::preview::Worker::start(&ownerSid, journal)?)
+            }
+            Mode::RecoveryOnly => {
+                #[cfg(feature = "native-recovery")]
+                {
+                    ServiceWorker::Recovery(recovery_worker::Worker::start(&ownerSid, journal)?)
+                }
+                #[cfg(not(feature = "native-recovery"))]
+                {
+                    return Err("This service build does not include native recovery".into());
+                }
+            }
+        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(async {
+        let result = runtime.block_on(async {
             let pipe = transport::createServer(PIPE_NAME, &ownerSid, &serviceSid, true)?;
             setState(handle, ServiceState::Running, false)?;
             let result = transport::serve(
@@ -108,13 +237,14 @@ fn serviceLoop() -> ServiceResult<()> {
                 ownerSid,
                 serviceSid,
                 receiver,
-                checkpointStore,
-                Some(previewWorker.control()),
+                worker.state(checkpointStore),
             )
             .await;
             setState(handle, ServiceState::StopPending, result.is_err())?;
             result
-        })
+        });
+        worker.finish(handle)?;
+        result
     })();
     setState(handle, ServiceState::Stopped, result.is_err())?;
     result
@@ -125,7 +255,7 @@ fn reportFailure(message: &str) {
         DeregisterEventSource, EVENTLOG_ERROR_TYPE, RegisterEventSourceW, ReportEventW,
     };
     let source: Vec<u16> = SERVICE_NAME.encode_utf16().chain(Some(0)).collect();
-    let text: Vec<u16> = format!("Dedicated service stopped: {message}")
+    let text: Vec<u16> = format!("Dedicated service: {message}")
         .encode_utf16()
         .chain(Some(0))
         .collect();
@@ -156,15 +286,7 @@ pub async fn inspect() -> ServiceResult<ServiceReport> {
         Err(error) => return Err(error.into()),
     };
     let config = service.query_config()?;
-    if config.service_type != ServiceType::OWN_PROCESS
-        || !config.account_name.as_ref().is_some_and(|account| {
-            account
-                .to_string_lossy()
-                .eq_ignore_ascii_case(r"NT AUTHORITY\LocalService")
-        })
-    {
-        return Err("Registered service has an unexpected account or process type".into());
-    }
+    let mode = registeredMode(&config)?;
     let status = service.query_status()?;
     if status.current_state != ServiceState::Running {
         return Ok(ServiceReport {state:format!("{:?}", status.current_state).to_lowercase(),detail:"Dedicated service is installed but is not running. Use service management to start it.".into(),response:None});
@@ -180,8 +302,24 @@ pub async fn inspect() -> ServiceResult<ServiceReport> {
     if confirmed.current_state != ServiceState::Running || confirmed.process_id != Some(pid) {
         return Err("Service identity changed during the request; retry status".into());
     }
+    if registeredMode(&service.query_config()?)? != mode
+        || response.mode
+            != match mode {
+                Mode::ReadOnly => "readOnly",
+                Mode::RecoveryOnly => "recoveryOnly",
+            }
+    {
+        return Err("Service mode or account changed during the request".into());
+    }
     let pending = response.checkpointStore.pendingRecoveryCount;
-    let (state, detail) = if pending > 0 {
+    let (state, detail) = if let Some(recovery) = &response.recovery {
+        use crate::protocol::RecoveryPhase;
+        match recovery.phase {
+            RecoveryPhase::Running => ("recovering", format!("The service is checking {pending} pending recovery record(s). Keep the service running while it restores saved originals and verifies them. Candidate changes remain disabled.")),
+            RecoveryPhase::Completed => ("ready", format!("Recovery-only service finished with no pending records; {} recovery result(s) verified. Candidate changes remain disabled.", recovery.verifiedCount)),
+            RecoveryPhase::RecoveryRequired => ("recoveryRequired", recovery.detail.clone().unwrap_or_else(|| format!("{pending} recovery record(s) still need attention. Preserve the journal and restart the service to retry."))),
+        }
+    } else if pending > 0 {
         (
             "recoveryRequired",
             format!(
@@ -252,5 +390,43 @@ pub fn previewBlocking(
         }
         crate::protocol::ReplyBody::Rejected { detail } => Err(detail.into()),
         _ => Err("Service returned an unexpected or unsafe MTU preview response".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn systemRecoveryRequiresItsExactModeAndCanonicalOwnerCommand() {
+        let system = Some(OsStr::new("LocalSystem"));
+        let localService = Some(OsStr::new(r"NT AUTHORITY\LocalService"));
+        let recovery = r#""C:\Program Files\estrogen ping patch service\epp-network-service.exe" --recovery-service --owner-sid S-1-5-21-1-2-3-1000"#;
+        let normal = recovery.replace("--recovery-service", "--service");
+        assert_eq!(
+            registrationMode(ServiceType::OWN_PROCESS, system, recovery).unwrap(),
+            Mode::RecoveryOnly
+        );
+        assert_eq!(
+            registrationMode(ServiceType::OWN_PROCESS, localService, &normal).unwrap(),
+            Mode::ReadOnly
+        );
+        assert!(registrationMode(ServiceType::OWN_PROCESS, system, &normal).is_err());
+        assert!(registrationMode(ServiceType::OWN_PROCESS, localService, recovery).is_err());
+        assert!(registrationMode(ServiceType::SHARE_PROCESS, system, recovery).is_err());
+        assert!(registrationMode(ServiceType::OWN_PROCESS, None, recovery).is_err());
+        for command in [
+            recovery.replace(" --owner-sid ", " "),
+            format!("{recovery} --extra"),
+            recovery.replace("S-1-5-21-1-2-3-1000", "not-a-sid"),
+            recovery.trim_start_matches('"').into(),
+            recovery.replace(r"C:\Program Files\estrogen ping patch service\", ""),
+        ] {
+            assert!(
+                registrationMode(ServiceType::OWN_PROCESS, system, &command).is_err(),
+                "{command}"
+            );
+        }
     }
 }

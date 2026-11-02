@@ -97,6 +97,7 @@ impl<'a> NativeBackend<'a> {
         })
     }
 
+    #[cfg(any(test, feature = "native-mtu-lab"))]
     pub(crate) fn limitCommandDeadline(&mut self, deadline: Instant) {
         self.commandLimit = Some(
             self.commandLimit

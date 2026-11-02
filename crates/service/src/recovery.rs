@@ -30,8 +30,14 @@ pub enum PolicyPurpose {
 
 pub type MutatorRegistrar<'a> = dyn FnMut(MutatorIdentity) -> ServiceResult<()> + 'a;
 
-#[cfg(any(test, all(windows, feature = "native-mtu-lab")))]
+#[cfg(any(
+    test,
+    all(windows, any(feature = "native-mtu-lab", feature = "native-recovery"))
+))]
 pub(crate) mod only;
+
+#[cfg(all(windows, any(feature = "native-mtu-lab", feature = "native-recovery")))]
+pub(crate) mod native;
 
 pub trait MtuBackend {
     fn checkAuthorization(&mut self, _: &MtuCheckpoint, _: u64) -> ServiceResult<()> {

@@ -1,5 +1,5 @@
 use crate::ServiceResult;
-#[cfg(feature = "native-mtu-lab")]
+#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
 use crate::journal::MutatorIdentity;
 use std::{
     ffi::c_void,
@@ -40,7 +40,7 @@ use windows_sys::Win32::{
         },
     },
 };
-#[cfg(feature = "native-mtu-lab")]
+#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
 use windows_sys::Win32::{
     Foundation::{ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND, FILETIME},
     System::Threading::{
@@ -54,7 +54,7 @@ static READER_QUIESCENCE_UNKNOWN: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, PartialEq)]
 enum ProcessRole {
     ReadOnly,
-    #[cfg(feature = "native-mtu-lab")]
+    #[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
     Setting,
 }
 
@@ -183,7 +183,7 @@ pub(crate) struct CommandJob {
 }
 
 impl CommandJob {
-    #[cfg(feature = "native-mtu-lab")]
+    #[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
     pub(crate) fn spawn(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
         Self::create(executable, arguments, false, ProcessRole::Setting)
     }
@@ -192,7 +192,7 @@ impl CommandJob {
         Self::create(executable, arguments, false, ProcessRole::ReadOnly)
     }
 
-    #[cfg(all(test, feature = "native-mtu-lab"))]
+    #[cfg(all(test, any(feature = "native-mtu-lab", feature = "native-recovery")))]
     pub(crate) fn spawnFixture(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
         Self::create(executable, arguments, true, ProcessRole::Setting)
     }
@@ -489,12 +489,12 @@ impl CommandJob {
     fn recordTerminationFailure(&self) {
         match self.role {
             ProcessRole::ReadOnly => READER_QUIESCENCE_UNKNOWN.store(true, Ordering::SeqCst),
-            #[cfg(feature = "native-mtu-lab")]
+            #[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
             ProcessRole::Setting => QUIESCENCE_UNKNOWN.store(true, Ordering::SeqCst),
         }
     }
 
-    #[cfg(feature = "native-mtu-lab")]
+    #[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
     pub(crate) fn finish(
         mut self,
         register: &mut crate::recovery::MutatorRegistrar<'_>,
@@ -535,7 +535,7 @@ impl CommandJob {
     }
 }
 
-#[cfg(feature = "native-mtu-lab")]
+#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
 pub(crate) fn processIdentity(
     handle: windows_sys::Win32::Foundation::HANDLE,
     processId: u32,
@@ -557,7 +557,7 @@ pub(crate) fn processIdentity(
     Ok(identity)
 }
 
-#[cfg(feature = "native-mtu-lab")]
+#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
 pub(crate) fn waitForIdentity(identity: &MutatorIdentity, timeout: Duration) -> ServiceResult<()> {
     identity.validate()?;
     let handle = unsafe {

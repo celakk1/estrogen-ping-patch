@@ -27,7 +27,7 @@ pub mod windows;
 
 pub type ServiceResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub const SERVICE_NAME: &str = "EstrogenPingPatch";
-pub const PIPE_NAME: &str = r"\\.\pipe\estrogen-ping-patch-service-v3";
+pub const PIPE_NAME: &str = r"\\.\pipe\estrogen-ping-patch-service-v4";
 pub const SERVICE_ACCOUNT_SID: &str = "S-1-5-19";
 
 #[derive(Debug, serde::Serialize)]

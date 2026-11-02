@@ -1,7 +1,7 @@
 use crate::ServiceResult;
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const MAX_FRAME_BYTES: usize = 4096;
 pub const MAX_REQUEST_LIFETIME_MS: u64 = 5000;
 
@@ -98,6 +98,50 @@ pub struct ServiceStatus {
     pub modificationsPermitted: bool,
     pub rollbackAvailable: bool,
     pub checkpointStore: CheckpointStoreStatus,
+    pub recovery: Option<RecoveryStatus>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryPhase {
+    Running,
+    Completed,
+    RecoveryRequired,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecoveryStatus {
+    pub phase: RecoveryPhase,
+    pub verifiedCount: u32,
+    pub detail: Option<String>,
+}
+
+impl ServiceStatus {
+    pub(crate) fn validateSafety(&self) -> ServiceResult<()> {
+        let safeMode = match (
+            self.mode.as_str(),
+            self.modificationsPermitted,
+            self.rollbackAvailable,
+            &self.recovery,
+        ) {
+            ("readOnly", false, false, None) => true,
+            ("recoveryOnly", false, true, Some(recovery)) => {
+                recovery.verifiedCount <= 2000
+                    && recovery
+                        .detail
+                        .as_ref()
+                        .is_none_or(|detail| detail.len() <= 1024)
+                    && (recovery.phase != RecoveryPhase::Completed
+                        || self.checkpointStore.pendingRecoveryCount == 0)
+            }
+            _ => false,
+        };
+        if !safeMode {
+            return Err("Service reported an unsupported mode or unsafe capabilities".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -166,6 +210,7 @@ pub fn response(request: &Request, checkpointStore: &CheckpointStoreStatus) -> S
         modificationsPermitted: false,
         rollbackAvailable: false,
         checkpointStore: checkpointStore.clone(),
+        recovery: None,
     }
 }
 
@@ -271,6 +316,8 @@ mod tests {
         assert!(request.validate(1500).is_err());
         request.schemaVersion = 2;
         assert!(request.validate(1500).is_err());
+        request.schemaVersion = 3;
+        assert!(request.validate(1500).is_err());
     }
 
     #[test]
@@ -295,5 +342,44 @@ mod tests {
         assert!(!status.modificationsPermitted);
         assert!(!status.rollbackAvailable);
         assert_eq!(status.checkpointStore.pendingRecoveryCount, 1);
+        status.validateSafety().unwrap();
+    }
+
+    #[test]
+    fn recoveryStatusCannotClaimApplyPermissionOrHideUnfinishedRecords() {
+        let request = Request {
+            schemaVersion: SCHEMA_VERSION,
+            requestId: "12345678".into(),
+            issuedAtUnixMs: 1000,
+            expiresAtUnixMs: 2000,
+            operation: Operation::GetStatus,
+        };
+        let mut status = response(
+            &request,
+            &CheckpointStoreStatus {
+                schemaVersion: crate::journal::SCHEMA_VERSION,
+                verifiedAtUnixMs: 1000,
+                pendingRecoveryCount: 2,
+            },
+        );
+        status.recovery = Some(RecoveryStatus {
+            phase: RecoveryPhase::Running,
+            verifiedCount: 0,
+            detail: None,
+        });
+        assert!(status.validateSafety().is_err());
+        status.mode = "recoveryOnly".into();
+        assert!(status.validateSafety().is_err());
+        status.rollbackAvailable = true;
+        status.validateSafety().unwrap();
+        status.modificationsPermitted = true;
+        assert!(status.validateSafety().is_err());
+        status.modificationsPermitted = false;
+        status.recovery.as_mut().unwrap().phase = RecoveryPhase::Completed;
+        assert!(status.validateSafety().is_err());
+        status.checkpointStore.pendingRecoveryCount = 0;
+        status.validateSafety().unwrap();
+        status.recovery.as_mut().unwrap().verifiedCount = 2001;
+        assert!(status.validateSafety().is_err());
     }
 }

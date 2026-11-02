@@ -7,6 +7,7 @@ license.workspace = true
 [features]
 automatic-trials = ["dep:epp-core"]
 native-mtu-lab = ["automatic-trials", "windows-sys/Win32_System_RemoteDesktop"]
+native-recovery = ["windows-sys/Win32_System_RemoteDesktop"]
 
 [dependencies]
 epp-core = { path = "../core", optional = true }

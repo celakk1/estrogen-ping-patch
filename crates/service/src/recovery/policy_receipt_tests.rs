@@ -66,6 +66,36 @@ fn serviceStatusKeepsRestoredButUnverifiedCheckpointsVisibleAfterRestart() {
 }
 
 #[test]
+fn recoveryOnlyScopeCanFinishPendingPolicyAfterPermissionLossWithoutAnotherWrite() {
+    let fixture = Fixture::new();
+    let (document, mut backend, mut journal) = applied(&fixture);
+    backend.unavailable = true;
+    let result = MtuCoordinator::new(&mut journal, &mut backend, || Ok(1000))
+        .restore(document.id)
+        .unwrap();
+    assert!(result.originalMtuVerified && result.journalFinalized);
+    assert_eq!(result.policyOriginalVerified, Some(false));
+    assert!(journal.pendingRecovery().unwrap().is_empty());
+    drop(journal);
+    let mut journal = fixture.open();
+    backend.unavailable = false;
+    backend.inner.allow = false;
+    backend.inner.clock.store(20_000, Ordering::SeqCst);
+    let writes = backend.inner.writes.clone();
+    let mut recovery =
+        crate::recovery::only::RecoveryOnly::capture(&journal, &mut backend).unwrap();
+    let results = MtuCoordinator::new(&mut journal, &mut recovery, || Ok(20_000))
+        .restoreAllPending()
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].policyOriginalVerified, Some(true));
+    assert_eq!(results[0].policyVerificationRecorded, Some(true));
+    drop(recovery);
+    assert_eq!(backend.inner.writes, writes);
+    assert!(journal.pendingPolicyVerification().unwrap().is_empty());
+}
+
+#[test]
 #[ignore = "requires explicit disposable service lab acknowledgement"]
 fn serviceLabPolicyCheckpoint() {
     assert_eq!(

@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use uuid::Uuid;
 
-#[cfg(all(windows, feature = "native-mtu-lab"))]
+#[cfg(all(windows, any(feature = "native-mtu-lab", feature = "native-recovery")))]
 pub(crate) mod native_backend;
 pub mod origins;
 pub mod policy;
 #[cfg(windows)]
 mod windows;
-#[cfg(all(windows, feature = "native-mtu-lab"))]
+#[cfg(all(windows, any(feature = "native-mtu-lab", feature = "native-recovery")))]
 pub(crate) mod write_scope;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -231,17 +231,17 @@ mod tests {
     }
 }
 
-#[cfg(all(windows, feature = "native-mtu-lab"))]
+#[cfg(all(windows, any(feature = "native-mtu-lab", feature = "native-recovery")))]
 pub(crate) fn ensureLabCommandStopped() -> ServiceResult<()> {
     windows::ensureLabCommandStopped()
 }
 
-#[cfg(all(windows, feature = "native-mtu-lab"))]
+#[cfg(all(windows, any(feature = "native-mtu-lab", feature = "native-recovery")))]
 pub(crate) fn waitForLabMutator(identity: &crate::journal::MutatorIdentity) -> ServiceResult<()> {
     windows::waitForLabMutator(identity)
 }
 
-#[cfg(all(windows, feature = "native-mtu-lab"))]
+#[cfg(all(windows, any(feature = "native-mtu-lab", feature = "native-recovery")))]
 pub(crate) fn writeLabMtu(
     permit: &dyn write_scope::TargetGuard,
     scope: &write_scope::WriteScope<'_>,

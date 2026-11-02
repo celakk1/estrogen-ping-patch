@@ -346,8 +346,7 @@ fn realPipeUsesTheWindowsCallerForPreviewApprovalAndRevocation() {
             ownerSid.clone(),
             ownerSid.clone(),
             receiver,
-            checkpointStore,
-            Some(worker.control()),
+            transport::ServerState::readOnly(checkpointStore, Some(worker.control())),
         );
         let client = async {
             let (first, session) =

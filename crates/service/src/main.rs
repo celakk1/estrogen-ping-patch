@@ -20,8 +20,16 @@ fn execute() -> epp_service::ServiceResult<()> {
         [mode, ownerFlag, ownerSid] if mode == "--service" && ownerFlag == "--owner-sid" => {
             epp_service::windows::run(ownerSid.clone())
         }
+        #[cfg(feature = "native-recovery")]
+        [mode, ownerFlag, ownerSid] if mode == "--recovery-service" && ownerFlag == "--owner-sid" => {
+            epp_service::windows::runRecovery(ownerSid.clone())
+        }
         [mode] if mode == "--identity" => {
             println!("{}", epp_service::windows::identity()?);
+            Ok(())
+        }
+        [mode] if mode == "--capabilities" => {
+            println!("{}", serde_json::json!({"nativeRecoveryAvailable": cfg!(feature = "native-recovery")}));
             Ok(())
         }
         [mode] if mode == "--status" => {

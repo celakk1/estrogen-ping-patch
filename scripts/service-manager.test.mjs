@@ -16,7 +16,7 @@ const shell = path.join(
 );
 
 test(
-  'installed preview lab refuses missing consent and non-hosted execution before setup',
+  'installed native labs refuse missing consent and non-hosted execution before setup',
   {
     skip: process.platform !== 'win32',
   },
@@ -27,33 +27,38 @@ test(
       { consent: true, actions: 'true', runner: 'self-hosted' },
       { consent: true, actions: '', runner: '' },
     ];
-    for (const fixture of cases) {
-      const result = spawnSync(
-        shell,
-        [
-          '-NoLogo',
-          '-NoProfile',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-File',
-          path.join(projectRoot, 'scripts/service-preview-smoke.ps1'),
-          ...(fixture.consent ? ['-allowNetworkChanges'] : []),
-        ],
-        {
-          env: {
-            ...process.env,
-            GITHUB_ACTIONS: fixture.actions,
-            RUNNER_ENVIRONMENT: fixture.runner,
+    for (const lab of ['service-preview-smoke.ps1', 'service-recovery-smoke.ps1']) {
+      for (const fixture of cases) {
+        const result = spawnSync(
+          shell,
+          [
+            '-NoLogo',
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            path.join(projectRoot, 'scripts', lab),
+            ...(fixture.consent ? ['-allowNetworkChanges'] : []),
+          ],
+          {
+            env: {
+              ...process.env,
+              GITHUB_ACTIONS: fixture.actions,
+              RUNNER_ENVIRONMENT: fixture.runner,
+            },
+            encoding: 'utf8',
+            windowsHide: true,
+            timeout: 10_000,
           },
-          encoding: 'utf8',
-          windowsHide: true,
-          timeout: 10_000,
-        },
-      );
-      assert.equal(result.error, undefined);
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /Development-machine execution is refused/);
-      assert.equal(result.stdout, '');
+        );
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1);
+        assert.match(
+          result.stderr.replace(/\s+/g, ' '),
+          /Development-machine execution is refused/,
+        );
+        assert.equal(result.stdout, '');
+      }
     }
   },
 );
