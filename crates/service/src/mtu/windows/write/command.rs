@@ -83,16 +83,37 @@ mod tests {
             ],
         )
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        child
-            .finish(&mut |_| Ok(()), &mut || Ok(()), || {
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(5);
+        let mut registeredAt = None;
+        let mut resumeReadyAt = None;
+        let mut checkCount = 0u32;
+        let mut lastCheckAt = Duration::ZERO;
+        let outcome = child.finish(
+            &mut |_| {
+                registeredAt = Some(started.elapsed());
+                Ok(())
+            },
+            &mut || {
+                resumeReadyAt = Some(started.elapsed());
+                Ok(())
+            },
+            || {
+                checkCount += 1;
+                lastCheckAt = started.elapsed();
                 if Instant::now() < deadline {
                     Ok(())
                 } else {
                     Err("test read-only command deadline".into())
                 }
-            })
-            .unwrap();
+            },
+        );
+        if let Err(error) = outcome {
+            panic!(
+                "read-only command failed: {error}; registeredAt={registeredAt:?}; resumeReadyAt={resumeReadyAt:?}; checks={checkCount}; lastCheckAt={lastCheckAt:?}; total={:?}",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]
