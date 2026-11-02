@@ -24,6 +24,7 @@ pub struct SessionConsent {
 }
 
 pub struct ApprovedSession {
+    approval: crate::authorization::Approval,
     template: MtuCheckpoint,
     planSha256: String,
     plan: Plan,
@@ -126,6 +127,16 @@ impl SessionConsent {
         )?;
         let scope = self.pending.take().ok_or("Session scope was consumed")?;
         Ok(ApprovedSession {
+            approval: crate::authorization::Approval {
+                actorSid: actorSid.into(),
+                approvedAtUnixMs: nowUnixMs,
+                scopeJson: serde_json::to_string(&(
+                    &scope.preview.mtu,
+                    &scope.preview.plan,
+                    scope.preview.maximumTrialDurationMs,
+                ))?,
+                scopeSha256: scope.preview.scopeSha256,
+            },
             template: approval.pending.document,
             planSha256: hash(&scope.preview.plan)?,
             plan: scope.preview.plan,
@@ -218,7 +229,7 @@ impl ApprovedSession {
                 document.leaseExpiresAtUnixMs - nowUnixMs,
             ))
             .ok_or("Trial monotonic deadline overflow")?;
-        match store.issue(document, actorSid, false, nowUnixMs) {
+        match store.issueSession(document, actorSid, &self.approval, nowUnixMs) {
             Ok(grant) => {
                 self.grants.push(grant.id);
                 if Instant::now() >= self.deadline || Instant::now() >= trialDeadline {

@@ -1,4 +1,6 @@
+mod sessions;
 mod store;
+pub(crate) use sessions::Approval;
 pub use store::AuthorizationStore;
 
 use crate::{
@@ -28,11 +30,16 @@ pub struct MtuGrant {
     pub createdAtUnixMs: u64,
     pub expiresAtUnixMs: u64,
     pub allowRetention: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessionApprovalId: Option<Uuid>,
 }
 
 impl MtuGrant {
     fn validate(&self) -> ServiceResult<()> {
-        if self.schemaVersion != 1
+        if !matches!(
+            (self.schemaVersion, self.sessionApprovalId),
+            (1, None) | (2, Some(_))
+        ) || self.sessionApprovalId.is_some_and(|id| id.is_nil())
             || self.id.is_nil()
             || self.issuerInstanceId.is_nil()
             || self.checkpointId.is_nil()

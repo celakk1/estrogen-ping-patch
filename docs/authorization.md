@@ -14,11 +14,19 @@ The actor SID is supplied by trusted service code. The native lab uses its SCM-o
 
 ## Storage and revocation
 
-`authorization.sqlite3` is separate from `recovery.sqlite3`. It has its own application identifier and schema version one, WAL mode, FULL synchronization, immutable hashed grant documents, and chained audit events. Documents and events are limited to 4 KiB, grants to 2,000, and events to 64 per grant. One event slot is reserved for revocation. Storage or claim failures block a new write; records are never silently overwritten or discarded.
+`authorization.sqlite3` is separate from `recovery.sqlite3`. It has its own application identifier and schema version two, WAL mode, FULL synchronization, immutable hashed grant documents, and chained audit events. Grant documents and events are limited to 4 KiB, grants to 2,000, and events to 64 per grant. Session approval records are limited to 64 KiB and 2,000 records; their trial links also remain bounded by the grant capacity. One event slot is reserved for revocation. Storage or claim failures block a new write; records are never silently overwritten or discarded.
 
 The lab opens the fixed file through its service-owned directory capability, verifies exact file permissions and owners, rejects reparse points and hard links, and retains directory handles. Its permissions match the protected recovery storage. Hashes detect damaged records; filesystem access controls establish who can modify them.
 
 An owner can revoke an issued or claimed grant. Revocation is committed and read back before it is reported as durable. The issuer also latches a valid revocation request in memory, so a failed commit blocks that process without pretending the record was saved. A fresh process cannot reuse the old instance's grant. Independent connections observe committed revocation, including during a running native command. Read checks do not append audit events on every polling iteration.
+
+## Durable session audit
+
+Authorization database version two adds session approval records and ordered grant links. The first trial atomically commits its complete reviewed scope, approval time and Windows owner, grant, initial grant event, and link. Subsequent trials must match the same immutable record and service instance. Their persisted count cannot exceed the reviewed block count. Each version-two grant names its session approval; missing, changed, misordered, over-budget, or incorrectly bound audit evidence blocks reads and authorization. Operation-level grants retain their existing version-one payload and bytes.
+
+The approval record preserves the exact scope-hash preimage: MTU preview, complete repeated-trial plan, and maximum individual lease. The store verifies its checksum, bounded payload, basic scope/time limits, service-instance identity, and grant relationships. Full plan and trusted collector validation happens in the typed session controller before delegation. These records are audit evidence, not a restorable network backup or an authority that can resume work after restart. No session approval IPC or production setting execution is enabled.
+
+Migration validates all existing grants/events and database integrity before committing schema two. It preserves their exact serialized bytes and creates no approval or delegation for legacy operations. Corrupt records and orphaned audit events leave the migration uncommitted. Older service builds refuse this newer authorization database; preserve it and use the current build rather than changing its version manually. Recovery journal version four and pipe protocol three are unchanged.
 
 ## Recovery independence
 

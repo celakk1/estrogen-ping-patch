@@ -9,6 +9,245 @@ use rusqlite::Connection;
 const OWNER: &str = "S-1-5-21-1-2-3-1000";
 const OTHER: &str = "S-1-5-21-1-2-3-1001";
 
+#[test]
+fn persistedQuotaCannotBeExpandedByLosingTheVolatileCheckpointCount() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    let (mut session, plan) = approved();
+    for index in 0..12 {
+        let document = trial(&session, 1010 + index);
+        session
+            .issue(&document, &plan, OWNER, &mut store, 1010 + index)
+            .unwrap();
+    }
+    session.checkpoints.clear();
+    let document = trial(&session, 1022);
+    let error = session
+        .issue(&document, &plan, OWNER, &mut store, 1022)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Durable session trial allowance is exhausted")
+    );
+    assert_eq!(count(&fixture), 12);
+    let connection = Connection::open(fixture.path()).unwrap();
+    assert_eq!(
+        connection
+            .query_row::<u32, _, _>("SELECT COUNT(*) FROM session_approvals", [], |row| row
+                .get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row::<u32, _, _>("SELECT COUNT(*) FROM session_grants", [], |row| row.get(0))
+            .unwrap(),
+        12
+    );
+    session.cancel(OWNER, &mut store, 1023).unwrap();
+}
+
+#[test]
+fn rehashedAuditCannotChangeTheScopeOfAnExistingGrant() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    let (mut session, plan) = approved();
+    let document = trial(&session, 1010);
+    let grant = session
+        .issue(&document, &plan, OWNER, &mut store, 1010)
+        .unwrap();
+    let id = grant.sessionApprovalId.unwrap();
+    let connection = Connection::open(fixture.path()).unwrap();
+    let original: String = connection
+        .query_row(
+            "SELECT document_json FROM session_approvals WHERE id=?",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut record: serde_json::Value = serde_json::from_str(&original).unwrap();
+    let mut scope: serde_json::Value =
+        serde_json::from_str(record["approval"]["scopeJson"].as_str().unwrap()).unwrap();
+    scope[0]["proposedMtu"] = 1300.into();
+    let scopeJson = serde_json::to_string(&scope).unwrap();
+    record["approval"]["scopeJson"] = scopeJson.clone().into();
+    record["approval"]["scopeSha256"] =
+        format!("{:x}", Sha256::digest(scopeJson.as_bytes())).into();
+    let payload = serde_json::to_string(&record).unwrap();
+    let digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
+    connection
+        .execute(
+            "UPDATE session_approvals SET document_json=?,sha256=? WHERE id=?",
+            [payload, digest.clone(), id.to_string()],
+        )
+        .unwrap();
+    let grantSha256: String = connection
+        .query_row(
+            "SELECT sha256 FROM grants WHERE id=?",
+            [grant.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let linkSha256 = hash(&(id, grant.id, 1u32, &digest, &grantSha256)).unwrap();
+    connection
+        .execute(
+            "UPDATE session_grants SET sha256=? WHERE grant_id=?",
+            [linkSha256, grant.id.to_string()],
+        )
+        .unwrap();
+    let error = store.read(grant.id).err().unwrap().to_string();
+    assert!(
+        error.contains("Trial grant differs from its durable session approval"),
+        "{error}"
+    );
+}
+
+#[test]
+fn durableSessionScopeAndGrantLinksSurviveRestartWithoutNewAuthority() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    let (mut session, plan) = approved();
+    let document = trial(&session, 1010);
+    let grant = session
+        .issue(&document, &plan, OWNER, &mut store, 1010)
+        .unwrap();
+    let id = grant.sessionApprovalId.unwrap();
+    assert_eq!(grant.schemaVersion, 2);
+    let connection = Connection::open(fixture.path()).unwrap();
+    let recordJson: String = connection
+        .query_row(
+            "SELECT document_json FROM session_approvals WHERE id=?",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_str(&recordJson).unwrap();
+    assert_eq!(
+        record["approval"]["scopeSha256"],
+        session.approval.scopeSha256
+    );
+    let scope: (MtuPreview, Plan, u64) =
+        serde_json::from_str(record["approval"]["scopeJson"].as_str().unwrap()).unwrap();
+    assert_eq!(scope.0.previewId, id);
+    assert_eq!(hash(&scope.1).unwrap(), hash(&plan).unwrap());
+    assert_eq!(
+        connection
+            .query_row::<u32, _, _>(
+                "SELECT ordinal FROM session_grants WHERE grant_id=? AND session_id=?",
+                [grant.id.to_string(), id.to_string()],
+                |row| row.get(0)
+            )
+            .unwrap(),
+        1
+    );
+    drop(store);
+    let mut reopened = fixture.open();
+    assert_eq!(reopened.read(grant.id).unwrap().grant, grant);
+    assert!(
+        reopened
+            .authorize(
+                grant.id,
+                &document,
+                OWNER,
+                crate::recovery::AuthorizationAction::Prepare,
+                1011
+            )
+            .is_err()
+    );
+    let next = trial(&session, 1011);
+    assert!(
+        session
+            .issue(&next, &plan, OWNER, &mut reopened, 1011)
+            .is_err()
+    );
+    assert_eq!(count(&fixture), 1);
+    session.cancel(OWNER, &mut reopened, 1012).unwrap();
+    assert!(reopened.read(grant.id).unwrap().revoked);
+}
+
+#[test]
+fn failedSessionAuditOrLinkCommitLeavesNoApprovalGrantOrAllowanceToRetry() {
+    for table in ["session_approvals", "session_grants"] {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let connection = Connection::open(fixture.path()).unwrap();
+        connection.execute_batch(&format!("CREATE TRIGGER refuse_session_audit BEFORE INSERT ON {table} BEGIN SELECT RAISE(FAIL,'test refused session audit'); END;")).unwrap();
+        let (mut session, plan) = approved();
+        let document = trial(&session, 1010);
+        assert!(
+            session
+                .issue(&document, &plan, OWNER, &mut store, 1010)
+                .is_err()
+        );
+        assert_eq!(count(&fixture), 0);
+        assert_eq!(
+            connection
+                .query_row::<u32, _, _>("SELECT COUNT(*) FROM session_approvals", [], |row| row
+                    .get(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row::<u32, _, _>("SELECT COUNT(*) FROM session_grants", [], |row| row.get(0))
+                .unwrap(),
+            0
+        );
+        connection
+            .execute_batch("DROP TRIGGER refuse_session_audit;")
+            .unwrap();
+        assert!(
+            session
+                .issue(&document, &plan, OWNER, &mut store, 1011)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn missingCorruptOrMisorderedSessionEvidenceBlocksLiveReadsAndReopen() {
+    for fault in 0..4 {
+        let fixture = Fixture::new();
+        let mut store = fixture.open();
+        let (mut session, plan) = approved();
+        let document = trial(&session, 1010);
+        let grant = session
+            .issue(&document, &plan, OWNER, &mut store, 1010)
+            .unwrap();
+        let connection = Connection::open(fixture.path()).unwrap();
+        match fault {
+            0 => {
+                connection
+                    .execute("DELETE FROM session_grants", [])
+                    .unwrap();
+            }
+            1 => {
+                connection
+                    .execute("UPDATE session_grants SET sha256=?", ["0".repeat(64)])
+                    .unwrap();
+            }
+            2 => {
+                connection
+                    .execute("UPDATE session_grants SET ordinal=2", [])
+                    .unwrap();
+            }
+            3 => {
+                connection
+                    .execute("UPDATE session_approvals SET sha256=?", ["0".repeat(64)])
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(store.read(grant.id).is_err(), "fault {fault}");
+        drop(store);
+        assert!(
+            AuthorizationStore::open(&fixture.path()).is_err(),
+            "fault {fault}"
+        );
+    }
+}
+
 fn template() -> MtuCheckpoint {
     let capture = crate::mtu::policy::tests::fixture();
     MtuCheckpoint {

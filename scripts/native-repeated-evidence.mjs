@@ -227,6 +227,7 @@ try {
   const measurements = open('measurements.sqlite3');
   const recovery = open('recovery.sqlite3');
   const authorization = open('authorization.sqlite3');
+  assert.equal(authorization.prepare('PRAGMA user_version').get().user_version, 2);
   const head = experiments
     .prepare('SELECT revision,active,payload_json,sha256 FROM experiments WHERE id=?')
     .get(experimentId);
@@ -362,6 +363,7 @@ try {
     records.set(`baseline:${row.run_id}`, { receipt, values });
   }
   const used = new Set();
+  const approvals = new Set();
   let mutators = 0;
   for (const [index, block] of snapshot.blocks.entries()) {
     const checkpointId = checkpointIds[index];
@@ -383,7 +385,7 @@ try {
     assert.equal(grantRows.length, 1);
     const grantRow = grantRows[0];
     const grant = checkedPayload(grantRow, 'document_json');
-    assert.equal(grant.schemaVersion, 1);
+    assert.equal(grant.schemaVersion, 2);
     assert.equal(grant.id, grantRow.id);
     assert.ok(uuid.test(grant.id) && uuid.test(grant.issuerInstanceId));
     assert.equal(grant.checkpointId, checkpointId);
@@ -395,6 +397,50 @@ try {
     assert.equal(grant.createdAtUnixMs, document.createdAtUnixMs);
     assert.equal(grant.expiresAtUnixMs, document.leaseExpiresAtUnixMs);
     assert.equal(grant.allowRetention, false);
+    assert.ok(uuid.test(grant.sessionApprovalId));
+    approvals.add(grant.sessionApprovalId);
+    const approvalRow = authorization
+      .prepare('SELECT document_json,sha256 FROM session_approvals WHERE id=?')
+      .get(grant.sessionApprovalId);
+    const approval = checkedPayload(approvalRow, 'document_json');
+    assert.equal(approval.schemaVersion, 1);
+    assert.equal(approval.issuerInstanceId, grant.issuerInstanceId);
+    assert.equal(approval.approval.actorSid, grant.authorizedUserSid);
+    assert.ok(approval.approval.approvedAtUnixMs <= grant.createdAtUnixMs);
+    assert.equal(digest(approval.approval.scopeJson), approval.approval.scopeSha256);
+    const scope = JSON.parse(approval.approval.scopeJson);
+    assert.equal(scope.length, 3);
+    assert.equal(scope[0].previewId, grant.sessionApprovalId);
+    assert.equal(scope[0].checkpointId, experimentId);
+    assert.deepEqual(scope[0].context, grant.context);
+    assert.equal(scope[0].addressFamily, family);
+    assert.equal(scope[0].originalMtu, 1500);
+    assert.equal(scope[0].proposedMtu, 1400);
+    assert.equal(scope[0].allowRetention, false);
+    assert.ok(scope[0].expiresAtUnixMs > approval.approval.approvedAtUnixMs);
+    assert.deepEqual(scope[1], snapshot.plan);
+    assert.equal(scope[2], 30000);
+    const link = authorization
+      .prepare('SELECT session_id,ordinal,sha256 FROM session_grants WHERE grant_id=?')
+      .get(grant.id);
+    assert.equal(link.session_id, grant.sessionApprovalId);
+    assert.equal(link.ordinal, index + 1);
+    assert.equal(
+      link.sha256,
+      jsonHash([
+        grant.sessionApprovalId,
+        grant.id,
+        link.ordinal,
+        approvalRow.sha256,
+        grantRow.sha256,
+      ]),
+    );
+    assert.equal(
+      authorization
+        .prepare('SELECT COUNT(*) AS count FROM session_grants WHERE session_id=?')
+        .get(grant.sessionApprovalId).count,
+      12,
+    );
     const grantEvents = authorization
       .prepare(
         'SELECT sequence,event_json,sha256 FROM grant_events WHERE grant_id=? ORDER BY sequence',
@@ -509,6 +555,7 @@ try {
     }
   }
   assert.equal(used.size, 36);
+  assert.equal(approvals.size, 1);
   for (const [source, hash] of sourceHashes)
     assert.equal(
       digest(readFileSync(source)),
@@ -524,6 +571,7 @@ try {
       successfulConnections: 216,
       restoredCheckpoints: 12,
       revokedTrialGrants: 12,
+      sessionApprovals: 1,
       policyVerifications: 12,
       mutators,
       retainedSettings: false,

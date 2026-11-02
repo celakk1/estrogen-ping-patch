@@ -33,29 +33,29 @@ impl AuthorizationStore {
             return Err("Authorization storage requires WAL and FULL synchronization".into());
         }
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if validateIdentity(&transaction)? == 0 {
+        let version = validateIdentity(&transaction)?;
+        if version == 0 {
             transaction.execute_batch("CREATE TABLE grants(id TEXT PRIMARY KEY, checkpoint_id TEXT UNIQUE NOT NULL, document_json TEXT NOT NULL, sha256 TEXT NOT NULL);
                 CREATE TABLE grant_events(grant_id TEXT NOT NULL REFERENCES grants(id), sequence INTEGER NOT NULL, event_json TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(grant_id,sequence));")?;
             transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-            transaction.pragma_update(None, "user_version", 1)?;
         }
-        transaction.commit()?;
+        if version < 2 {
+            validateGrants(&transaction)?;
+            sessions::initialize(&transaction)?;
+            transaction.pragma_update(None, "user_version", 2)?;
+        }
         let integrity: String =
-            connection.pragma_query_value(None, "quick_check", |row| row.get(0))?;
-        if integrity != "ok" || connection.prepare("PRAGMA foreign_key_check")?.exists([])? {
+            transaction.pragma_query_value(None, "quick_check", |row| row.get(0))?;
+        if integrity != "ok"
+            || transaction
+                .prepare("PRAGMA foreign_key_check")?
+                .exists([])?
+        {
             return Err("Authorization storage failed integrity verification".into());
         }
-        let mut statement = connection.prepare("SELECT id FROM grants ORDER BY id LIMIT 2001")?;
-        let ids = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        if ids.len() > MAX_GRANTS {
-            return Err("Authorization storage exceeds its supported capacity".into());
-        }
-        for id in ids {
-            load(&connection, Uuid::parse_str(&id)?)?;
-        }
-        drop(statement);
+        transaction.commit()?;
+        validateGrants(&connection)?;
+        sessions::verifyAll(&connection)?;
         Ok(Self {
             connection,
             instanceId: Uuid::new_v4(),
@@ -70,6 +70,28 @@ impl AuthorizationStore {
         allowRetention: bool,
         nowUnixMs: u64,
     ) -> ServiceResult<MtuGrant> {
+        self.issueScoped(document, actorSid, allowRetention, nowUnixMs, None)
+    }
+
+    #[cfg(feature = "automatic-trials")]
+    pub(crate) fn issueSession(
+        &mut self,
+        document: &MtuCheckpoint,
+        actorSid: &str,
+        approval: &Approval,
+        nowUnixMs: u64,
+    ) -> ServiceResult<MtuGrant> {
+        self.issueScoped(document, actorSid, false, nowUnixMs, Some(approval))
+    }
+
+    fn issueScoped(
+        &mut self,
+        document: &MtuCheckpoint,
+        actorSid: &str,
+        allowRetention: bool,
+        nowUnixMs: u64,
+        approval: Option<&Approval>,
+    ) -> ServiceResult<MtuGrant> {
         document.validate()?;
         validateSid(actorSid)?;
         if !matches!(document.schemaVersion, 2..=4)
@@ -82,7 +104,7 @@ impl AuthorizationStore {
             );
         }
         let grant = MtuGrant {
-            schemaVersion: 1,
+            schemaVersion: if approval.is_some() { 2 } else { 1 },
             id: Uuid::new_v4(),
             issuerInstanceId: self.instanceId,
             checkpointId: document.id,
@@ -94,6 +116,7 @@ impl AuthorizationStore {
             createdAtUnixMs: nowUnixMs,
             expiresAtUnixMs: document.leaseExpiresAtUnixMs,
             allowRetention,
+            sessionApprovalId: approval.map(|approval| approval.id()).transpose()?,
         };
         grant.validate()?;
         let payload = serde_json::to_string(&grant)?;
@@ -126,6 +149,16 @@ impl AuthorizationStore {
             ],
         )?;
         insertEvent(&transaction, grant.id, &event)?;
+        if let Some(approval) = approval {
+            sessions::insert(
+                &transaction,
+                approval,
+                self.instanceId,
+                document,
+                &grant,
+                &digest,
+            )?;
+        }
         transaction.commit()?;
         self.read(grant.id)?;
         self.fences.insert(
@@ -262,8 +295,8 @@ impl AuthorizationStore {
 fn validateIdentity(connection: &Connection) -> ServiceResult<u32> {
     let id: u32 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if id == APPLICATION_ID && version == 1 {
-        return Ok(1);
+    if id == APPLICATION_ID && matches!(version, 1 | 2) {
+        return Ok(version);
     }
     if id == 0 && version == 0 {
         let count: u32 = connection.query_row(
@@ -276,6 +309,20 @@ fn validateIdentity(connection: &Connection) -> ServiceResult<u32> {
         }
     }
     Err("Database is not a supported authorization store; refusing to modify it".into())
+}
+
+fn validateGrants(connection: &Connection) -> ServiceResult<()> {
+    let mut statement = connection.prepare("SELECT id FROM grants ORDER BY id LIMIT 2001")?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.len() > MAX_GRANTS {
+        return Err("Authorization storage exceeds its supported capacity".into());
+    }
+    for id in ids {
+        load(connection, Uuid::parse_str(&id)?)?;
+    }
+    Ok(())
 }
 
 fn insertEvent(connection: &Connection, id: Uuid, event: &Event) -> ServiceResult<()> {
@@ -365,6 +412,12 @@ fn load(connection: &Connection, id: Uuid) -> ServiceResult<GrantRecord> {
     }
     if record.events.is_empty() {
         return Err("Authorization has no durable issued event".into());
+    }
+    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version == 2 {
+        sessions::verifyGrant(connection, &record.grant)?;
+    } else if record.grant.sessionApprovalId.is_some() {
+        return Err("Legacy authorization storage cannot contain session-bound grants".into());
     }
     Ok(record)
 }

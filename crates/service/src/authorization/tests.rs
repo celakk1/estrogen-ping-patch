@@ -3,6 +3,148 @@ use crate::journal::Journal;
 use rusqlite::Connection;
 use std::{path::PathBuf, time::Duration};
 
+fn restoreVersionOneFixture(connection: &Connection) {
+    connection
+        .execute_batch(
+            "DROP TABLE session_grants; DROP TABLE session_approvals; PRAGMA user_version=1;",
+        )
+        .unwrap();
+}
+
+#[test]
+fn orphanedLegacyAuditCannotCommitTheSessionSchemaMigration() {
+    let fixture = Fixture::new();
+    drop(fixture.open());
+    let connection = Connection::open(fixture.path()).unwrap();
+    restoreVersionOneFixture(&connection);
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO grant_events(grant_id,sequence,event_json,sha256) VALUES(?1,0,'{}',?2)",
+            [Uuid::new_v4().to_string(), "0".repeat(64)],
+        )
+        .unwrap();
+    assert!(AuthorizationStore::open(&fixture.path()).is_err());
+    assert_eq!(
+        connection
+            .pragma_query_value::<u32, _>(None, "user_version", |row| row.get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(connection.query_row::<u32, _, _>("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('session_approvals','session_grants')", [], |row| row.get(0)).unwrap(), 0);
+}
+
+#[test]
+fn versionOneMigrationPreservesExactGrantAndEventBytesWithoutSessionApproval() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    let document = document();
+    let grant = store
+        .issue(&document, &document.authorizedUserSid, false, 1001)
+        .unwrap();
+    drop(store);
+    let connection = Connection::open(fixture.path()).unwrap();
+    let grantBytes: String = connection
+        .query_row(
+            "SELECT document_json FROM grants WHERE id=?",
+            [grant.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let eventBytes: String = connection
+        .query_row(
+            "SELECT event_json FROM grant_events WHERE grant_id=?",
+            [grant.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    restoreVersionOneFixture(&connection);
+    let mut reopened = fixture.open();
+    assert_eq!(reopened.read(grant.id).unwrap().grant, grant);
+    assert!(
+        reopened
+            .authorize(
+                grant.id,
+                &document,
+                &document.authorizedUserSid,
+                AuthorizationAction::Prepare,
+                1002
+            )
+            .is_err()
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value::<u32, _>(None, "user_version", |row| row.get(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        connection
+            .query_row::<String, _, _>(
+                "SELECT document_json FROM grants WHERE id=?",
+                [grant.id.to_string()],
+                |row| row.get(0)
+            )
+            .unwrap(),
+        grantBytes
+    );
+    assert_eq!(
+        connection
+            .query_row::<String, _, _>(
+                "SELECT event_json FROM grant_events WHERE grant_id=?",
+                [grant.id.to_string()],
+                |row| row.get(0)
+            )
+            .unwrap(),
+        eventBytes
+    );
+    assert_eq!(
+        connection
+            .query_row::<u32, _, _>("SELECT COUNT(*) FROM session_approvals", [], |row| row
+                .get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row::<u32, _, _>("SELECT COUNT(*) FROM session_grants", [], |row| row.get(0))
+            .unwrap(),
+        0
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&grantBytes)
+            .unwrap()
+            .get("sessionApprovalId")
+            .is_none()
+    );
+}
+
+#[test]
+fn corruptVersionOneGrantCannotPartiallyMigrateSessionTables() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    let document = document();
+    store
+        .issue(&document, &document.authorizedUserSid, false, 1001)
+        .unwrap();
+    drop(store);
+    let connection = Connection::open(fixture.path()).unwrap();
+    restoreVersionOneFixture(&connection);
+    connection
+        .execute("UPDATE grant_events SET sha256=?", ["0".repeat(64)])
+        .unwrap();
+    assert!(AuthorizationStore::open(&fixture.path()).is_err());
+    assert_eq!(
+        connection
+            .pragma_query_value::<u32, _>(None, "user_version", |row| row.get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(connection.query_row::<u32, _, _>("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('session_approvals','session_grants')", [], |row| row.get(0)).unwrap(), 0);
+}
+
 pub(crate) struct Fixture {
     directory: PathBuf,
 }
