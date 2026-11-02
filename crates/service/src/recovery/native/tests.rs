@@ -116,6 +116,25 @@ fn installedRecoveryJournalFixture() {
         std::env::var("RUNNER_ENVIRONMENT").unwrap(),
         "github-hosted"
     );
+    struct OwnedFixtureTarget(Uuid);
+    impl TargetGuard for OwnedFixtureTarget {
+        fn validateTarget(&self, snapshot: &Snapshot) -> ServiceResult<()> {
+            let mtu::DriverContext::Captured { identity } = &snapshot.driver else {
+                return Err("Owned recovery fixture requires its captured driver".into());
+            };
+            if snapshot.adapterGuid != self.0
+                || snapshot.alias != format!("epp-recovery-lab-{}", self.0)
+                || !identity.infPath.eq_ignore_ascii_case("netloop.inf")
+                || !identity
+                    .deviceInstanceId
+                    .to_ascii_uppercase()
+                    .starts_with("ROOT\\NET\\")
+            {
+                return Err("Owned recovery fixture refuses a different adapter or driver".into());
+            }
+            Ok(())
+        }
+    }
     let guid: Uuid = std::env::var("EPP_RECOVERY_LAB_GUID")
         .unwrap()
         .parse()
@@ -165,7 +184,7 @@ fn installedRecoveryJournalFixture() {
                 schemaVersion: 4,
                 id,
                 createdAtUnixMs: now,
-                leaseExpiresAtUnixMs: now + 1000,
+                leaseExpiresAtUnixMs: now + 10_000,
                 authorizedUserSid: std::env::var("EPP_RECOVERY_LAB_OWNER").unwrap(),
                 context: capture.native.journalContext().unwrap(),
                 addressFamily: family,
@@ -178,16 +197,46 @@ fn installedRecoveryJournalFixture() {
                 context: document.context.clone(),
                 addressFamily: family,
                 mtu: 1500,
-                native: Some(capture.native),
+                native: Some(capture.native.clone()),
             };
-            journal.prepare(document, now).unwrap();
+            journal.prepare(document.clone(), now).unwrap();
             journal
                 .transition(id, State::Prepared, State::Applying, now, Some(observation))
                 .unwrap();
+            let scope =
+                mtu::write_scope::WriteScope::new(&document, WritePurpose::Apply, 1372).unwrap();
+            mtu::writeLabMtu(
+                &OwnedFixtureTarget(guid),
+                &scope,
+                &capture.native,
+                Instant::now() + std::time::Duration::from_secs(5),
+                Some(&mut || Ok(())),
+                &mut |identity| {
+                    journal
+                        .registerMutator(
+                            id,
+                            WritePurpose::Apply,
+                            identity,
+                            crate::transport::nowUnixMs()?,
+                        )
+                        .map(|_| ())
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                mtu::capture(guid, family, &AtomicBool::new(false))
+                    .unwrap()
+                    .settings
+                    .nlMtu,
+                1372
+            );
         } else if phase == "verify" {
             let checkpoint = journal.load(id).unwrap();
             assert_eq!(checkpoint.state(), State::Restored);
-            assert_eq!(journal.mutators(id).unwrap().len(), 1);
+            let mutators = journal.mutators(id).unwrap();
+            assert_eq!(mutators.len(), 2);
+            assert_eq!(mutators[0].purpose, WritePurpose::Apply);
+            assert_eq!(mutators[1].purpose, WritePurpose::Restore);
             assert_eq!(checkpoint.policyVerifications().len(), 1);
             assert!(checkpoint.policyVerifications()[0].matchesOriginal);
             assert_eq!(checkpoint.document().originalMtu, 1500);

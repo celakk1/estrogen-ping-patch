@@ -73,23 +73,9 @@ function matchesOwnedAdapter($adapter) {
     $adapter.PnPDeviceID -ieq $instanceId -and [Guid]$adapter.InterfaceGuid -eq $guid -and $adapter.Name -ceq "epp-recovery-lab-$guid"
 }
 
-function stageOwnedCandidate([string]$family) {
+function verifyOwnedCandidate([string]$family) {
     $adapters = @(Get-NetAdapter -IncludeHidden | Where-Object { matchesOwnedAdapter $_ })
     if ($adapters.Count -ne 1) { throw 'The owned adapter identity changed before fixture setup.' }
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = Join-Path ([Environment]::SystemDirectory) 'netsh.exe'
-    $start.Arguments = "interface $family set subinterface interface=epp-recovery-lab-$guid mtu=1372 store=active"
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $process = [Diagnostics.Process]::Start($start)
-    try {
-        if (-not $process.WaitForExit(5000)) {
-            $process.Kill()
-            if (-not $process.WaitForExit(5000)) { throw 'Owned fixture command termination could not be verified.' }
-            throw 'Owned fixture command timed out.'
-        }
-        if ($process.ExitCode -ne 0) { throw 'Owned fixture MTU setup failed.' }
-    } finally { $process.Dispose() }
     $row = Get-NetIPInterface -InterfaceIndex $adapters[0].ifIndex -AddressFamily $family -PolicyStore ActiveStore
     if ($row.NlMtu -ne 1372) { throw 'The owned fixture candidate did not read back.' }
 }
@@ -135,8 +121,8 @@ try {
     foreach ($family in @('ipv4', 'ipv6')) {
         manage 'stop'
         journalFixture 'seed' $family
-        stageOwnedCandidate $family
-        Start-Sleep -Milliseconds 1200
+        verifyOwnedCandidate $family
+        Start-Sleep -Milliseconds 10100
         if (Test-Path -LiteralPath (Join-Path $dataRoot 'authorization.sqlite3')) { throw 'Recovery fixture unexpectedly has apply authorization storage.' }
         manage 'start'
         $restored = waitRecovery
