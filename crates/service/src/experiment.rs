@@ -12,6 +12,8 @@ use epp_core::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod baseline;
+
 #[cfg(test)]
 mod tests;
 
@@ -41,6 +43,9 @@ impl Progress<'_, '_> {
 }
 
 pub trait Measurements {
+    fn bindCheckpoint(&mut self, _: Option<&MtuCheckpoint>) -> ServiceResult<()> {
+        Ok(())
+    }
     fn maximumTraffic(
         &self,
     ) -> ServiceResult<std::collections::BTreeMap<String, epp_core::experiment::budget::Resources>>;
@@ -156,6 +161,7 @@ where
     }
 
     fn measureOriginal(&mut self, control: &Control<'_>) -> ServiceResult<Session> {
+        self.measurements.bindCheckpoint(None)?;
         let progress = Progress {
             experiment: control,
             watchdog: None,
@@ -194,6 +200,7 @@ where
             return Err("Issued checkpoint differs from the exact repeated-trial scope or fresh original evidence".into());
         }
         control.check()?;
+        self.measurements.bindCheckpoint(Some(&document))?;
         let stopped = AtomicBool::new(self.serviceStop.load(Ordering::SeqCst));
         let finished = AtomicBool::new(false);
         struct Finish<'a>(&'a AtomicBool);

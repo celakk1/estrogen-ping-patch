@@ -202,6 +202,81 @@ fn issue(template: &MtuCheckpoint, original: &Snapshot, plan: &Plan) -> MtuCheck
     document
 }
 
+struct RefusingBinding(Collector);
+
+impl Measurements for RefusingBinding {
+    fn bindCheckpoint(&mut self, checkpoint: Option<&MtuCheckpoint>) -> ServiceResult<()> {
+        if checkpoint.is_some() {
+            return Err("fixture collector refuses issued checkpoint".into());
+        }
+        Ok(())
+    }
+    fn maximumTraffic(
+        &self,
+    ) -> ServiceResult<std::collections::BTreeMap<String, epp_core::experiment::budget::Resources>>
+    {
+        self.0.maximumTraffic()
+    }
+    fn verifyEnvironment(&mut self, plan: &Plan, original: &Snapshot) -> ServiceResult<()> {
+        self.0.verifyEnvironment(plan, original)
+    }
+    fn collect(
+        &mut self,
+        configuration: Configuration,
+        progress: &Progress<'_, '_>,
+    ) -> ServiceResult<Session> {
+        self.0.collect(configuration, progress)
+    }
+}
+
+#[test]
+fn collectorCheckpointRefusalBlocksPreparationAndEverySettingWrite() {
+    let mut fixture = fixture();
+    let first = TcpListener::bind("127.0.0.1:0").unwrap();
+    let second = TcpListener::bind("[::1]:0").unwrap();
+    let endpoints = vec![first.local_addr().unwrap(), second.local_addr().unwrap()];
+    let plan = plan(
+        fixture.document.nativeOriginal.as_ref().unwrap(),
+        &endpoints,
+    );
+    let temporary = Temporary::new();
+    let mut store = experiment::Store::open(&temporary.0).unwrap();
+    let observed = Arc::new(AtomicU32::new(1500));
+    fixture.backend.observedMtu = Some(observed.clone());
+    let collector = RefusingBinding(Collector {
+        plan: plan.clone(),
+        endpoints,
+        observed: observed.clone(),
+        count: 0,
+        cancel: None,
+        restoredDuringStall: Arc::new(AtomicBool::new(false)),
+    });
+    let checkpointId = uuid::Uuid::new_v4();
+    let template = fixture.document.clone();
+    let stop = AtomicBool::new(false);
+    let mut host = MtuHost::new(
+        &mut fixture.journal,
+        &mut fixture.backend,
+        template.clone(),
+        watchdog::Policy::default(),
+        &stop,
+        collector,
+        |_, original, plan| {
+            let mut document = issue(&template, original, plan);
+            document.id = checkpointId;
+            Ok(document)
+        },
+    )
+    .unwrap();
+    let report = experiment::execute(&mut store, plan, &mut host, &AtomicBool::new(false)).unwrap();
+    assert_eq!(report.snapshot.state, State::Failed);
+    assert_eq!(host.measurements.0.count, 1);
+    drop(host);
+    assert!(fixture.backend.writes.is_empty());
+    assert!(fixture.journal.load(checkpointId).is_err());
+    assert_eq!(observed.load(Ordering::SeqCst), 1500);
+}
+
 #[test]
 fn repeatedServiceTrialsMeasureActualLoopbackAndVerifyEveryOriginalBetweenCandidates() {
     for allowedBlocks in [0, 1, 12] {
