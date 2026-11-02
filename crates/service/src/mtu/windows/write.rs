@@ -3,7 +3,51 @@ use super::*;
 use crate::mtu_lab::ServicePermit;
 use command::CommandJob;
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, time::Instant};
-use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+use windows_sys::Win32::{
+    NetworkManagement::IpHelper::{ConvertInterfaceLuidToNameW, ConvertInterfaceNameToLuidW},
+    System::SystemInformation::GetSystemDirectoryW,
+};
+
+#[derive(PartialEq, Eq)]
+struct InterfaceTarget {
+    name: String,
+}
+
+impl InterfaceTarget {
+    fn capture(adapterGuid: Uuid, expectedLuid: &NET_LUID_LH) -> ServiceResult<Self> {
+        let mut luid = NET_LUID_LH::default();
+        errorCode("ConvertInterfaceGuidToLuid", unsafe {
+            ConvertInterfaceGuidToLuid(&nativeGuid(adapterGuid), &mut luid)
+        })?;
+        if unsafe { luid.Value != expectedLuid.Value } {
+            return Err(
+                "Native command target no longer has the expected GUID/LUID mapping".into(),
+            );
+        }
+        let mut buffer = [0u16; 257];
+        errorCode("ConvertInterfaceLuidToNameW", unsafe {
+            ConvertInterfaceLuidToNameW(&luid, buffer.as_mut_ptr(), buffer.len())
+        })?;
+        let name = fixedText(&buffer)?;
+        if name.is_empty() {
+            return Err("Native command target has an empty interface name".into());
+        }
+        let mut roundTripLuid = NET_LUID_LH::default();
+        errorCode("ConvertInterfaceNameToLuidW", unsafe {
+            ConvertInterfaceNameToLuidW(buffer.as_ptr(), &mut roundTripLuid)
+        })?;
+        let mut roundTripGuid = GUID::from_u128(0);
+        errorCode("ConvertInterfaceLuidToGuid", unsafe {
+            ConvertInterfaceLuidToGuid(&roundTripLuid, &mut roundTripGuid)
+        })?;
+        if unsafe { roundTripLuid.Value != expectedLuid.Value }
+            || uuid(roundTripGuid) != adapterGuid
+        {
+            return Err("Native command target failed its name/LUID/GUID round trip".into());
+        }
+        Ok(Self { name })
+    }
+}
 
 fn validateRow(row: &MIB_IPINTERFACE_ROW, expected: &Snapshot) -> ServiceResult<()> {
     if row.Family != family(expected.addressFamily)
@@ -18,7 +62,7 @@ fn validateRow(row: &MIB_IPINTERFACE_ROW, expected: &Snapshot) -> ServiceResult<
     Ok(())
 }
 
-fn arguments(original: &Snapshot, value: u32) -> [String; 7] {
+fn arguments(original: &Snapshot, value: u32, target: &InterfaceTarget) -> [String; 7] {
     [
         "interface".into(),
         match original.addressFamily {
@@ -27,7 +71,7 @@ fn arguments(original: &Snapshot, value: u32) -> [String; 7] {
         },
         "set".into(),
         "subinterface".into(),
-        format!("interface=epp-mtu-lab-{}", original.adapterGuid),
+        format!("interface={}", target.name),
         format!("mtu={value}"),
         "store=active".into(),
     ]
@@ -54,7 +98,7 @@ fn validateBeforeWrite(
     permit: &ServicePermit,
     original: &Snapshot,
     expected: &Snapshot,
-) -> ServiceResult<()> {
+) -> ServiceResult<InterfaceTarget> {
     let fresh = capture(
         original.adapterGuid,
         original.addressFamily,
@@ -94,7 +138,7 @@ fn validateBeforeWrite(
         GetIpInterfaceEntry(&mut row)
     })?;
     validateRow(&row, &fresh)?;
-    Ok(())
+    InterfaceTarget::capture(original.adapterGuid, &luid)
 }
 
 pub(crate) fn writeLabMtu(
@@ -121,11 +165,16 @@ pub(crate) fn writeLabMtu(
         Ok(())
     };
     check()?;
-    validateBeforeWrite(permit, original, expected)?;
+    let target = validateBeforeWrite(permit, original, expected)?;
     check()?;
-    CommandJob::spawn(&executable()?, &arguments(original, value))?.finish(
+    CommandJob::spawn(&executable()?, &arguments(original, value, &target))?.finish(
         register,
-        &mut || validateBeforeWrite(permit, original, expected),
+        &mut || {
+            if validateBeforeWrite(permit, original, expected)? != target {
+                return Err("Native command target changed before process resume".into());
+            }
+            Ok(())
+        },
         check,
     )
 }
@@ -156,22 +205,44 @@ mod tests {
     #[test]
     fn mtuArgumentsHaveNoCallerSelectedProgramTargetOrPolicyStore() {
         let mut original = crate::recovery::tests::nativeFixture();
+        let target = InterfaceTarget {
+            name: "ethernet_32768".into(),
+        };
         for (family, name) in [(AddressFamily::Ipv4, "ipv4"), (AddressFamily::Ipv6, "ipv6")] {
             original.addressFamily = family;
-            let args = arguments(&original, 1400);
+            let args = arguments(&original, 1400, &target);
             assert_eq!(args[0], "interface");
             assert_eq!(args[1], name);
             assert_eq!(&args[2..4], &["set", "subinterface"]);
-            assert_eq!(
-                args[4],
-                format!("interface=epp-mtu-lab-{}", original.adapterGuid)
-            );
+            assert_eq!(args[4], "interface=ethernet_32768");
             assert_eq!(&args[5..], &["mtu=1400", "store=active"]);
         }
         let path = executable().unwrap();
         assert!(path.is_absolute());
         assert!(path.ends_with("netsh.exe"));
         assert!(path.is_file());
+    }
+
+    #[test]
+    fn nativeCommandTargetRequiresAnExactGuidLuidRoundTrip() {
+        let mut table = std::ptr::null_mut();
+        errorCode("GetIpInterfaceTable", unsafe {
+            GetIpInterfaceTable(AF_UNSPEC, &mut table)
+        })
+        .unwrap();
+        assert!(!table.is_null());
+        let table = InterfaceTable(table);
+        assert!(unsafe { (*table.0).NumEntries } > 0);
+        let row = unsafe { &*std::ptr::addr_of!((*table.0).Table).cast::<MIB_IPINTERFACE_ROW>() };
+        let mut guid = GUID::from_u128(0);
+        errorCode("ConvertInterfaceLuidToGuid", unsafe {
+            ConvertInterfaceLuidToGuid(&row.InterfaceLuid, &mut guid)
+        })
+        .unwrap();
+        let target = InterfaceTarget::capture(uuid(guid), &row.InterfaceLuid).unwrap();
+        assert!(!target.name.is_empty());
+        assert!(InterfaceTarget::capture(Uuid::nil(), &row.InterfaceLuid).is_err());
+        assert!(InterfaceTarget::capture(uuid(guid), &NET_LUID_LH::default()).is_err());
     }
 
     #[test]
