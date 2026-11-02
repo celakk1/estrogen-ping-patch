@@ -9,6 +9,9 @@ use uuid::Uuid;
 
 const PREVIEW_LIFETIME_MS: u64 = 30_000;
 
+#[cfg(feature = "automatic-trials")]
+pub mod session;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MtuPreview {

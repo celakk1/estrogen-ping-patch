@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    consent::session::SessionConsent,
     experiment::{Configuration, Measurements, MtuHost, Progress},
     journal::{Journal, State},
     routing,
@@ -563,6 +564,25 @@ pub(super) fn run(
     let mut issued = 0usize;
     let stop = backend.stop.clone();
     let parentId = backend.config.trialId;
+    let mut consent = SessionConsent::new(&backend.config.ownerSid)?;
+    let now = nowUnixMs()?;
+    let preview = consent.preview(
+        template.clone(),
+        plan.clone(),
+        &collector.maximumTraffic()?,
+        &backend.config.ownerSid,
+        now,
+    )?;
+    let mut approvedSession = consent.approve(
+        preview.mtu.previewId,
+        &preview.scopeSha256,
+        &backend.config.ownerSid,
+        nowUnixMs()?,
+    )?;
+    event(
+        json!({"phase":"repeatedSessionApproved","trialId":parentId,"previewId":preview.mtu.previewId,"scopeSha256":preview.scopeSha256,"blockCount":plan.blockCount,"allowRetention":false}),
+    )?;
+    let mut issuedGrants = Vec::new();
     let mut host = MtuHost::new(
         journal,
         backend,
@@ -594,8 +614,9 @@ pub(super) fn run(
             document.leaseExpiresAtUnixMs = expires;
             document.nativeOriginal = Some(fresh.clone());
             document.policyOriginal = Some(policyOriginal);
-            let grant = issueLabConsent(
+            let grant = approvedSession.issue(
                 &document,
+                plan,
                 &backend.config.ownerSid,
                 backend
                     .authorization
@@ -603,6 +624,7 @@ pub(super) fn run(
                     .ok_or("Repeated native trial has no protected authorization store")?,
                 now,
             )?;
+            issuedGrants.push(grant.id);
             backend.grantId = Some(grant.id);
             *activeCheckpoint
                 .lock()
@@ -614,8 +636,27 @@ pub(super) fn run(
             Ok(document)
         },
     )?;
-    let report = experiment::execute(&mut owned.store, plan, &mut host, &stop)?;
+    let execution = experiment::execute(&mut owned.store, plan, &mut host, &stop);
     drop(host);
+    let authorization = backend
+        .authorization
+        .as_deref_mut()
+        .ok_or("Repeated native session lost its authorization store")?;
+    let revocation = approvedSession.cancel(&backend.config.ownerSid, authorization, nowUnixMs()?);
+    let report = match (execution, revocation) {
+        (Ok(report), Ok(())) => report,
+        (Err(primary), Err(revocation)) => {
+            return Err(
+                format!("{primary}; session grant revocation also failed: {revocation}").into(),
+            );
+        }
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+    };
+    for id in &issuedGrants {
+        if !authorization.read(*id)?.revoked {
+            return Err("Repeated session did not durably revoke every issued trial grant".into());
+        }
+    }
     let ids = receipts
         .lock()
         .map_err(|_| "Repeated receipt state poisoned")?
@@ -698,7 +739,7 @@ pub(super) fn run(
         return Err("Lifecycle fixture must not claim a retained optimization".into());
     }
     event(
-        json!({"phase":"repeatedExperimentComplete","trialId":parentId,"state":report.snapshot.state,"blockCount":12,"measurementCount":36,"rawRunIds":ids,"checkpoints":report.snapshot.checkpoints,"comparisonOutcome":comparison.outcome,"exploratory":comparison.exploratory,"acceptedConnections":listeners.accepted.load(Ordering::SeqCst),"reservedProbeAttempts":traffic.totals.probeAttempts}),
+        json!({"phase":"repeatedExperimentComplete","trialId":parentId,"state":report.snapshot.state,"blockCount":12,"measurementCount":36,"rawRunIds":ids,"checkpoints":report.snapshot.checkpoints,"comparisonOutcome":comparison.outcome,"exploratory":comparison.exploratory,"acceptedConnections":listeners.accepted.load(Ordering::SeqCst),"reservedProbeAttempts":traffic.totals.probeAttempts,"sessionApprovalCount":1,"revokedTrialGrants":issuedGrants.len()}),
     )?;
     event(
         json!({"phase":"complete","trialId":parentId,"state":"restored","checkpointSchemaVersion":template.schemaVersion,"policyOriginal":template.policyOriginal,"policyVerificationCount":policyVerifications,"policyOriginalVerified":true,"pendingPolicyVerificationCount":journal.pendingPolicyVerification()?.len(),"original":original,"after":after,"writesThisProcess":backend.writes,"pendingRecoveryCount":0,"mutators":mutators,"processId":std::process::id()}),

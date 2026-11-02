@@ -196,7 +196,12 @@ function routeHash(captures) {
 const databases = [];
 const copies = mkdtempSync(path.join(tmpdir(), 'epp-repeated-inspect-'));
 const sourceHashes = new Map();
-const databaseNames = ['experiments.sqlite3', 'measurements.sqlite3', 'recovery.sqlite3'];
+const databaseNames = [
+  'experiments.sqlite3',
+  'measurements.sqlite3',
+  'recovery.sqlite3',
+  'authorization.sqlite3',
+];
 const suffixes = ['', '-wal', '-shm', '-journal'];
 try {
   // inspect stable copies so sqlite never creates sidecars in service-owned storage.
@@ -221,6 +226,7 @@ try {
   const experiments = open('experiments.sqlite3');
   const measurements = open('measurements.sqlite3');
   const recovery = open('recovery.sqlite3');
+  const authorization = open('authorization.sqlite3');
   const head = experiments
     .prepare('SELECT revision,active,payload_json,sha256 FROM experiments WHERE id=?')
     .get(experimentId);
@@ -371,6 +377,53 @@ try {
     assert.equal(document.originalMtu, 1500);
     assert.equal(document.proposedMtu, 1400);
     assert.equal(document.leaseExpiresAtUnixMs - document.createdAtUnixMs, 30000);
+    const grantRows = authorization
+      .prepare('SELECT id,checkpoint_id,document_json,sha256 FROM grants WHERE checkpoint_id=?')
+      .all(checkpointId);
+    assert.equal(grantRows.length, 1);
+    const grantRow = grantRows[0];
+    const grant = checkedPayload(grantRow, 'document_json');
+    assert.equal(grant.schemaVersion, 1);
+    assert.equal(grant.id, grantRow.id);
+    assert.ok(uuid.test(grant.id) && uuid.test(grant.issuerInstanceId));
+    assert.equal(grant.checkpointId, checkpointId);
+    assert.equal(grant.checkpointSha256, documentRow.sha256);
+    assert.equal(grant.authorizedUserSid, document.authorizedUserSid);
+    assert.deepEqual(grant.context, document.context);
+    assert.equal(grant.addressFamily, family);
+    assert.equal(grant.proposedMtu, 1400);
+    assert.equal(grant.createdAtUnixMs, document.createdAtUnixMs);
+    assert.equal(grant.expiresAtUnixMs, document.leaseExpiresAtUnixMs);
+    assert.equal(grant.allowRetention, false);
+    const grantEvents = authorization
+      .prepare(
+        'SELECT sequence,event_json,sha256 FROM grant_events WHERE grant_id=? ORDER BY sequence',
+      )
+      .all(grant.id);
+    assert.ok(grantEvents.length >= 4 && grantEvents.length <= 64);
+    let grantHead = grantRow.sha256;
+    let grantTime = grant.createdAtUnixMs;
+    const grantKinds = [];
+    for (const [sequence, row] of grantEvents.entries()) {
+      const event = checkedPayload(row, 'event_json');
+      assert.equal(row.sequence, sequence);
+      assert.equal(event.sequence, sequence);
+      assert.equal(event.previousSha256, grantHead);
+      assert.ok(Number.isSafeInteger(event.timestampUnixMs) && event.timestampUnixMs >= grantTime);
+      if (sequence === 0) {
+        assert.equal(event.kind, 'issued');
+        assert.equal(event.timestampUnixMs, grant.createdAtUnixMs);
+      } else if (sequence === grantEvents.length - 1) {
+        assert.equal(event.kind, 'revoked');
+      } else {
+        assert.ok(['prepareChecked', 'applyChecked'].includes(event.kind));
+        assert.ok(event.timestampUnixMs < grant.expiresAtUnixMs);
+      }
+      grantHead = row.sha256;
+      grantTime = event.timestampUnixMs;
+      grantKinds.push(event.kind);
+    }
+    assert.ok(grantKinds.includes('prepareChecked') && grantKinds.includes('applyChecked'));
     let previous = documentRow.sha256;
     const events = recovery
       .prepare(
@@ -470,6 +523,7 @@ try {
       rawSessions: 36,
       successfulConnections: 216,
       restoredCheckpoints: 12,
+      revokedTrialGrants: 12,
       policyVerifications: 12,
       mutators,
       retainedSettings: false,

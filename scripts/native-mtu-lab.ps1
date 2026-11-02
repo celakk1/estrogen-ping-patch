@@ -294,6 +294,8 @@ try {
             $repeated = $null
             if ($phase -eq 'repeated') {
                 $repeated = waitEvent $startedAt $trialId 'repeatedExperimentComplete' ''
+                $approvals = @(readEvents $startedAt $trialId | Where-Object { $_.phase -eq 'repeatedSessionApproved' })
+                if ($approvals.Count -ne 1 -or $approvals[0].blockCount -ne 12 -or $approvals[0].allowRetention -ne $false -or $approvals[0].scopeSha256 -cnotmatch '^[0-9a-f]{64}$' -or $repeated.sessionApprovalCount -ne 1 -or $repeated.revokedTrialGrants -ne 12) { throw 'Repeated native trials must use one exact session approval and revoke all twelve grants.' }
                 $verified = @(readEvents $startedAt $trialId | Where-Object { $_.phase -eq 'repeatedTrialVerified' })
                 if ($repeated.state -ne 'completed' -or $repeated.blockCount -ne 12 -or $repeated.measurementCount -ne 36 -or $repeated.acceptedConnections -ne 216 -or -not $repeated.exploratory -or $repeated.comparisonOutcome -ne 'inconclusive' -or @($repeated.checkpoints).Count -ne 12 -or @($repeated.checkpoints | Select-Object -Unique).Count -ne 12 -or $verified.Count -ne 12 -or @($verified | Where-Object { $_.state -ne 'restored' -or $_.originalMtu -ne 1500 -or $_.finalMtu -ne 1500 }).Count -ne 0) { throw 'Repeated native experiment did not verify every original/candidate/original block.' }
                 & node.exe --no-warnings (Join-Path $PSScriptRoot 'native-repeated-evidence.mjs') $dataRoot $trialId ($guid.ToString('D')) $family
