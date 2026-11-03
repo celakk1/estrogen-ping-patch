@@ -360,42 +360,69 @@ impl CommandJob {
     pub(crate) fn collect(
         mut self,
         limit: usize,
-        mut check: impl FnMut() -> ServiceResult<()>,
+        check: impl FnMut() -> ServiceResult<()>,
     ) -> ServiceResult<Vec<u8>> {
+        if limit == 0 || limit > 65536 {
+            self.terminate()?;
+            return Err("Owned reader byte allowance must be between one and 65536".into());
+        }
+        let mut bytes = Vec::new();
+        self.stream(limit, check, |chunk| {
+            bytes.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        Ok(bytes)
+    }
+
+    // streamed bytes remain provisional until exit and verified cleanup succeed.
+    pub(crate) fn stream(
+        mut self,
+        limit: usize,
+        mut check: impl FnMut() -> ServiceResult<()>,
+        mut onChunk: impl FnMut(&[u8]) -> ServiceResult<()>,
+    ) -> ServiceResult<()> {
         let outcome = (|| {
-            if limit == 0 || limit > 65536 {
-                return Err("Owned reader byte allowance must be between one and 65536".into());
+            if self.role != ProcessRole::ReadOnly || limit == 0 || limit > 4 * 1024 * 1024 {
+                return Err("Owned streaming reader requires a read-only process and a byte allowance between one and four MiB".into());
             }
             check()?;
             self.resume("Cannot resume the owned reader exactly once")?;
-            let mut bytes = Vec::new();
+            let mut chunk = Vec::with_capacity(4096);
+            let mut diagnostic = Vec::new();
+            let mut total = 0;
+            let mut exited = false;
             loop {
-                check()?;
-                self.readAvailable(&mut bytes, limit)?;
-                match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 10) } {
-                    WAIT_TIMEOUT => continue,
-                    WAIT_OBJECT_0 => {
-                        loop {
-                            check()?;
-                            if !self.readAvailable(&mut bytes, limit)? {
-                                break;
-                            }
-                        }
-                        let mut exitCode = 0;
-                        succeeded("GetExitCodeProcess", unsafe {
-                            GetExitCodeProcess(self.process.as_raw_handle(), &mut exitCode)
-                        })?;
-                        if exitCode != 0 {
-                            let detail: String =
-                                String::from_utf8_lossy(&bytes).chars().take(1024).collect();
-                            return Err(format!(
-                                "Owned reader failed: exit code {exitCode}: {detail}"
-                            )
-                            .into());
-                        }
-                        check()?;
-                        return Ok(bytes);
+                loop {
+                    check()?;
+                    chunk.clear();
+                    if !self.readAvailable(&mut chunk, limit - total)? {
+                        break;
                     }
+                    total += chunk.len();
+                    let detailLength = chunk.len().min(1024 - diagnostic.len());
+                    diagnostic.extend_from_slice(&chunk[..detailLength]);
+                    onChunk(&chunk)?;
+                }
+                if exited {
+                    let mut exitCode = 0;
+                    succeeded("GetExitCodeProcess", unsafe {
+                        GetExitCodeProcess(self.process.as_raw_handle(), &mut exitCode)
+                    })?;
+                    if exitCode != 0 {
+                        let detail: String = String::from_utf8_lossy(&diagnostic)
+                            .chars()
+                            .take(1024)
+                            .collect();
+                        return Err(
+                            format!("Owned reader failed: exit code {exitCode}: {detail}").into(),
+                        );
+                    }
+                    check()?;
+                    return Ok(());
+                }
+                match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 10) } {
+                    WAIT_TIMEOUT => {}
+                    WAIT_OBJECT_0 => exited = true,
                     _ => return Err(std::io::Error::last_os_error().into()),
                 }
             }

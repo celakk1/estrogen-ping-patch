@@ -47,6 +47,121 @@ fn writesOutput() {
 
 #[test]
 #[ignore]
+fn writesLargeReport() {
+    std::io::stdout()
+        .write_all(&vec![0xa5; 2 * 1024 * 1024])
+        .unwrap();
+}
+
+#[test]
+#[ignore]
+fn streamsBeforeWaiting() {
+    println!("streaming-progress-before-exit");
+    std::io::stdout().flush().unwrap();
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[test]
+fn streamingDeliversProgressBeforeWorkerExitAndStopsOnConsumerRefusal() {
+    let child = fixture("streamsBeforeWaiting");
+    let process = child.process.try_clone().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut received = Vec::new();
+    let result = child.stream(
+        8192,
+        || within(deadline),
+        |chunk| {
+            received.extend_from_slice(chunk);
+            if String::from_utf8_lossy(&received).contains("streaming-progress-before-exit") {
+                assert_eq!(
+                    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+                    WAIT_TIMEOUT
+                );
+                return Err("test consumer stopped after real progress".into());
+            }
+            Ok(())
+        },
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("consumer stopped after real progress")
+    );
+    assert_eq!(
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+        WAIT_OBJECT_0
+    );
+}
+
+#[test]
+fn streamingDrainsLargeReportsInBoundedChunksAndConfirmsWorkerExit() {
+    let child = fixture("writesLargeReport");
+    let process = child.process.try_clone().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut bytes = 0;
+    let mut payloadBytes = 0;
+    child
+        .stream(
+            3 * 1024 * 1024,
+            || within(deadline),
+            |chunk| {
+                assert!(!chunk.is_empty() && chunk.len() <= 4096);
+                bytes += chunk.len();
+                payloadBytes += chunk.iter().filter(|byte| **byte == 0xa5).count();
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(payloadBytes, 2 * 1024 * 1024);
+    assert!((payloadBytes..payloadBytes + 4096).contains(&bytes));
+    assert_eq!(
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+        WAIT_OBJECT_0
+    );
+}
+
+#[test]
+fn streamingBoundsAndCancellationTerminateTheWorkerBeforeReturning() {
+    for (name, limit, expected) in [
+        ("floodsOutput", 8192, "byte allowance"),
+        ("waits", 0, "byte allowance"),
+        ("waits", 4 * 1024 * 1024 + 1, "byte allowance"),
+        ("waits", 4 * 1024 * 1024, "deadline"),
+    ] {
+        let child = fixture(name);
+        let process = child.process.try_clone().unwrap();
+        let deadline =
+            Instant::now() + Duration::from_millis(if name == "waits" { 150 } else { 5000 });
+        let error = child
+            .stream(limit, || within(deadline), |_| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{name}: {error}");
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+            WAIT_OBJECT_0
+        );
+    }
+}
+
+#[test]
+fn streamingConsumerPanicsStillStopTheOwnedWorker() {
+    let child = fixture("streamsBeforeWaiting");
+    let process = child.process.try_clone().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        child.stream(8192, || within(deadline), |_| panic!("test consumer panic"))
+    }));
+    assert!(result.is_err());
+    assert_eq!(
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+        WAIT_OBJECT_0
+    );
+}
+
+#[test]
+#[ignore]
 fn floodsOutput() {
     loop {
         std::io::stdout().write_all(&[b'X'; 4096]).unwrap();
