@@ -260,6 +260,32 @@ pub(super) fn validatePlan(
     Ok(())
 }
 
+pub(super) fn validateSessionWindow(
+    session: &Session,
+    plan: &Plan,
+    configuration: Configuration,
+    checkpoint: Option<&MtuCheckpoint>,
+    beforeUnixMs: u64,
+    afterUnixMs: u64,
+) -> ServiceResult<()> {
+    if session.startedAtUnixMs < plan.createdAtUnixMs
+        || session.finishedAtUnixMs > plan.expiresAtUnixMs
+        || beforeUnixMs > session.startedAtUnixMs.saturating_add(250)
+        || afterUnixMs.saturating_add(250) < session.finishedAtUnixMs
+        || beforeUnixMs > afterUnixMs
+        || afterUnixMs > nowUnixMs()?.saturating_add(250)
+    {
+        return Err("Native measurement evidence must bracket a session within its frozen experiment window".into());
+    }
+    match (configuration, checkpoint) {
+        (Configuration::Original, None) => Ok(()),
+        (Configuration::Candidate, Some(document))
+            if session.startedAtUnixMs.min(beforeUnixMs) >= document.createdAtUnixMs
+                && session.finishedAtUnixMs.max(afterUnixMs) < document.leaseExpiresAtUnixMs => Ok(()),
+        _ => Err("Candidate measurements and native evidence require their exact checkpoint's active lease; original measurements require no candidate binding".into()),
+    }
+}
+
 pub(super) fn validateStorage(database: &Connection) -> ServiceResult<()> {
     let durable: u32 = database.pragma_query_value(None, "synchronous", |row| row.get(0))?;
     let foreignKeys: bool = database.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;

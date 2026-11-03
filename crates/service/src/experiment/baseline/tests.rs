@@ -587,3 +587,54 @@ fn sharedAdapterScopePreservesThePublishedEchoHashPreimages() {
     assert_eq!(scope.hashes.originalConfigurationSha256, original);
     assert_eq!(scope.hashes.candidateConfigurationSha256, candidate);
 }
+
+#[test]
+fn echoCandidateEvidenceRequiresTheIssuedCheckpointAndItsLease() {
+    let mut outcomes = Vec::new();
+    for failure in 0..4 {
+        let storage = Database::new();
+        let mut database = storage.open();
+        let scope = scope();
+        let plan = plan(&scope);
+        let mut collector = scope.bind(&mut database, plan).unwrap();
+        let (run, mut before, mut after) = savedRaw(&mut collector);
+        let mut document = collector.scope.adapter.template.clone();
+        document.id = Uuid::new_v4();
+        if failure == 1 {
+            document.createdAtUnixMs = nowUnixMs().unwrap() + 1000;
+            document.nativeOriginal.as_mut().unwrap().capturedAtUnixMs = document.createdAtUnixMs;
+        } else if failure == 2 {
+            document.leaseExpiresAtUnixMs = after.native.capturedAtUnixMs - 1;
+        }
+        document.validate().unwrap();
+        if failure != 0 {
+            collector.bindCheckpoint(Some(&document)).unwrap();
+        }
+        for observation in [&mut before, &mut after] {
+            observation.native.settings.nlMtu = document.proposedMtu;
+            observation.active.values.get_mut("NlMtu").unwrap().value = Some(document.proposedMtu);
+        }
+        let refused = collector
+            .acceptRaw(&run, &before, &after, Configuration::Candidate)
+            .is_err();
+        let receipts = collector
+            .database
+            .query_row("SELECT count(*) FROM adapter_measurements", [], |row| {
+                row.get::<_, u32>(0)
+            })
+            .unwrap();
+        outcomes.push((failure, refused, receipts));
+        assert_eq!(
+            collector
+                .database
+                .query_row("SELECT count(*) FROM benchmark_runs", [], |row| row
+                    .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+    }
+    assert_eq!(
+        outcomes,
+        vec![(0, true, 0), (1, true, 0), (2, true, 0), (3, false, 1)]
+    );
+}

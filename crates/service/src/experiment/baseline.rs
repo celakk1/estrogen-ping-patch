@@ -257,11 +257,14 @@ impl Collector<'_> {
             return Err("Trusted latency evidence requires at least twelve successful echo replies per endpoint".into());
         }
 
-        if before.native.capturedAtUnixMs > session.startedAtUnixMs.saturating_add(250)
-            || after.native.capturedAtUnixMs.saturating_add(250) < session.finishedAtUnixMs
-        {
-            return Err("Native measurement evidence does not bracket the raw session".into());
-        }
+        measurement::validateSessionWindow(
+            &session,
+            &self.plan,
+            configuration,
+            self.checkpoint.as_ref(),
+            before.native.capturedAtUnixMs,
+            after.native.capturedAtUnixMs,
+        )?;
         let receipt = serde_json::json!({"schemaVersion":1,"benchmarkScope":"sourceBoundAdapterBaseline","experimentId":self.plan.id,"checkpointId":self.checkpoint.as_ref().map(|checkpoint| checkpoint.id),"checkpointSha256":self.checkpoint.as_ref().map(crate::authorization::checkpointChecksum).transpose()?,"configuration":if configuration == Configuration::Candidate {"candidate"} else {"original"},"rawRunId":run.id,"rawRunSha256":hash(run)?,"nativeBefore":before,"nativeAfter":after});
         let payload = serde_json::to_string(&receipt)?;
         if payload.len() > 131_072 {

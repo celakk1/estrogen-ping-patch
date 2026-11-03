@@ -301,19 +301,21 @@ impl Collector<'_> {
         self.scope
             .adapter
             .verifyRecorded(&after.0, &after.1, configuration)?;
-        if before.0.native.capturedAtUnixMs > measured.startedAtUnixMs.saturating_add(250)
-            || after.0.native.capturedAtUnixMs.saturating_add(250) < measured.finishedAtUnixMs
-            || before.0.native.capturedAtUnixMs > after.0.native.capturedAtUnixMs
-            || after.0.native.capturedAtUnixMs > nowUnixMs()?.saturating_add(250)
-            || measured.startedAtUnixMs < self.plan.createdAtUnixMs.saturating_sub(250)
-            || measured.finishedAtUnixMs > self.plan.expiresAtUnixMs
-            || before.0.native.capturedAtUnixMs
-                < self
-                    .scope
-                    .adapter
-                    .template
-                    .createdAtUnixMs
-                    .saturating_sub(250)
+        measurement::validateSessionWindow(
+            &measured,
+            &self.plan,
+            configuration,
+            self.checkpoint.as_ref(),
+            before.0.native.capturedAtUnixMs,
+            after.0.native.capturedAtUnixMs,
+        )?;
+        if before.0.native.capturedAtUnixMs
+            < self
+                .scope
+                .adapter
+                .template
+                .createdAtUnixMs
+                .saturating_sub(250)
         {
             return Err("Native load evidence does not bracket its raw session".into());
         }

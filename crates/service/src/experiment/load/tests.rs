@@ -553,3 +553,64 @@ fn candidateLoadReceiptsRequireMatchingNativeMtuAndTheExactBoundCheckpoint() {
     );
     assert_eq!(receipt["configuration"], "candidate");
 }
+
+#[test]
+fn loadEvidenceOutsideItsIssuedCheckpointLeaseCannotProduceACandidateReceipt() {
+    let mut outcomes = Vec::new();
+    for failure in 0..4 {
+        let (scope, current, routes) = fixture();
+        let plan = plan(&scope);
+        let storage = Database::new();
+        let mut database = storage.open();
+        let mut collector = scope.bind(&mut database, plan).unwrap();
+        let (run, mut before, mut after) = savedRaw(&mut collector, &current, &routes);
+        let mut document = collector.scope.adapter.template.clone();
+        document.id = Uuid::new_v4();
+        match failure {
+            0 => {
+                document.createdAtUnixMs = nowUnixMs().unwrap();
+                document.nativeOriginal.as_mut().unwrap().capturedAtUnixMs =
+                    document.createdAtUnixMs;
+            }
+            1 => document.leaseExpiresAtUnixMs = after.0.native.capturedAtUnixMs - 1000,
+            2 => {
+                document.createdAtUnixMs = before.0.native.capturedAtUnixMs - 500;
+                before.0.native.capturedAtUnixMs -= 1000;
+            }
+            _ => {
+                document.leaseExpiresAtUnixMs = after.0.native.capturedAtUnixMs + 1;
+                after.0.native.capturedAtUnixMs += 2;
+            }
+        }
+        document.validate().unwrap();
+        collector.bindCheckpoint(Some(&document)).unwrap();
+        for observation in [&mut before.0, &mut after.0] {
+            observation.native.settings.nlMtu = document.proposedMtu;
+            observation.active.values.get_mut("NlMtu").unwrap().value = Some(document.proposedMtu);
+        }
+        let refused = collector
+            .acceptRaw(&run, &before, &after, Configuration::Candidate)
+            .is_err();
+        let receipts = collector
+            .database
+            .query_row(
+                "SELECT count(*) FROM adapter_load_measurements",
+                [],
+                |row| row.get::<_, u32>(0),
+            )
+            .unwrap();
+        outcomes.push((failure, refused, receipts));
+        assert_eq!(
+            collector
+                .database
+                .query_row("SELECT count(*) FROM load_sessions", [], |row| row
+                    .get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+    }
+    assert_eq!(
+        outcomes,
+        vec![(0, true, 0), (1, true, 0), (2, true, 0), (3, true, 0)]
+    );
+}
