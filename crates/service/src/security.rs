@@ -36,6 +36,14 @@ pub(crate) struct Descriptor(LocalAllocation);
 
 impl Descriptor {
     #[cfg(any(test, feature = "automatic-trials"))]
+    pub(crate) fn workerObjects() -> ServiceResult<Self> {
+        let owner = currentSid()?;
+        Self::fromSddl(&format!(
+            "D:P(A;;GA;;;{owner})(A;;GA;;;S-1-5-12)(A;;RC;;;OW)"
+        ))
+    }
+
+    #[cfg(any(test, feature = "automatic-trials"))]
     pub(crate) fn workerRequest() -> ServiceResult<Self> {
         let owner = currentSid()?;
         Self::fromSddl(&format!(

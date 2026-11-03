@@ -92,8 +92,9 @@ impl Input {
     }
 }
 
-pub(crate) fn read(length: &str) -> ServiceResult<Vec<u8>> {
+pub(crate) fn read(length: &str, parentId: &str) -> ServiceResult<Vec<u8>> {
     restricted::validateCurrent()?;
+    restricted::verifyParent(parentId)?;
     let length: usize = length.parse()?;
     if length == 0 || length > MAX_BYTES {
         return Err("Benchmark request length is outside its fixed bound".into());

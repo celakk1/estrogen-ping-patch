@@ -86,19 +86,6 @@ fn primaryToken(access: u32) -> ServiceResult<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(token) })
 }
 
-fn logonIdentity(token: HANDLE) -> ServiceResult<String> {
-    let information = Information::query(token, TokenGroups)?;
-    let identities = information
-        .groups()?
-        .iter()
-        .filter(|group| group.Attributes & 0xc0000000 == 0xc0000000)
-        .collect::<Vec<_>>();
-    if identities.len() != 1 {
-        return Err("Benchmark token requires exactly one logon identity".into());
-    }
-    crate::security::sidText(identities[0].Sid)
-}
-
 pub(super) fn create() -> ServiceResult<OwnedHandle> {
     let original =
         primaryToken(TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY)?;
@@ -107,7 +94,7 @@ pub(super) fn create() -> ServiceResult<OwnedHandle> {
     let authenticated = Sid::new("S-1-5-11")?;
     let users = Sid::new("S-1-5-32-545")?;
     let everyone = Sid::new("S-1-1-0")?;
-    let logon = Sid::new(&logonIdentity(original.as_raw_handle())?)?;
+    let restrictedCode = Sid::new("S-1-5-12")?;
     let disabled = [
         SID_AND_ATTRIBUTES {
             Sid: administrator.0,
@@ -120,7 +107,7 @@ pub(super) fn create() -> ServiceResult<OwnedHandle> {
     ];
     let restricted = [
         SID_AND_ATTRIBUTES {
-            Sid: logon.0,
+            Sid: restrictedCode.0,
             Attributes: 0,
         },
         SID_AND_ATTRIBUTES {
@@ -151,6 +138,30 @@ pub(super) fn create() -> ServiceResult<OwnedHandle> {
         )
     })?;
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let descriptor = crate::security::Descriptor::workerObjects()?;
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut acl = null_mut();
+    succeeded("Read restricted object permissions", unsafe {
+        windows_sys::Win32::Security::GetSecurityDescriptorDacl(
+            descriptor.attributes().lpSecurityDescriptor,
+            &mut present,
+            &mut acl,
+            &mut defaulted,
+        )
+    })?;
+    if present == 0 || acl.is_null() {
+        return Err("Restricted object permissions are missing".into());
+    }
+    let dacl = windows_sys::Win32::Security::TOKEN_DEFAULT_DACL { DefaultDacl: acl };
+    succeeded("Set restricted object permissions", unsafe {
+        SetTokenInformation(
+            token.as_raw_handle(),
+            windows_sys::Win32::Security::TokenDefaultDacl,
+            (&dacl as *const windows_sys::Win32::Security::TOKEN_DEFAULT_DACL).cast(),
+            size_of_val(&dacl) as u32,
+        )
+    })?;
     let low = Sid::new("S-1-16-4096")?;
     let sidBytes = unsafe { GetLengthSid(low.0) } as usize;
     let length = size_of::<TOKEN_MANDATORY_LABEL>() + sidBytes;
@@ -193,7 +204,7 @@ fn validate(token: HANDLE) -> ServiceResult<()> {
         "S-1-1-0".to_owned(),
         "S-1-5-11".to_owned(),
         "S-1-5-32-545".to_owned(),
-        logonIdentity(token)?,
+        "S-1-5-12".to_owned(),
     ];
     expected.sort();
     if identities != expected {
@@ -257,6 +268,45 @@ fn validate(token: HANDLE) -> ServiceResult<()> {
 pub(super) fn validateCurrent() -> ServiceResult<()> {
     let token = primaryToken(TOKEN_QUERY)?;
     validate(token.as_raw_handle())
+}
+
+pub(super) fn verifyParent(parentId: &str) -> ServiceResult<()> {
+    use windows_sys::Win32::{
+        Foundation::ERROR_ACCESS_DENIED,
+        Security::TOKEN_IMPERSONATE,
+        System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    let parentId: u32 = parentId.parse()?;
+    if parentId == 0 || parentId == std::process::id() {
+        return Err("Benchmark worker parent identity is invalid".into());
+    }
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, parentId) };
+    if process.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            Ok(())
+        } else {
+            Err(format!("Cannot verify benchmark parent access: {error}").into())
+        };
+    }
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    for rights in [
+        TOKEN_QUERY,
+        TOKEN_DUPLICATE,
+        TOKEN_ASSIGN_PRIMARY,
+        TOKEN_IMPERSONATE,
+    ] {
+        let mut token = null_mut();
+        if unsafe { OpenProcessToken(process.as_raw_handle(), rights, &mut token) } != 0 {
+            drop(unsafe { OwnedHandle::from_raw_handle(token) });
+            return Err("Benchmark worker can reopen its parent's original token".into());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
+            return Err(format!("Cannot verify benchmark parent token refusal: {error}").into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

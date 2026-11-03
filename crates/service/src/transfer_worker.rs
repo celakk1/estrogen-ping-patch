@@ -41,8 +41,8 @@ struct Response {
     result: TransferResult,
 }
 
-pub fn run(length: &str) -> ServiceResult<()> {
-    let bytes = request::read(length)?;
+pub fn run(length: &str, parentId: &str) -> ServiceResult<()> {
+    let bytes = request::read(length, parentId)?;
     let input: Request = serde_json::from_slice(&bytes)?;
     input.validate()?;
     let cancelled = AtomicBool::new(false);
@@ -108,7 +108,11 @@ fn measureUsing(
     check()?;
     let child = CommandJob::spawnRestrictedReader(
         image,
-        &["--transfer-worker".into(), mapping.length.to_string()],
+        &[
+            "--transfer-worker".into(),
+            mapping.length.to_string(),
+            std::process::id().to_string(),
+        ],
         Some(&mapping.handle),
     )?;
     let output = child.collect(RESULT_BYTES, check)?;

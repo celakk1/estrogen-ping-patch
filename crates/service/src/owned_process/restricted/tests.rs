@@ -7,7 +7,7 @@ use windows_sys::Win32::{
     Storage::FileSystem::WRITE_DAC,
     System::Threading::{
         CreateEventW, EVENT_MODIFY_STATE, OpenEventW, OpenProcess, PROCESS_DUP_HANDLE,
-        PROCESS_SYNCHRONIZE, PROCESS_VM_READ, PROCESS_VM_WRITE,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_VM_READ, PROCESS_VM_WRITE,
     },
 };
 
@@ -102,6 +102,205 @@ fn restrictedChildDeniesProtectedAccessAndInheritedEnvironment() {
 }
 
 #[test]
+fn restrictedChildRejectsWritableAndEscalatableRequestCapabilities() {
+    for mode in ["writable", "upgrade", "permissions", "owner"] {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(arguments(WRAPPER))
+            .env("EPP_RESTRICTED_SENTINEL", "parent-only")
+            .env("EPP_RESTRICTED_INPUT_MODE", mode)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("restricted-child-verified"));
+    }
+}
+
+fn unsafeInput(owner: &str, payload: &[u8], mode: &str) -> request::Input {
+    use windows_sys::Win32::{
+        Foundation::DuplicateHandle,
+        Storage::FileSystem::WRITE_OWNER,
+        System::Memory::{
+            CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MapViewOfFile, PAGE_READWRITE,
+            UnmapViewOfFile,
+        },
+    };
+    let rights = match mode {
+        "writable" | "upgrade" => FILE_MAP_READ | FILE_MAP_WRITE,
+        "permissions" => FILE_MAP_READ | WRITE_DAC,
+        "owner" => FILE_MAP_READ | WRITE_OWNER,
+        _ => panic!("unexpected test request mode"),
+    };
+    let descriptor = crate::security::Descriptor::testObject(&format!(
+        "D:P(A;;GA;;;{owner})(A;;0x{rights:08x};;;AU)(A;;RC;;;OW)S:(ML;;NW;;;LW)"
+    ))
+    .unwrap();
+    let handle = unsafe {
+        CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            &descriptor.attributes(),
+            PAGE_READWRITE,
+            0,
+            payload.len() as u32,
+            null(),
+        )
+    };
+    assert!(!handle.is_null());
+    let original = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let view = unsafe { MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, payload.len()) };
+    assert!(!view.Value.is_null());
+    unsafe { std::ptr::copy_nonoverlapping(payload.as_ptr(), view.Value.cast(), payload.len()) };
+    assert_ne!(unsafe { UnmapViewOfFile(view) }, 0);
+    let mut handle = null_mut();
+    let inherited = if mode == "writable" {
+        FILE_MAP_READ | FILE_MAP_WRITE
+    } else {
+        FILE_MAP_READ
+    };
+    assert_ne!(
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                original.as_raw_handle(),
+                GetCurrentProcess(),
+                &mut handle,
+                inherited,
+                1,
+                0,
+            )
+        },
+        0
+    );
+    request::Input {
+        handle: unsafe { OwnedHandle::from_raw_handle(handle) },
+        length: payload.len(),
+    }
+}
+
+fn refusesOriginalToken(parent: u32) {
+    use windows_sys::Win32::{
+        Foundation::DuplicateHandle,
+        Security::{
+            DuplicateTokenEx, SecurityImpersonation, TOKEN_IMPERSONATE, TOKEN_LINKED_TOKEN,
+            TokenLinkedToken, TokenPrimary,
+        },
+    };
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, parent) };
+    if !process.is_null() {
+        let process = unsafe { OwnedHandle::from_raw_handle(process) };
+        let mut token = null_mut();
+        for rights in [
+            TOKEN_QUERY,
+            TOKEN_DUPLICATE,
+            TOKEN_ASSIGN_PRIMARY,
+            TOKEN_IMPERSONATE,
+        ] {
+            let opened = unsafe { OpenProcessToken(process.as_raw_handle(), rights, &mut token) };
+            let error = std::io::Error::last_os_error();
+            if opened != 0 {
+                drop(unsafe { OwnedHandle::from_raw_handle(token) });
+                panic!("worker reopened its parent's original token with {rights}");
+            }
+            assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+        }
+    } else {
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(ERROR_ACCESS_DENIED as i32)
+        );
+    }
+    let token = primaryToken(TOKEN_QUERY).unwrap();
+    if let Ok(linked) = Information::query(token.as_raw_handle(), TokenLinkedToken) {
+        let linked = unsafe {
+            OwnedHandle::from_raw_handle(linked.header::<TOKEN_LINKED_TOKEN>().unwrap().LinkedToken)
+        };
+        let mut duplicate = null_mut();
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                linked.as_raw_handle(),
+                GetCurrentProcess(),
+                &mut duplicate,
+                TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                0,
+                0,
+            )
+        } != 0
+        {
+            let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate) };
+            let kind = *Information::query(
+                duplicate.as_raw_handle(),
+                windows_sys::Win32::Security::TokenType,
+            )
+            .unwrap()
+            .header::<i32>()
+            .unwrap();
+            let identificationOnly = kind == windows_sys::Win32::Security::TokenImpersonation
+                && *Information::query(
+                    duplicate.as_raw_handle(),
+                    windows_sys::Win32::Security::TokenImpersonationLevel,
+                )
+                .unwrap()
+                .header::<i32>()
+                .unwrap()
+                    < SecurityImpersonation;
+            if !identificationOnly {
+                validate(duplicate.as_raw_handle())
+                    .expect("worker expanded an authority-bearing linked token handle");
+            }
+            if identificationOnly {
+                for kind in [
+                    TokenPrimary,
+                    windows_sys::Win32::Security::TokenImpersonation,
+                ] {
+                    let mut converted = null_mut();
+                    if unsafe {
+                        DuplicateTokenEx(
+                            duplicate.as_raw_handle(),
+                            TOKEN_DUPLICATE
+                                | TOKEN_ASSIGN_PRIMARY
+                                | TOKEN_IMPERSONATE
+                                | TOKEN_QUERY,
+                            null(),
+                            SecurityImpersonation,
+                            kind,
+                            &mut converted,
+                        )
+                    } != 0
+                    {
+                        let converted = unsafe { OwnedHandle::from_raw_handle(converted) };
+                        validate(converted.as_raw_handle()).expect(
+                            "worker converted an identification token into original authority",
+                        );
+                    }
+                }
+            }
+        }
+        let mut duplicate = null_mut();
+        if unsafe {
+            DuplicateTokenEx(
+                linked.as_raw_handle(),
+                TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                null(),
+                SecurityImpersonation,
+                TokenPrimary,
+                &mut duplicate,
+            )
+        } != 0
+        {
+            let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate) };
+            validate(duplicate.as_raw_handle())
+                .expect("worker regained an original token through its linked token");
+        }
+    }
+}
+
+#[test]
 #[ignore]
 fn wrapperFixture() {
     assert_eq!(
@@ -132,7 +331,11 @@ fn wrapperFixture() {
         &serde_json::json!({"marker":"immutable-request", "privateFile":privateFile}),
     )
     .unwrap();
-    let input = request::Input::new(&payload).unwrap();
+    let mode = std::env::var("EPP_RESTRICTED_INPUT_MODE").ok();
+    let input = mode.as_ref().map_or_else(
+        || request::Input::new(&payload).unwrap(),
+        |mode| unsafeInput(&owner, &payload, mode),
+    );
     let context = format!("{}-{}", std::process::id(), uuid::Uuid::new_v4());
     let name = eventName(&context);
     let descriptor =
@@ -150,6 +353,9 @@ fn wrapperFixture() {
     let mut args = arguments(CHILD);
     args.push(format!("identity-fixture={context}"));
     args.push(format!("input-length={}", input.length));
+    if let Some(mode) = mode {
+        args.push(format!("input-refused={mode}"));
+    }
     let job = CommandJob::spawnRestrictedReader(&fixture.0, &args, Some(&input.handle)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let output = job
@@ -188,7 +394,23 @@ fn childFixture() {
     let length = std::env::args()
         .find_map(|arg| arg.strip_prefix("input-length=").map(str::to_owned))
         .unwrap();
-    let bytes = request::read(&length).unwrap();
+    let bytes = request::read(&length, context.split('-').next().unwrap());
+    if let Some(mode) =
+        std::env::args().find_map(|arg| arg.strip_prefix("input-refused=").map(str::to_owned))
+    {
+        let error = bytes.unwrap_err().to_string();
+        assert!(
+            error.contains(if mode == "writable" {
+                "unexpectedly permits writes"
+            } else {
+                "permits capability escalation"
+            }),
+            "{mode}: {error}"
+        );
+        println!("restricted-child-verified");
+        return;
+    }
+    let bytes = bytes.unwrap();
     let input: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(input["marker"], "immutable-request");
     let privateFile = input["privateFile"].as_str().unwrap();
@@ -224,6 +446,7 @@ fn childFixture() {
         );
         assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
     }
+    refusesOriginalToken(parent);
     let child = Command::new(std::env::current_exe().unwrap())
         .arg("--list")
         .creation_flags(CREATE_NO_WINDOW)

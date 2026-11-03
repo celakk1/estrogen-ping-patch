@@ -64,7 +64,7 @@ fn response(input: &Request) -> Response {
 #[test]
 fn rejectsUnrestrictedEntryAndInvalidRequestsBeforeLaunch() {
     assert!(
-        run("not-a-length")
+        run("not-a-length", "not-a-parent")
             .unwrap_err()
             .to_string()
             .contains("restricted token")
@@ -195,8 +195,171 @@ impl Image {
 
 impl Drop for Image {
     fn drop(&mut self) {
+        for name in ["owner.pid", "owner.log"] {
+            let _ = std::fs::remove_file(self.0.parent().unwrap().join(name));
+        }
         let _ = std::fs::remove_file(&self.0);
         let _ = std::fs::remove_dir(self.0.parent().unwrap());
+    }
+}
+
+#[test]
+#[ignore]
+fn parentDeathFixture() {
+    let image = PathBuf::from(std::env::var_os("EPP_TRANSFER_WORKER_IMAGE").unwrap());
+    assert!(
+        image.is_absolute()
+            && image
+                .file_name()
+                .unwrap()
+                .eq_ignore_ascii_case("epp-network-service.exe")
+    );
+    let peer: SocketAddr = std::env::var("EPP_TRANSFER_OWNER_PEER")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(peer.ip().is_loopback());
+    let mut request = input(peer, Direction::Download);
+    request.plan.streams = 1;
+    request.plan.timeoutMs = 60_000;
+    let mapping = Input::new(&serde_json::to_vec(&request).unwrap()).unwrap();
+    let child = CommandJob::spawnRestrictedReader(
+        &image,
+        &[
+            "--transfer-worker".into(),
+            mapping.length.to_string(),
+            std::process::id().to_string(),
+        ],
+        Some(&mapping.handle),
+    )
+    .unwrap();
+    std::fs::write(
+        std::env::var_os("EPP_TRANSFER_OWNER_MARKER").unwrap(),
+        child.id().to_string(),
+    )
+    .unwrap();
+    if std::env::var("EPP_TRANSFER_OWNER_STAGE").unwrap() == "running" {
+        let result = child.collect(RESULT_BYTES, || Ok(()));
+        panic!("restricted worker owner should have been terminated: {result:?}");
+    } else {
+        thread::sleep(Duration::from_secs(60));
+        drop(child);
+    }
+}
+
+#[test]
+#[ignore = "requires a separately built automatic-trials service executable"]
+fn isolatedWorkerCannotOutliveItsParentBeforeOrAfterResume() {
+    use std::{
+        os::windows::{
+            io::{AsRawHandle, FromRawHandle, OwnedHandle},
+            process::CommandExt,
+        },
+        process::{Child, Command, Stdio},
+    };
+    use windows_sys::Win32::{
+        Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{
+            CREATE_NO_WINDOW, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        },
+    };
+
+    struct Owner(Child);
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let image = Image::configured();
+    let marker = image.0.parent().unwrap().join("owner.pid");
+    let diagnostic = image.0.parent().unwrap().join("owner.log");
+    for stage in ["suspended", "running"] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let output = std::fs::File::create(&diagnostic).unwrap();
+        let mut owner = Owner(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "transfer_worker::tests::parentDeathFixture",
+                    "--nocapture",
+                ])
+                .env("EPP_TRANSFER_WORKER_IMAGE", &image.0)
+                .env("EPP_TRANSFER_OWNER_MARKER", &marker)
+                .env(
+                    "EPP_TRANSFER_OWNER_PEER",
+                    listener.local_addr().unwrap().to_string(),
+                )
+                .env("EPP_TRANSFER_OWNER_STAGE", stage)
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdout(Stdio::from(output.try_clone().unwrap()))
+                .stderr(Stdio::from(output))
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let id = loop {
+            if let Ok(value) = std::fs::read_to_string(&marker)
+                && let Ok(id) = value.parse::<u32>()
+            {
+                break id;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "restricted parent did not become ready"
+            );
+            let status = owner.0.try_wait().unwrap();
+            assert!(
+                status.is_none(),
+                "restricted parent exited early: {status:?}: {}",
+                std::fs::read_to_string(&diagnostic)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(4096)
+                    .collect::<String>()
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, id) };
+        assert!(!handle.is_null());
+        let child = unsafe { OwnedHandle::from_raw_handle(handle) };
+        assert_eq!(
+            unsafe { WaitForSingleObject(child.as_raw_handle(), 0) },
+            WAIT_TIMEOUT
+        );
+        let mut connection = if stage == "running" {
+            let mut connection = accept(&listener);
+            let mut bytes = [0; 4096];
+            let count = connection.read(&mut bytes).unwrap();
+            assert!(count > 0 && bytes[..count].starts_with(b"GET "));
+            Some(connection)
+        } else {
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            None
+        };
+        owner.0.kill().unwrap();
+        owner.0.wait().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(child.as_raw_handle(), 5000) },
+            WAIT_OBJECT_0,
+            "{stage}"
+        );
+        if let Some(connection) = &mut connection {
+            let mut bytes = [0; 4096];
+            match connection.read(&mut bytes) {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                outcome => panic!("restricted orphan socket remained active: {outcome:?}"),
+            }
+        }
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::remove_file(&diagnostic).unwrap();
     }
 }
 
