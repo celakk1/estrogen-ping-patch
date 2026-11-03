@@ -20,6 +20,8 @@ use std::collections::BTreeSet;
 pub enum Statistic {
     GoodputMbps { direction: transfer::Direction },
     P95Ms { phase: Phase, endpointId: String },
+    IqrMs { phase: Phase, endpointId: String },
+    SuccessiveVariationMs { phase: Phase, endpointId: String },
     FailurePercent { phase: Phase, endpointId: String },
 }
 
@@ -51,8 +53,10 @@ pub fn cohortSha256(run: &SessionRun, selections: &[Selection]) -> AppResult<Str
                     .into(),
             );
         }
-        if let Statistic::P95Ms { endpointId, .. } | Statistic::FailurePercent { endpointId, .. } =
-            &selection.statistic
+        if let Statistic::P95Ms { endpointId, .. }
+        | Statistic::IqrMs { endpointId, .. }
+        | Statistic::SuccessiveVariationMs { endpointId, .. }
+        | Statistic::FailurePercent { endpointId, .. } = &selection.statistic
             && !run
                 .plan
                 .latencyEndpoints
@@ -276,6 +280,42 @@ fn qualifies(sample: &LatencySample) -> bool {
         || (sample.inFlightRequestsAtStart > 0 && sample.inFlightRequestsAtEnd > 0)
 }
 
+fn successiveVariation(
+    samples: &[LatencySample],
+    providerIndex: usize,
+    phase: Phase,
+    endpointId: &str,
+) -> AppResult<Option<f64>> {
+    let replyTimes: Vec<_> = samples
+        .iter()
+        .filter(|sample| {
+            sample.providerIndex == providerIndex
+                && sample.phase == phase
+                && sample.sample.endpointId == endpointId
+        })
+        .map(|sample| {
+            if qualifies(sample) {
+                sample
+                    .sample
+                    .echo
+                    .as_ref()
+                    .and_then(|echo| echo.rttMs)
+                    .map(f64::from)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let pairs = replyTimes
+        .windows(2)
+        .filter(|pair| pair[0].is_some() && pair[1].is_some())
+        .count();
+    if pairs < 11 {
+        return Err("Successive load RTT variation requires eleven adjacent qualifying reply pairs without bridging timeouts or unqualified probes".into());
+    }
+    Ok(crate::statistics::summarize(&replyTimes).successiveVariationMs)
+}
+
 pub fn fromRun(
     run: &SessionRun,
     selections: &[Selection],
@@ -325,6 +365,8 @@ pub fn fromRun(
                 )
             }
             Statistic::P95Ms { phase, endpointId }
+            | Statistic::IqrMs { phase, endpointId }
+            | Statistic::SuccessiveVariationMs { phase, endpointId }
             | Statistic::FailurePercent { phase, endpointId } => {
                 let endpoint = run
                     .plan
@@ -350,14 +392,21 @@ pub fn fromRun(
                 let summary = summarizeEndpoint(endpoint.clone(), &samples).summary;
                 if !failure && summary.successful < 12 {
                     return Err(
-                        "Load latency quantiles need at least twelve qualifying successful replies"
+                        "Load latency statistics need at least twelve qualifying successful replies"
                             .into(),
                     );
                 }
-                let value = if failure {
-                    summary.echoTimeoutPercent
-                } else {
-                    summary.p95Ms
+                let value = match selection.statistic {
+                    Statistic::FailurePercent { .. } => summary.echoTimeoutPercent,
+                    Statistic::P95Ms { .. } => summary.p95Ms,
+                    Statistic::IqrMs { .. } => summary.iqrMs,
+                    Statistic::SuccessiveVariationMs { .. } => successiveVariation(
+                        &run.latencySamples,
+                        selection.providerIndex,
+                        *phase,
+                        endpointId,
+                    )?,
+                    Statistic::GoodputMbps { .. } => unreachable!(),
                 }
                 .ok_or("Required load latency or failure metric is unavailable")?;
                 (

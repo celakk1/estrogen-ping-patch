@@ -614,3 +614,57 @@ fn loadEvidenceOutsideItsIssuedCheckpointLeaseCannotProduceACandidateReceipt() {
         vec![(0, true, 0), (1, true, 0), (2, true, 0), (3, true, 0)]
     );
 }
+
+#[test]
+fn variationReceiptsUseRawRttValuesAndRefuseSubMillisecondRules() {
+    for successive in [false, true] {
+        for tooPrecise in [false, true] {
+            let (mut scope, current, routes) = fixture();
+            scope.selections[2].statistic = if successive {
+                comparisonLoad::Statistic::SuccessiveVariationMs {
+                    phase: session::Phase::Download,
+                    endpointId: "server-0".into(),
+                }
+            } else {
+                comparisonLoad::Statistic::IqrMs {
+                    phase: session::Phase::Download,
+                    endpointId: "server-0".into(),
+                }
+            };
+            let peers = scope
+                .bindings
+                .transfers
+                .iter()
+                .map(|binding| binding.peer)
+                .collect();
+            let scope = Scope::fromAdapter(
+                scope.adapter,
+                scope.config,
+                scope.sessionPlan,
+                peers,
+                scope.selections,
+            )
+            .unwrap();
+            let mut plan = plan(&scope);
+            if tooPrecise {
+                plan.comparison.metrics[2].resolution = 0.1;
+            }
+            let storage = Database::new();
+            let mut database = storage.open();
+            let result = scope.bind(&mut database, plan);
+            if tooPrecise {
+                assert!(result.is_err());
+            } else {
+                let mut collector = result.unwrap();
+                let (run, before, after) = savedRaw(&mut collector, &current, &routes);
+                assert_eq!(
+                    collector
+                        .acceptRaw(&run, &before, &after, Configuration::Original)
+                        .unwrap()
+                        .values[2],
+                    0.0
+                );
+            }
+        }
+    }
+}

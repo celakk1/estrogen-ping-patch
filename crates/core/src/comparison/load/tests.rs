@@ -257,6 +257,145 @@ fn loadValuesAreRecomputedFromRawStreamsAndQualifyingEchoes() {
     assert!(session.completed);
 }
 
+fn variationFixture(phase: Phase, successive: bool) -> (SessionRun, Vec<Selection>, Plan) {
+    let (mut run, mut selections, mut plan) = fixture();
+    for (round, sample) in run
+        .latencySamples
+        .iter_mut()
+        .filter(|sample| sample.phase == phase && sample.sample.endpointId == "endpoint-0")
+        .enumerate()
+    {
+        let value = if round % 2 == 0 { 10 } else { 20 };
+        sample.sample.echo.as_mut().unwrap().rttMs = Some(value);
+        sample.sample.echo.as_mut().unwrap().callDurationMs = f64::from(value);
+    }
+    selections[2].statistic = if successive {
+        Statistic::SuccessiveVariationMs {
+            phase,
+            endpointId: "endpoint-0".into(),
+        }
+    } else {
+        Statistic::IqrMs {
+            phase,
+            endpointId: "endpoint-0".into(),
+        }
+    };
+    plan.cohortSha256 = cohortSha256(&run, &selections).unwrap();
+    plan.validate().unwrap();
+    (run, selections, plan)
+}
+
+#[test]
+fn rawRttSpreadAndSuccessiveVariationWorkAcrossAllFourPhases() {
+    for phase in [Phase::Idle, Phase::Download, Phase::Upload, Phase::Recovery] {
+        for successive in [false, true] {
+            let (run, selections, plan) = variationFixture(phase, successive);
+            assert_eq!(convert(&run, &selections, &plan).unwrap().values[2], 10.0);
+            let roundTrip: Vec<Selection> =
+                serde_json::from_str(&serde_json::to_string(&selections).unwrap()).unwrap();
+            assert_eq!(cohortSha256(&run, &roundTrip).unwrap(), plan.cohortSha256);
+            let mut tooPrecise = plan.clone();
+            tooPrecise.metrics[2].resolution = 0.1;
+            assert!(convert(&run, &selections, &tooPrecise).is_err());
+        }
+    }
+    let (run, iqr, iqrPlan) = variationFixture(Phase::Download, false);
+    let (_, successive, successivePlan) = variationFixture(Phase::Download, true);
+    assert_ne!(iqrPlan.cohortSha256, successivePlan.cohortSha256);
+    assert!(convert(&run, &iqr, &successivePlan).is_err());
+    assert!(convert(&run, &successive, &iqrPlan).is_err());
+}
+
+#[test]
+fn responseVariationNeverInventsValuesFromInsufficientSuccessfulReplies() {
+    for successive in [false, true] {
+        let (mut run, selections, plan) = variationFixture(Phase::Download, successive);
+        let sample = run
+            .latencySamples
+            .iter_mut()
+            .find(|sample| {
+                sample.phase == Phase::Download && sample.sample.endpointId == "endpoint-0"
+            })
+            .unwrap();
+        let echo = sample.sample.echo.as_mut().unwrap();
+        echo.status = EchoStatus::TimedOut;
+        echo.rttMs = None;
+        echo.nativeCode = Some(11010);
+        echo.responder = None;
+        sample.sample.error = Some("timeout".into());
+        assert!(convert(&run, &selections, &plan).is_err());
+    }
+}
+
+fn insertUnqualifiedGap(run: &mut SessionRun) {
+    let index = run
+        .latencySamples
+        .iter()
+        .position(|sample| {
+            sample.phase == Phase::Download && sample.sample.timestamp == time(10250)
+        })
+        .unwrap();
+    let mut gap = run.latencySamples[index].clone();
+    gap.sample.timestamp = time(10125);
+    gap.inFlightRequestsAtStart = 0;
+    gap.inFlightRequestsAtEnd = 0;
+    gap.payloadProgressDuringProbe = 0;
+    gap.sample.echo.as_mut().unwrap().rttMs = Some(90);
+    gap.sample.echo.as_mut().unwrap().callDurationMs = 90.0;
+    run.latencySamples.insert(index, gap);
+}
+
+#[test]
+fn unqualifiedLoadedProbesBreakSuccessiveReplyPairsInsteadOfDisappearing() {
+    let (mut run, selections, plan) = variationFixture(Phase::Download, true);
+    insertUnqualifiedGap(&mut run);
+    let error = convert(&run, &selections, &plan).unwrap_err().to_string();
+    assert!(error.contains("eleven adjacent"), "{error}");
+    let (mut iqrRun, iqrSelections, iqrPlan) = variationFixture(Phase::Download, false);
+    insertUnqualifiedGap(&mut iqrRun);
+    assert_eq!(
+        convert(&iqrRun, &iqrSelections, &iqrPlan).unwrap().values[2],
+        10.0
+    );
+}
+
+#[test]
+fn sufficientlySampledVariationExcludesUnqualifiedGapsAndTimeoutPairs() {
+    for timedOut in [false, true] {
+        let (mut run, selections, plan) = variationFixture(Phase::Download, true);
+        insertUnqualifiedGap(&mut run);
+        let gap = run
+            .latencySamples
+            .iter_mut()
+            .find(|sample| sample.sample.timestamp == time(10125))
+            .unwrap();
+        if timedOut {
+            gap.inFlightRequestsAtStart = 1;
+            gap.inFlightRequestsAtEnd = 1;
+            let echo = gap.sample.echo.as_mut().unwrap();
+            echo.status = EchoStatus::TimedOut;
+            echo.rttMs = None;
+            echo.nativeCode = Some(11010);
+            echo.responder = None;
+            gap.sample.error = Some("timeout".into());
+        }
+        let firstUpload = run
+            .latencySamples
+            .iter()
+            .position(|sample| sample.phase == Phase::Upload)
+            .unwrap();
+        let mut added = run.latencySamples[firstUpload - 2].clone();
+        for (index, at) in [13250, 13750].into_iter().enumerate() {
+            added.sample.timestamp = time(at);
+            added.sample.echo.as_mut().unwrap().rttMs = Some(100);
+            added.sample.echo.as_mut().unwrap().callDurationMs = 100.0;
+            run.latencySamples
+                .insert(firstUpload + index, added.clone());
+        }
+        assert_eq!(convert(&run, &selections, &plan).unwrap().values[2], 15.0);
+    }
+}
+
 #[test]
 fn changedSourcesPeersPayloadsAndMetricSelectionsCannotShareACohort() {
     let (run, selections, plan) = fixture();
