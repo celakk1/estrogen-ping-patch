@@ -136,6 +136,8 @@ try {
             invokeChecked 'cargo.exe' @('fmt', '--all', '--', '--check')
             invokeChecked 'cargo.exe' @('test', '--workspace', '--locked')
             invokeChecked 'cargo.exe' @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
+            invokeChecked 'cargo.exe' @('test', '--locked', '-p', 'epp-service', '--features', 'automatic-trials')
+            invokeChecked 'cargo.exe' @('clippy', '--locked', '-p', 'epp-service', '--features', 'automatic-trials', '--all-targets', '--', '-D', 'warnings')
             invokeChecked 'node.exe' @('--test', 'scripts/launcher.test.mjs', 'scripts/webview-test.test.mjs', 'scripts/service-manager.test.mjs', 'scripts/native-mtu-lab.test.mjs', 'scripts/dns-listeners.test.mjs')
         }
         'package' {

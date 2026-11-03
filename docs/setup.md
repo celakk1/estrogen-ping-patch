@@ -18,6 +18,8 @@ Run `setup.bat` once after cloning, then `launch.bat` to open the desktop in dev
 
 Use `test.bat` before committing. Use `build.bat` for an optimized executable and `package.bat` for an installable Windows build. NSIS is fetched by Tauri when first required. Its per-user installer creates the Start menu entry. No terminal is needed to run the installed app. WebView2 may be downloaded during installation if missing.
 
+`test.bat` checks both the default application and optional `automatic-trials` service library, including their tests and Clippy checks. The latter covers simulated experiment coordination, source-bound collector admission, consent, and budget handling without enabling production writes. Native mutation/recovery helpers remain a separate explicitly selected disposable-host workflow; the regular launcher never installs a service or changes network settings.
+
 `clean.bat` removes only `target`, `dist`, `coverage`, `.cache`, and `src-tauri/gen`. It rejects reparse points and paths outside the checkout. It leaves `node_modules`, private configuration, and benchmark history intact. Stop active development/build processes before cleaning.
 
 ## Your first tests
