@@ -7,7 +7,7 @@ use std::{
     thread,
 };
 
-fn input(peer: SocketAddr, direction: Direction) -> Request {
+pub(super) fn input(peer: SocketAddr, direction: Direction) -> Request {
     Request {
         schemaVersion: SCHEMA_VERSION,
         plan: TransferPlan {
@@ -26,7 +26,7 @@ fn input(peer: SocketAddr, direction: Direction) -> Request {
     }
 }
 
-fn response(input: &Request) -> Response {
+pub(super) fn response(input: &Request) -> Response {
     Response {
         schemaVersion: SCHEMA_VERSION,
         result: TransferResult {
@@ -388,10 +388,18 @@ fn accept(listener: &TcpListener) -> TcpStream {
 }
 
 fn serve(listener: TcpListener, direction: Direction) -> thread::JoinHandle<u64> {
+    serveControlled(listener, direction, None)
+}
+
+fn serveControlled(
+    listener: TcpListener,
+    direction: Direction,
+    gate: Option<std::sync::mpsc::Receiver<()>>,
+) -> thread::JoinHandle<u64> {
     listener.set_nonblocking(true).unwrap();
     thread::spawn(move || {
         let mut total = 0;
-        for _ in 0..2 {
+        for index in 0..2 {
             let stream = accept(&listener);
             assert_eq!(
                 stream.peer_addr().unwrap().ip(),
@@ -442,14 +450,137 @@ fn serve(listener: TcpListener, direction: Direction) -> thread::JoinHandle<u64>
             } else {
                 0
             };
+            if index == 0
+                && direction == Direction::Upload
+                && let Some(gate) = &gate
+            {
+                gate.recv_timeout(Duration::from_secs(2)).unwrap();
+            }
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nX-Epp-Benchmark-Protocol: 1\r\nX-Epp-Received-Bytes: {bytes}\r\nConnection: close\r\n\r\n").unwrap();
             if length > 0 {
-                stream.write_all(&vec![b'X'; length]).unwrap();
+                let prefix = if index == 0 && gate.is_some() {
+                    1024
+                } else {
+                    length
+                };
+                stream.write_all(&vec![b'X'; prefix]).unwrap();
+                stream.flush().unwrap();
+                if prefix < length {
+                    gate.as_ref()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap();
+                    stream.write_all(&vec![b'X'; length - prefix]).unwrap();
+                }
             }
             total += bytes as u64;
         }
         total
     })
+}
+
+#[test]
+#[ignore = "requires a separately built automatic-trials service executable"]
+fn isolatedWorkerReportsChangedCountersBeforeTransferCompletion() {
+    let image = Image::configured();
+    for direction in [Direction::Download, Direction::Upload] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let request = input(listener.local_addr().unwrap(), direction);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let server = serveControlled(listener, direction, Some(receiver));
+        let mut live = false;
+        let started = Instant::now();
+        let result = measureUsingProgress(
+            &image.0,
+            request.plan,
+            request.binding,
+            &AtomicBool::new(false),
+            |update| {
+                assert!(update.receivedAt >= started);
+                let counters = update.observation.counters;
+                let bytes = if direction == Direction::Download {
+                    counters.downloadBytesRead
+                } else {
+                    counters.uploadBodyBytesProvided
+                };
+                if !live && counters.activeRequests > 0 && bytes > 0 {
+                    if direction == Direction::Download {
+                        assert!(bytes < 4097);
+                    }
+                    live = true;
+                    sender.send(()).unwrap();
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(live, "worker reported no live {direction:?} counters");
+        assert_eq!(result.status, TransferStatus::Completed);
+        assert_eq!(server.join().unwrap(), 4097);
+    }
+}
+
+#[test]
+#[ignore = "requires a separately built automatic-trials service executable"]
+fn isolatedWorkerStopsBeforeReturningARefusedOrPanickingProgressConsumer() {
+    let image = Image::configured();
+    for panic in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut request = input(listener.local_addr().unwrap(), Direction::Download);
+        request.plan.streams = 1;
+        let server = thread::spawn(move || {
+            let mut stream = accept(&listener);
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut size = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                size += line.len();
+                assert!(size <= 8192);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4097\r\nX-Epp-Benchmark-Protocol: 1\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(&[b'X'; 1024]).unwrap();
+            stream.flush().unwrap();
+            match stream.read(&mut [0; 1]) {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                outcome => panic!("refused consumer left worker traffic alive: {outcome:?}"),
+            }
+        });
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            measureUsingProgress(
+                &image.0,
+                request.plan,
+                request.binding,
+                &AtomicBool::new(false),
+                |update| {
+                    if update.observation.counters.activeRequests > 0
+                        && update.observation.counters.downloadBytesRead > 0
+                    {
+                        assert!(!panic, "fixture progress consumer panic");
+                        return Err("fixture progress consumer refused".into());
+                    }
+                    Ok(())
+                },
+            )
+        }));
+        if panic {
+            assert!(outcome.is_err());
+        } else {
+            assert!(
+                outcome
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("consumer refused")
+            );
+        }
+        server.join().unwrap();
+    }
 }
 
 #[test]

@@ -13,7 +13,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod protocol;
+pub use protocol::{Counters, Observation, ProgressUpdate};
+
 const SCHEMA_VERSION: u32 = 1;
+#[cfg(test)]
 const RESULT_BYTES: usize = 65536;
 
 #[derive(Deserialize, Serialize)]
@@ -46,27 +50,58 @@ pub fn run(length: &str, parentId: &str) -> ServiceResult<()> {
     let input: Request = serde_json::from_slice(&bytes)?;
     input.validate()?;
     let cancelled = AtomicBool::new(false);
-    let result = epp_core::transfer::measureFrom(
-        input.plan,
-        input.binding,
-        &cancelled,
-        &TransferProgress::default(),
-    )?;
-    let output = serde_json::to_vec(&Response {
-        schemaVersion: SCHEMA_VERSION,
-        result,
-    })?;
-    if output.len() > RESULT_BYTES {
-        return Err("Benchmark worker result exceeded its fixed allowance".into());
-    }
-    std::io::stdout().lock().write_all(&output)?;
-    Ok(())
+    let progress = TransferProgress::default();
+    let started = Instant::now();
+    let stdout = std::io::stdout();
+    let mut encoder = protocol::Encoder::new(stdout.lock());
+    std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let progressRef = &progress;
+        let cancelledRef = &cancelled;
+        scope.spawn(move || {
+            let result = epp_core::transfer::measureFrom(
+                input.plan,
+                input.binding,
+                cancelledRef,
+                progressRef,
+            );
+            let _ = sender.send(result);
+        });
+        let outcome = loop {
+            match receiver.recv_timeout(Duration::from_millis(25)) {
+                Ok(result) => {
+                    break encoder
+                        .progress(&progress, started)
+                        .and_then(|()| encoder.finish(result?));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if let Err(error) = encoder.progress(&progress, started) {
+                        break Err(error);
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err("Benchmark transfer task ended without a result".into());
+                }
+            }
+        };
+        cancelled.store(true, Ordering::SeqCst);
+        outcome
+    })
 }
 
 pub fn measureFrom(
     plan: TransferPlan,
     binding: SourceBinding,
     cancelled: &AtomicBool,
+) -> ServiceResult<TransferResult> {
+    measureWithProgress(plan, binding, cancelled, |_| Ok(()))
+}
+
+pub fn measureWithProgress(
+    plan: TransferPlan,
+    binding: SourceBinding,
+    cancelled: &AtomicBool,
+    onProgress: impl FnMut(ProgressUpdate) -> ServiceResult<()>,
 ) -> ServiceResult<TransferResult> {
     let image = std::env::current_exe()?.canonicalize()?;
     if !image
@@ -75,14 +110,25 @@ pub fn measureFrom(
     {
         return Err("Isolated transfers must be launched by the known service image".into());
     }
-    measureUsing(&image, plan, binding, cancelled)
+    measureUsingProgress(&image, plan, binding, cancelled, onProgress)
 }
 
+#[cfg(test)]
 fn measureUsing(
     image: &Path,
     plan: TransferPlan,
     binding: SourceBinding,
     cancelled: &AtomicBool,
+) -> ServiceResult<TransferResult> {
+    measureUsingProgress(image, plan, binding, cancelled, |_| Ok(()))
+}
+
+fn measureUsingProgress(
+    image: &Path,
+    plan: TransferPlan,
+    binding: SourceBinding,
+    cancelled: &AtomicBool,
+    mut onProgress: impl FnMut(ProgressUpdate) -> ServiceResult<()>,
 ) -> ServiceResult<TransferResult> {
     let started = Instant::now();
     let input = Request {
@@ -115,10 +161,14 @@ fn measureUsing(
         ],
         Some(&mapping.handle),
     )?;
-    let output = child.collect(RESULT_BYTES, check)?;
-    parseResult(&input, &output)
+    let mut decoder = protocol::Decoder::new(&input);
+    child.stream(protocol::STREAM_BYTES, check, |chunk| {
+        decoder.consume(chunk, &mut onProgress)
+    })?;
+    decoder.finish()
 }
 
+#[cfg(test)]
 fn parseResult(input: &Request, output: &[u8]) -> ServiceResult<TransferResult> {
     if output.is_empty() || output.len() > RESULT_BYTES {
         return Err("Benchmark worker result is outside its fixed allowance".into());

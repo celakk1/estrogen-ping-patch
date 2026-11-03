@@ -34,7 +34,7 @@ Use camelCase variables, functions, and fields except externally mandated names.
 
 Optional adapter-bound echo and load collectors now preserve native policy/route evidence, exact candidate checkpoint identity, fixed source bindings, and durable raw/receipt readback. Raw load conversion recomputes metrics and refuses inadequate request overlap or successful replies. These are internal library components; production service session/storage/worker integration, complete profile guards, candidate generation, calibrated confirmation, and retention remain unfinished.
 
-An optional [restricted transfer worker](benchmark-worker.md) now launches under a validated low-integrity token with a sealed request capability, bounded terminal result, and independent process cleanup. Actual source-bound IPv4/IPv6 loopback transfers and stalled cancellation/deadline checks passed locally. Live counter reporting, comparison-context provenance, installed-account/TLS checks, and collector delegation remain pending; production optimization stays disabled.
+An optional [restricted transfer worker](benchmark-worker.md) now launches under a validated low-integrity token with a sealed request capability, bounded versioned live counter frames and terminal result, and independent process cleanup. Actual source-bound IPv4/IPv6 loopback transfers, stalled cancellation/deadline, parent-death, and progress-consumer refusal/unwind checks passed locally. Progress is provisional; counter timing qualification, comparison-context provenance, installed-account/TLS checks, and collector delegation remain pending. Production optimization stays disabled.
 
 Current measured evidence and its limits are recorded in [validation](validation.md).
 
