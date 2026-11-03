@@ -107,6 +107,30 @@ impl SourceBindings {
     }
 }
 
+pub trait BoundTransferRunner: Sync {
+    fn measureFrom(
+        &self,
+        plan: TransferPlan,
+        binding: super::SourceBinding,
+        cancelled: &AtomicBool,
+        progress: &TransferProgress,
+    ) -> AppResult<TransferResult>;
+}
+
+struct DirectBoundTransfer;
+
+impl BoundTransferRunner for DirectBoundTransfer {
+    fn measureFrom(
+        &self,
+        plan: TransferPlan,
+        binding: super::SourceBinding,
+        cancelled: &AtomicBool,
+        progress: &TransferProgress,
+    ) -> AppResult<TransferResult> {
+        super::measureFrom(plan, binding, cancelled, progress)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Phase {
@@ -182,6 +206,7 @@ impl Drop for Completion {
 struct Observer<'a, F: FnMut(SessionProgress)> {
     plan: &'a SessionPlan,
     sourceBindings: Option<&'a SourceBindings>,
+    transferRunner: &'a dyn BoundTransferRunner,
     cancelled: &'a AtomicBool,
     deadline: Instant,
     echoProbe: EchoProbe,
@@ -306,6 +331,7 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
         let binding = self
             .sourceBindings
             .map(|bindings| bindings.transfers[providerIndex]);
+        let transferRunner = self.transferRunner;
         let result = thread::scope(|scope| {
             let completion = Completion(done.clone());
             let progress = &progress;
@@ -313,7 +339,14 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
             let worker = scope.spawn(move || {
                 let _completion = completion;
                 if let Some(binding) = binding {
-                    super::measureFrom(plan, binding, cancelled, progress)
+                    let result = transferRunner.measureFrom(plan.clone(), binding, cancelled, progress)?;
+                    if serde_json::to_value(&result.plan)? != serde_json::to_value(&plan)?
+                        || result.sourceBinding != Some(binding)
+                        || serde_json::to_value(&result.provider)? != serde_json::to_value(plan.provider.info()?)?
+                    {
+                        return Err("Bound transfer runner returned a different plan, provider, source, or peer".into());
+                    }
+                    Ok(result)
                 } else {
                     measure(plan, cancelled, progress)
                 }
@@ -361,7 +394,14 @@ pub fn runSession(
     cancelled: &AtomicBool,
     onProgress: impl FnMut(SessionProgress),
 ) -> AppResult<SessionRun> {
-    runSessionInternal(config, plan, None, cancelled, onProgress)
+    runSessionInternal(
+        config,
+        plan,
+        None,
+        cancelled,
+        onProgress,
+        &DirectBoundTransfer,
+    )
 }
 
 pub fn runSourceBoundSession(
@@ -371,7 +411,32 @@ pub fn runSourceBoundSession(
     cancelled: &AtomicBool,
     onProgress: impl FnMut(SessionProgress),
 ) -> AppResult<SessionRun> {
-    runSessionInternal(config, plan, Some(bindings), cancelled, onProgress)
+    runSourceBoundSessionWithRunner(
+        config,
+        plan,
+        bindings,
+        cancelled,
+        onProgress,
+        &DirectBoundTransfer,
+    )
+}
+
+pub fn runSourceBoundSessionWithRunner(
+    config: Config,
+    plan: SessionPlan,
+    bindings: SourceBindings,
+    cancelled: &AtomicBool,
+    onProgress: impl FnMut(SessionProgress),
+    transferRunner: &dyn BoundTransferRunner,
+) -> AppResult<SessionRun> {
+    runSessionInternal(
+        config,
+        plan,
+        Some(bindings),
+        cancelled,
+        onProgress,
+        transferRunner,
+    )
 }
 
 fn runSessionInternal(
@@ -380,6 +445,7 @@ fn runSessionInternal(
     sourceBindings: Option<SourceBindings>,
     cancelled: &AtomicBool,
     onProgress: impl FnMut(SessionProgress),
+    transferRunner: &dyn BoundTransferRunner,
 ) -> AppResult<SessionRun> {
     plan.validate(&config)?;
     if let Some(bindings) = &sourceBindings {
@@ -389,6 +455,7 @@ fn runSessionInternal(
     let mut observer = Observer {
         plan: &plan,
         sourceBindings: sourceBindings.as_ref(),
+        transferRunner,
         cancelled,
         deadline: Instant::now() + Duration::from_secs(u64::from(config.sessionMinutes) * 60),
         echoProbe: EchoProbe::default(),

@@ -6,6 +6,194 @@ use crate::{
 };
 use session::{Phase, SessionPlan, SourceBindings, runSourceBoundSession};
 
+struct RefusingRunner(std::sync::atomic::AtomicUsize);
+
+impl session::BoundTransferRunner for RefusingRunner {
+    fn measureFrom(
+        &self,
+        _: TransferPlan,
+        _: SourceBinding,
+        _: &AtomicBool,
+        _: &TransferProgress,
+    ) -> crate::AppResult<TransferResult> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err("test delegated transfer refusal".into())
+    }
+}
+
+#[test]
+fn stoppedOrInvalidSessionsNeverInvokeTheDelegatedTransferRunner() {
+    let runner = RefusingRunner(std::sync::atomic::AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let provider = Provider::UserOwnedHttp {
+        origin: format!("http://{}/", listener.local_addr().unwrap()),
+    };
+    let (plan, bindings) = scopedPlan(provider);
+    let run = session::runSourceBoundSessionWithRunner(
+        Config::default(),
+        plan.clone(),
+        bindings.clone(),
+        &AtomicBool::new(true),
+        |_| {},
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(run.status, "cancelled");
+    assert!(run.transfers.is_empty() && run.latencySamples.is_empty());
+    let mut invalid = bindings;
+    invalid.transfers.clear();
+    assert!(
+        session::runSourceBoundSessionWithRunner(
+            Config::default(),
+            plan,
+            invalid,
+            &AtomicBool::new(false),
+            |_| panic!("invalid scope produced progress"),
+            &runner
+        )
+        .is_err()
+    );
+    assert_eq!(runner.0.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn aDelegatedTransferRefusalCannotFallBackToInProcessHttp() {
+    let runner = RefusingRunner(std::sync::atomic::AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let provider = Provider::UserOwnedHttp {
+        origin: format!("http://{}/", listener.local_addr().unwrap()),
+    };
+    let (plan, bindings) = scopedPlan(provider);
+    let run = session::runSourceBoundSessionWithRunner(
+        Config::default(),
+        plan,
+        bindings.clone(),
+        &AtomicBool::new(false),
+        |_| {},
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(runner.0.load(Ordering::SeqCst), 1);
+    assert_eq!(run.status, "partialFailure");
+    assert_eq!(run.sourceBindings, Some(bindings));
+    assert_eq!(run.transfers.len(), 1);
+    assert!(run.transfers[0].result.is_none());
+    assert!(
+        run.transfers[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("delegated transfer refusal")
+    );
+    for phase in [Phase::Idle, Phase::Recovery] {
+        assert!(
+            run.latencySamples
+                .iter()
+                .any(|sample| sample.phase == phase)
+        );
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[cfg(windows)]
+struct RecordingRunner {
+    mutation: u8,
+    calls: std::sync::Mutex<Vec<(Direction, SourceBinding, u64)>>,
+}
+
+#[cfg(windows)]
+impl session::BoundTransferRunner for RecordingRunner {
+    fn measureFrom(
+        &self,
+        plan: TransferPlan,
+        binding: SourceBinding,
+        cancelled: &AtomicBool,
+        progress: &TransferProgress,
+    ) -> crate::AppResult<TransferResult> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((plan.direction, binding, plan.bytes));
+        let mut result = crate::transfer::measureFrom(plan, binding, cancelled, progress)?;
+        match self.mutation {
+            1 => result.plan.bytes += 1,
+            2 => result.sourceBinding.as_mut().unwrap().peer.set_port(
+                if binding.peer.port() == u16::MAX {
+                    u16::MAX - 1
+                } else {
+                    binding.peer.port() + 1
+                },
+            ),
+            3 => result.provider.protocol = "unexpected protocol".into(),
+            _ => {}
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn delegatedTransfersKeepBothDirectionsAndRejectChangedResultIdentities() {
+    for mutation in 0..4 {
+        let (provider, worker) = fixture(Behavior::Normal, if mutation == 0 { 2 } else { 1 });
+        let (plan, bindings) = scopedPlan(provider);
+        let runner = RecordingRunner {
+            mutation,
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let run = session::runSourceBoundSessionWithRunner(
+            Config::default(),
+            plan,
+            bindings.clone(),
+            &AtomicBool::new(false),
+            |_| {},
+            &runner,
+        )
+        .unwrap();
+        worker.join().unwrap();
+        let calls = runner.calls.lock().unwrap();
+        if mutation == 0 {
+            assert_eq!(
+                *calls,
+                vec![
+                    (Direction::Download, bindings.transfers[0], 4096),
+                    (Direction::Upload, bindings.transfers[0], 4096)
+                ]
+            );
+            assert_eq!(run.status, "completed");
+            assert!(
+                run.transfers
+                    .iter()
+                    .all(|phase| phase.result.as_ref().unwrap().sourceBinding
+                        == Some(bindings.transfers[0]))
+            );
+        } else {
+            assert_eq!(calls.len(), 1);
+            assert_eq!(run.status, "partialFailure");
+            assert_eq!(run.transfers.len(), 1);
+            assert!(run.transfers[0].result.is_none());
+            assert!(
+                run.transfers[0]
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("different plan, provider, source, or peer")
+            );
+        }
+        assert_eq!(run.sourceBindings, Some(bindings));
+    }
+}
+
 fn scopedPlan(provider: Provider) -> (SessionPlan, SourceBindings) {
     let origin = reqwest::Url::parse(&provider.info().unwrap().origin).unwrap();
     let peer = format!("{}:{}", origin.host_str().unwrap(), origin.port().unwrap())
