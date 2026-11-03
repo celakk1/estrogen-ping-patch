@@ -76,6 +76,16 @@ impl Scope {
         {
             return Err("Bound load collection requires complete provider peers, echo-only latency, twelve idle rounds, bounded heartbeat gaps, a five-minute maximum trial, and thirty seconds of native-verification headroom".into());
         }
+        let roundMs = plan.latencyEndpoints.len() as u64 * plan.intervalMs;
+        let loadedPhaseMs = 12 * roundMs;
+        let minimumSessionMs = plan.providers.len() as u64
+            * (2 * u64::from(plan.idleRounds) * roundMs + 2 * loadedPhaseMs);
+        if plan.phaseTimeoutMs < loadedPhaseMs {
+            return Err(format!("Each transfer phase needs at least {:.1} seconds for twelve paced probes per destination; its limit is {:.1} seconds. Increase the phase timeout or use fewer destinations", loadedPhaseMs as f64/1000.0, plan.phaseTimeoutMs as f64/1000.0).into());
+        }
+        if minimumSessionMs >= u64::from(config.sessionMinutes) * 60_000 {
+            return Err(format!("This load plan needs more than {:.1} seconds of sampling across all providers and phases; the session limit is {} seconds. Allow more time or use fewer providers and destinations",minimumSessionMs as f64/1000.0,u64::from(config.sessionMinutes)*60).into());
+        }
         AdapterScope::validateInput(template, &targets(&plan.latencyEndpoints, peers)?)
     }
 

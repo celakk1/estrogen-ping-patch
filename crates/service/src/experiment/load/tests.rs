@@ -668,3 +668,51 @@ fn variationReceiptsUseRawRttValuesAndRefuseSubMillisecondRules() {
         }
     }
 }
+
+#[test]
+fn insufficientSamplingTimeIsRefusedBeforeNativeInspection() {
+    let (scope, _, _) = fixture();
+    let mut outcomes = Vec::new();
+    for scenario in 0..5 {
+        let mut template = scope.adapter.template.clone();
+        template.leaseExpiresAtUnixMs = template.createdAtUnixMs + 300_000;
+        let mut config = scope.config.clone();
+        let mut plan = scope.sessionPlan.clone();
+        let mut peers = vec![scope.bindings.transfers[0].peer];
+        if scenario == 0 || scenario == 4 {
+            plan.phaseTimeoutMs = if scenario == 0 { 5000 } else { 6000 };
+        } else {
+            plan.latencyEndpoints = (0..if scenario == 1 { 4 } else { 5 })
+                .map(|index| {
+                    let mut endpoint = plan.latencyEndpoints[0].clone();
+                    endpoint.id = format!("echo-{index}");
+                    endpoint.address = format!("192.0.2.{}", 20 + index);
+                    endpoint
+                })
+                .collect();
+            plan.providers = (0..2)
+                .map(|index| Provider::UserOwnedHttp {
+                    origin: format!("https://owned-{index}.example/"),
+                })
+                .collect();
+            peers = vec![
+                "203.0.113.10:443".parse().unwrap(),
+                "203.0.113.11:443".parse().unwrap(),
+            ];
+            plan.phaseTimeoutMs = 15_000;
+            if scenario >= 2 {
+                config.sessionMinutes = if scenario == 2 { 2 } else { 3 };
+            }
+        }
+        plan.validate(&config).unwrap();
+        template.validate().unwrap();
+        outcomes.push((
+            scenario,
+            Scope::validateInput(&template, &config, &plan, &peers).is_ok(),
+        ));
+    }
+    assert_eq!(
+        outcomes,
+        vec![(0, false), (1, false), (2, false), (3, true), (4, true)]
+    );
+}
