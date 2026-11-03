@@ -15,7 +15,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER, GENERIC_READ, GENERIC_WRITE,
+        ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER, GENERIC_READ, GENERIC_WRITE, HANDLE,
         INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Security::SECURITY_ATTRIBUTES,
@@ -26,13 +26,15 @@ use windows_sys::Win32::{
     System::{
         JobObjects::{
             CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_UI_RESTRICTIONS,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+            JobObjectBasicUIRestrictions, JobObjectExtendedLimitInformation,
             QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         },
         Pipes::{CreatePipe, PeekNamedPipe},
         Threading::{
-            CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, DeleteProcThreadAttributeList,
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
+            CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList,
             EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
             LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, ResumeThread,
@@ -40,6 +42,36 @@ use windows_sys::Win32::{
         },
     },
 };
+
+#[cfg(any(test, feature = "automatic-trials"))]
+pub(crate) mod request;
+#[cfg(any(test, feature = "automatic-trials"))]
+mod restricted;
+
+fn workerParameters() -> ServiceResult<(Vec<u16>, Vec<u16>)> {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetSystemDirectoryW, GetWindowsDirectoryW,
+    };
+    let mut windows = vec![0u16; 32768];
+    let mut system = vec![0u16; 32768];
+    let rootLength =
+        unsafe { GetWindowsDirectoryW(windows.as_mut_ptr(), windows.len() as u32) } as usize;
+    let directoryLength =
+        unsafe { GetSystemDirectoryW(system.as_mut_ptr(), system.len() as u32) } as usize;
+    if rootLength == 0
+        || rootLength >= windows.len()
+        || directoryLength == 0
+        || directoryLength >= system.len()
+    {
+        return Err("Cannot resolve the fixed benchmark worker environment".into());
+    }
+    let root = String::from_utf16(&windows[..rootLength])?;
+    let environment = format!("SystemRoot={root}\0WINDIR={root}\0\0")
+        .encode_utf16()
+        .collect();
+    system.truncate(directoryLength + 1);
+    Ok((environment, system))
+}
 #[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
 use windows_sys::Win32::{
     Foundation::{ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND, FILETIME},
@@ -185,16 +217,54 @@ pub(crate) struct CommandJob {
 impl CommandJob {
     #[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
     pub(crate) fn spawn(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
-        Self::create(executable, arguments, false, ProcessRole::Setting)
+        Self::create(
+            executable,
+            arguments,
+            false,
+            ProcessRole::Setting,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn spawnReader(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
-        Self::create(executable, arguments, false, ProcessRole::ReadOnly)
+        Self::create(
+            executable,
+            arguments,
+            false,
+            ProcessRole::ReadOnly,
+            None,
+            None,
+        )
+    }
+
+    #[cfg(any(test, feature = "automatic-trials"))]
+    pub(crate) fn spawnRestrictedReader(
+        executable: &Path,
+        arguments: &[String],
+        input: Option<&OwnedHandle>,
+    ) -> ServiceResult<Self> {
+        let token = restricted::create()?;
+        Self::create(
+            executable,
+            arguments,
+            false,
+            ProcessRole::ReadOnly,
+            Some(token.as_raw_handle()),
+            input.map(AsRawHandle::as_raw_handle),
+        )
     }
 
     #[cfg(all(test, any(feature = "native-mtu-lab", feature = "native-recovery")))]
     pub(crate) fn spawnFixture(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
-        Self::create(executable, arguments, true, ProcessRole::Setting)
+        Self::create(
+            executable,
+            arguments,
+            true,
+            ProcessRole::Setting,
+            None,
+            None,
+        )
     }
 
     fn create(
@@ -202,6 +272,8 @@ impl CommandJob {
         arguments: &[String],
         allowChildren: bool,
         role: ProcessRole,
+        restrictedToken: Option<HANDLE>,
+        input: Option<HANDLE>,
     ) -> ServiceResult<Self> {
         ensureStopped()?;
         if role == ProcessRole::ReadOnly && READER_QUIESCENCE_UNKNOWN.load(Ordering::SeqCst) {
@@ -219,6 +291,11 @@ impl CommandJob {
             limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
             limits.BasicLimitInformation.ActiveProcessLimit = 1;
         }
+        if restrictedToken.is_some() {
+            limits.BasicLimitInformation.LimitFlags |=
+                windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            limits.ProcessMemoryLimit = 256 * 1024 * 1024;
+        }
         succeeded("SetInformationJobObject", unsafe {
             SetInformationJobObject(
                 job.as_raw_handle(),
@@ -227,6 +304,20 @@ impl CommandJob {
                 size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )
         })?;
+        if restrictedToken.is_some() {
+            let limits = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+                UIRestrictionsClass:
+                    windows_sys::Win32::System::SystemServices::JOB_OBJECT_UILIMIT_ALL,
+            };
+            succeeded("Restrict benchmark job UI access", unsafe {
+                SetInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectBasicUIRestrictions,
+                    (&limits as *const JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
+                    size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+                )
+            })?;
+        }
         let inheritable = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: null_mut(),
@@ -266,6 +357,9 @@ impl CommandJob {
         if writer.is_some() {
             inherited.push(stdout);
         }
+        if let Some(input) = input {
+            inherited.push(input);
+        }
         let mut attributes = Attributes::new(2)?;
         // assigning the job after spawning would leave a service-crash window.
         attributes.update(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
@@ -274,7 +368,7 @@ impl CommandJob {
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        startup.StartupInfo.hStdInput = nullFile.as_raw_handle();
+        startup.StartupInfo.hStdInput = input.unwrap_or(nullFile.as_raw_handle());
         startup.StartupInfo.hStdOutput = stdout;
         startup.StartupInfo.hStdError = if role == ProcessRole::ReadOnly {
             stdout
@@ -283,20 +377,44 @@ impl CommandJob {
         };
         startup.lpAttributeList = attributes.pointer();
         let mut created = PROCESS_INFORMATION::default();
-        succeeded("CreateProcessW", unsafe {
-            CreateProcessW(
-                application.as_ptr(),
-                line.as_mut_ptr(),
-                null(),
-                null(),
-                1,
-                CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-                null(),
-                null(),
-                &startup.StartupInfo,
-                &mut created,
-            )
-        })?;
+        let parameters = restrictedToken.map(|_| workerParameters()).transpose()?;
+        if let Some(token) = restrictedToken {
+            let (environment, directory) = parameters.as_ref().unwrap();
+            succeeded("Create restricted benchmark process", unsafe {
+                CreateProcessAsUserW(
+                    token,
+                    application.as_ptr(),
+                    line.as_mut_ptr(),
+                    null(),
+                    null(),
+                    1,
+                    // detached launch avoids console initialization before the restricted entry point.
+                    DETACHED_PROCESS
+                        | CREATE_SUSPENDED
+                        | EXTENDED_STARTUPINFO_PRESENT
+                        | CREATE_UNICODE_ENVIRONMENT,
+                    environment.as_ptr().cast(),
+                    directory.as_ptr(),
+                    &startup.StartupInfo,
+                    &mut created,
+                )
+            })?;
+        } else {
+            succeeded("CreateProcessW", unsafe {
+                CreateProcessW(
+                    application.as_ptr(),
+                    line.as_mut_ptr(),
+                    null(),
+                    null(),
+                    1,
+                    CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                    null(),
+                    null(),
+                    &startup.StartupInfo,
+                    &mut created,
+                )
+            })?;
+        }
         Ok(Self {
             job,
             process: unsafe { OwnedHandle::from_raw_handle(created.hProcess) },

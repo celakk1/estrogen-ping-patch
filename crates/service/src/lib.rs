@@ -18,6 +18,8 @@ pub mod routing;
 mod security;
 #[cfg(windows)]
 mod storage;
+#[cfg(all(windows, feature = "automatic-trials"))]
+pub mod transfer_worker;
 #[cfg(windows)]
 mod transport;
 pub mod trial;

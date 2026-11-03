@@ -35,6 +35,19 @@ impl Drop for LocalAllocation {
 pub(crate) struct Descriptor(LocalAllocation);
 
 impl Descriptor {
+    #[cfg(any(test, feature = "automatic-trials"))]
+    pub(crate) fn workerRequest() -> ServiceResult<Self> {
+        let owner = currentSid()?;
+        Self::fromSddl(&format!(
+            "D:P(A;;GA;;;{owner})(A;;0x00000004;;;AU)(A;;RC;;;OW)"
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testObject(sddl: &str) -> ServiceResult<Self> {
+        Self::fromSddl(sddl)
+    }
+
     pub(crate) fn pipe(ownerSid: &str, serverSid: &str) -> ServiceResult<Self> {
         let ownerSid = canonicalSid(ownerSid)?;
         let serverSid = canonicalSid(serverSid)?;
@@ -70,7 +83,7 @@ impl Descriptor {
     }
 }
 
-fn sidText(sid: *mut c_void) -> ServiceResult<String> {
+pub(crate) fn sidText(sid: *mut c_void) -> ServiceResult<String> {
     let mut text = std::ptr::null_mut();
     if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
         return Err(std::io::Error::last_os_error().into());

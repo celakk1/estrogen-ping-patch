@@ -138,6 +138,15 @@ try {
             invokeChecked 'cargo.exe' @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
             invokeChecked 'cargo.exe' @('test', '--locked', '-p', 'epp-service', '--features', 'automatic-trials')
             invokeChecked 'cargo.exe' @('clippy', '--locked', '-p', 'epp-service', '--features', 'automatic-trials', '--all-targets', '--', '-D', 'warnings')
+            $workerTarget = Join-Path $projectRoot 'target\transfer-worker-tests'
+            invokeChecked 'cargo.exe' @('build', '--locked', '-p', 'epp-service', '--features', 'automatic-trials', '--bin', 'epp-network-service', '--target-dir', $workerTarget)
+            $previousWorkerImage = $env:EPP_TRANSFER_WORKER_IMAGE
+            try {
+                $env:EPP_TRANSFER_WORKER_IMAGE = Join-Path $workerTarget 'debug\epp-network-service.exe'
+                invokeChecked 'cargo.exe' @('test', '--locked', '-p', 'epp-service', '--features', 'automatic-trials', '--lib', 'transfer_worker::tests::isolatedWorker', '--', '--ignored')
+            } finally {
+                $env:EPP_TRANSFER_WORKER_IMAGE = $previousWorkerImage
+            }
             invokeChecked 'node.exe' @('--test', 'scripts/launcher.test.mjs', 'scripts/webview-test.test.mjs', 'scripts/service-manager.test.mjs', 'scripts/native-mtu-lab.test.mjs', 'scripts/dns-listeners.test.mjs')
         }
         'package' {
