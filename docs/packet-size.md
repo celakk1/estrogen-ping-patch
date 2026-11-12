@@ -16,7 +16,9 @@ The desktop limits a run to 144 probes and two minutes, with a 750 ms per-reques
 
 This is a diagnostic prerequisite for investigating `ip.pathMtu`, not an enabled optimizer candidate. An explicit size error can come from Windows' cached path knowledge or an intermediate router. Windows may already adapt correctly; a smaller path limit does not prove a broken connection or a gaming performance benefit. ICMP filters, rate limiting, and reply fragmentation limit what can be inferred. The check is IPv4-only and tests one destination. It does not establish a universal MTU, application packet loss, speed, or stable performance across games.
 
-Production admission still requires a demonstrated relevant problem, fresh supported interface and environment evidence, policy/consent, exact service-owned recovery, matched original/candidate/original performance trials, regression guards, independent confirmation, and verified restoration. No result grants permission, applies a setting, bypasses the empty enabled catalog, or retains a candidate. IPv6 diagnosis and multi-destination automatic candidate generation remain unfinished.
+Production admission still requires a demonstrated relevant problem, fresh supported interface and environment evidence, policy/consent, exact service-owned recovery, matched original/candidate/original performance trials, regression guards, independent confirmation, and verified restoration. No result grants permission, applies a setting, bypasses the empty enabled catalog, or retains a candidate. IPv6 and service-owned multi-destination diagnosis remain unfinished.
+
+The optional service library can now derive a [diagnostic MTU proposal](candidates.md#diagnostic-mtu-proposals) from a complete frozen multi-destination evidence bundle. This single-destination desktop check does not invoke that path. Service-owned collection, production admission, IPv6 diagnosis, and automatic execution remain unfinished.
 
 ## History and export
 

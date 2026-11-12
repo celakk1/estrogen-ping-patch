@@ -1,6 +1,6 @@
 # MTU trial consent
 
-The service library includes `MtuConsent`, a preview-and-approval controller for temporary MTU trials. The normal installed service now exposes authenticated preview, approval-recording, status, and cancellation operations through the version-three pipe. These operations can write private permission records, but cannot change Windows network settings. Desktop command bindings are present; the review screen and autonomous session workflow remain unfinished.
+The service library includes `MtuConsent`, a preview-and-approval controller for temporary MTU trials. The normal installed service now exposes authenticated preview, approval-recording, status, and cancellation operations through the version-four pipe. These operations can write private permission records, but cannot change Windows network settings. Desktop command bindings are present; the review screen and autonomous session workflow remain unfinished.
 
 ## Reviewed scope
 

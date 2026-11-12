@@ -38,4 +38,6 @@ The optional adapter-bound load collector now uses a [restricted transfer worker
 
 Current measured evidence and its limits are recorded in [validation](validation.md).
 
+The optional service library also derives [diagnostic MTU proposals](candidates.md#diagnostic-mtu-proposals) from complete controlled multi-destination evidence with stable native policy and routes. Full-size success does not invent a reduction; changed, incomplete, stale, or unsupported evidence is refused. Fresh originals are required again before constructing a checkpoint. This is a hypothesis generator, not a verified performance problem, enabled candidate catalog, grant, or production execution path. Service-owned diagnosis, complete profile guards, review/session integration, and independent confirmation remain unfinished.
+
 Run `test.bat`, `build.bat`, and `package.bat` as appropriate. Inspect the complete staged diff and run `node scripts/scan-staged.mjs` before a meaningful validated milestone commit. Never commit secrets or private runtime data. Do not mark unfinished requirements complete because compilation or unit tests pass. Do not publish releases automatically.
