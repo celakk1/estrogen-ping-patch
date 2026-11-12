@@ -16,6 +16,8 @@ use epp_core::{
 use rusqlite::Connection;
 use std::{collections::BTreeMap, net::SocketAddr};
 
+pub mod recording;
+
 pub struct Scope {
     adapter: AdapterScope,
     config: Config,
@@ -161,7 +163,7 @@ impl Scope {
             bindings.clone(),
             &AtomicBool::new(true),
             |_| {},
-            &crate::transfer_worker::IsolatedTransferRunner::default(),
+            &recording::Runner,
         )?;
         let hashes = adapter.hashes(comparisonLoad::cohortSha256(&blueprint, &selections)?);
         let attempts =
@@ -243,6 +245,7 @@ impl Scope {
             }
         }
         measurement::validateStorage(database)?;
+        recording::initialize(database)?;
         database.execute_batch("CREATE TABLE IF NOT EXISTS adapter_load_measurements(run_id INTEGER PRIMARY KEY REFERENCES load_sessions(id), experiment_id TEXT NOT NULL, payload_json TEXT NOT NULL, sha256 TEXT NOT NULL)")?;
         Ok(Collector {
             scope: self,
@@ -292,7 +295,7 @@ impl Collector<'_> {
         after: &(policy::Capture, Vec<routing::Capture>),
         configuration: Configuration,
     ) -> ServiceResult<Session> {
-        if run.transferExecution != Some(session::TransferExecution::RestrictedWorkerV2) {
+        if run.transferExecution != Some(session::TransferExecution::RecordedRestrictedWorkerV1) {
             return Err("Bound load collection requires isolated-worker execution evidence".into());
         }
         if (configuration == Configuration::Candidate) != self.checkpoint.is_some() {
@@ -387,21 +390,47 @@ impl Measurements for Collector<'_> {
         }
         let before = self.scope.adapter.observe(configuration)?;
         progress.check()?;
+        let header = recording::Header::capture(
+            &self.scope,
+            &self.plan,
+            configuration,
+            self.checkpoint.as_ref(),
+            &before,
+        )?;
+        let mut recorder = recording::Recorder::start(self.database, header)?;
         let cancelled = AtomicBool::new(false);
         let mut progressError = None;
-        let mut run = session::runSourceBoundSessionWithRunner(
+        let run = session::runSourceBoundSessionWithRunner(
             self.scope.config.clone(),
             self.scope.sessionPlan.clone(),
             self.scope.bindings.clone(),
             &cancelled,
-            |_| {
-                if let Err(error) = progress.check() {
+            |update| {
+                if progressError.is_some() {
+                    return;
+                }
+                let result = progress
+                    .check()
+                    .and_then(|()| recorder.append(self.database, update, nowUnixMs()?));
+                if let Err(error) = result {
                     progressError = Some(error.to_string());
                     cancelled.store(true, Ordering::SeqCst);
                 }
             },
-            &crate::transfer_worker::IsolatedTransferRunner::default(),
-        )?;
+            &recording::Runner,
+        );
+        let mut run = match run {
+            Ok(run) => run,
+            Err(error) => {
+                let reason = error.to_string();
+                recorder
+                    .abort(self.database, &reason)
+                    .map_err(|recordingError| {
+                        format!("{reason}; recording could not be closed: {recordingError}")
+                    })?;
+                return Err(error);
+            }
+        };
         if let Err(error) = progress.check() {
             progressError.get_or_insert_with(|| error.to_string());
         }
@@ -410,7 +439,7 @@ impl Measurements for Collector<'_> {
         } else {
             Err("Load collection stopped before final native verification".into())
         };
-        epp_core::storage::saveLoadSession(self.database, &mut run)?;
+        recorder.finish(self.database, &mut run, progressError.as_deref())?;
         if let Some(error) = progressError {
             return Err(error.into());
         }

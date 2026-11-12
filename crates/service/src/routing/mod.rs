@@ -117,7 +117,7 @@ impl Snapshot {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum Capture {
     Captured { snapshot: Snapshot },

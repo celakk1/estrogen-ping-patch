@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 type NativeEvidence = (policy::Capture, Vec<routing::Capture>);
 
-fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
+pub(super) fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
     let (mut template, config, endpoints, _, current, mut routes) = evidence();
     template.createdAtUnixMs -= 30_000;
     template.leaseExpiresAtUnixMs -= 30_000;
@@ -83,7 +83,7 @@ fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
     )
 }
 
-fn plan(scope: &Scope) -> Plan {
+pub(super) fn plan(scope: &Scope) -> Plan {
     let threshold = |absolute| Threshold {
         absolute,
         relativeFraction: 0.0,
@@ -178,7 +178,7 @@ fn savedRaw(
         collector.scope.bindings.clone(),
         &AtomicBool::new(true),
         |_| {},
-        &crate::transfer_worker::IsolatedTransferRunner::default(),
+        &recording::Runner,
     )
     .unwrap();
     run.startedAt = time(start);
@@ -343,7 +343,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
 
 #[test]
 fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
-    for failure in 0..9 {
+    for failure in 0..10 {
         let (scope, current, routes) = fixture();
         let plan = plan(&scope);
         let storage = Database::new();
@@ -371,6 +371,7 @@ fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
             5 => after.0.native.settings.nlMtu = 1427,
             7 => run.transferExecution = None,
             8 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV1),
+            9 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV2),
             _ => {}
         }
         assert!(

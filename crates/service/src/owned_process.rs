@@ -1,5 +1,5 @@
 use crate::ServiceResult;
-#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
+#[cfg(any(feature = "automatic-trials", feature = "native-recovery"))]
 use crate::journal::MutatorIdentity;
 use std::{
     ffi::c_void,
@@ -72,7 +72,7 @@ fn workerParameters() -> ServiceResult<(Vec<u16>, Vec<u16>)> {
     system.truncate(directoryLength + 1);
     Ok((environment, system))
 }
-#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
+#[cfg(any(feature = "automatic-trials", feature = "native-recovery"))]
 use windows_sys::Win32::{
     Foundation::{ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND, FILETIME},
     System::Threading::{
@@ -689,7 +689,7 @@ impl CommandJob {
     }
 }
 
-#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
+#[cfg(any(feature = "automatic-trials", feature = "native-recovery"))]
 pub(crate) fn processIdentity(
     handle: windows_sys::Win32::Foundation::HANDLE,
     processId: u32,
@@ -711,7 +711,7 @@ pub(crate) fn processIdentity(
     Ok(identity)
 }
 
-#[cfg(any(feature = "native-mtu-lab", feature = "native-recovery"))]
+#[cfg(any(feature = "automatic-trials", feature = "native-recovery"))]
 pub(crate) fn waitForIdentity(identity: &MutatorIdentity, timeout: Duration) -> ServiceResult<()> {
     identity.validate()?;
     let handle = unsafe {

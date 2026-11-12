@@ -157,6 +157,15 @@ pub fn saveLoadSession(
     run: &mut crate::transfer::session::SessionRun,
 ) -> AppResult<()> {
     let transaction = connection.transaction()?;
+    saveLoadSessionInTransaction(&transaction, run)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn saveLoadSessionInTransaction(
+    transaction: &rusqlite::Transaction<'_>,
+    run: &mut crate::transfer::session::SessionRun,
+) -> AppResult<()> {
     transaction.execute(
         "INSERT INTO load_sessions(started_at,status,report_json) VALUES(?1,?2,'{}')",
         params![run.startedAt, run.status],
@@ -166,7 +175,6 @@ pub fn saveLoadSession(
         "UPDATE load_sessions SET report_json=?1 WHERE id=?2",
         params![serde_json::to_string(run)?, run.id],
     )?;
-    transaction.commit()?;
     Ok(())
 }
 

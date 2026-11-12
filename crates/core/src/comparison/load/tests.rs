@@ -465,7 +465,11 @@ fn isolatedExecutionCannotShareALegacyCohortAndSurvivesRawRoundTrip() {
     assert_eq!(roundTrip.transferExecution, run.transferExecution);
     assert_eq!(cohortSha256(&roundTrip, &selections).unwrap(), isolated);
     run.transferExecution = Some(crate::transfer::session::TransferExecution::RestrictedWorkerV2);
-    assert_ne!(cohortSha256(&run, &selections).unwrap(), isolated);
+    let second = cohortSha256(&run, &selections).unwrap();
+    assert_ne!(second, isolated);
+    run.transferExecution =
+        Some(crate::transfer::session::TransferExecution::RecordedRestrictedWorkerV1);
+    assert_ne!(cohortSha256(&run, &selections).unwrap(), second);
     let legacy: SessionRun = serde_json::from_value(legacy).unwrap();
     assert_eq!(legacy.transferExecution, None);
     assert_eq!(

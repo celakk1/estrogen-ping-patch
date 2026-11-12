@@ -19,7 +19,8 @@ mod measurement;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Configuration {
     Original,
     Candidate,

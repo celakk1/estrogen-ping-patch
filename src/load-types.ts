@@ -63,7 +63,7 @@ export interface LoadRun {
   finishedAt: string;
   appVersion: string;
   status: string;
-  transferExecution?: 'restrictedWorkerV1' | 'restrictedWorkerV2';
+  transferExecution?: 'restrictedWorkerV1' | 'restrictedWorkerV2' | 'recordedRestrictedWorkerV1';
   config: Config;
   plan: LoadPlan;
   transfers: {

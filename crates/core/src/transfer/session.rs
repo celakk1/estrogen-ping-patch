@@ -158,6 +158,7 @@ pub enum InterruptedProgress {
 pub enum TransferExecution {
     RestrictedWorkerV1,
     RestrictedWorkerV2,
+    RecordedRestrictedWorkerV1,
 }
 
 struct DirectBoundTransfer;
@@ -232,7 +233,7 @@ pub struct LatencySummary {
     pub results: Vec<EndpointResult>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionProgress {
     pub providerIndex: usize,
