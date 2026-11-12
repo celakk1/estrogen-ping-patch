@@ -21,6 +21,21 @@ const CONTROL_BYTES: u32 = 84;
 const MIN_SEARCH_BYTES: u32 = 576;
 const PACKET_TOO_BIG: u32 = 11009;
 
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub maximumProbes: usize,
+    pub maximumRequestedIpv4Bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            maximumProbes: MAX_PROBES,
+            maximumRequestedIpv4Bytes: MAX_PROBES as u64 * u64::from(MAX_PACKET_BYTES),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plan {
@@ -288,6 +303,7 @@ struct Run<'a, P> {
     start: Instant,
     progress: &'a mut dyn FnMut(&Sample),
     stop: Option<Outcome>,
+    limits: Limits,
 }
 
 impl<P: Probe> Run<'_, P> {
@@ -296,7 +312,6 @@ impl<P: Probe> Run<'_, P> {
             Some(Outcome::Cancelled)
         } else if self.start.elapsed()
             >= Duration::from_millis(u64::from(self.report.plan.budgetMs))
-            || self.report.samples.len() >= MAX_PROBES
         {
             Some(Outcome::BudgetExpired)
         } else {
@@ -311,6 +326,15 @@ impl<P: Probe> Run<'_, P> {
 
     fn sample(&mut self, bytes: u32, control: bool) -> AppResult<Classification> {
         self.check()?;
+        if self.report.samples.len() >= self.limits.maximumProbes
+            || self.report.requestedIpv4Bytes + u64::from(bytes)
+                > self.limits.maximumRequestedIpv4Bytes
+        {
+            self.stop = Some(Outcome::BudgetExpired);
+            return Err(
+                "Packet-size diagnosis reached its probe or requested-byte allowance".into(),
+            );
+        }
         if !self.report.samples.is_empty() {
             let delayStart = Instant::now();
             let delay = Duration::from_millis(u64::from(self.report.plan.intervalMs));
@@ -450,9 +474,27 @@ pub fn diagnose<P: Probe>(
     plan: Plan,
     probe: &mut P,
     cancelled: &AtomicBool,
+    progress: impl FnMut(&Sample),
+) -> AppResult<Report> {
+    diagnoseWithLimits(plan, Limits::default(), probe, cancelled, progress)
+}
+
+pub fn diagnoseWithLimits<P: Probe>(
+    plan: Plan,
+    limits: Limits,
+    probe: &mut P,
+    cancelled: &AtomicBool,
     mut progress: impl FnMut(&Sample),
 ) -> AppResult<Report> {
     plan.validate()?;
+    if !(1..=MAX_PROBES).contains(&limits.maximumProbes)
+        || limits.maximumRequestedIpv4Bytes == 0
+        || limits.maximumRequestedIpv4Bytes > Limits::default().maximumRequestedIpv4Bytes
+    {
+        return Err(
+            "Packet-size resource limits exceed the fixed per-destination allowance".into(),
+        );
+    }
     let now = nowUnixMs()?;
     let mut run = Run {
         report: Report {
@@ -474,6 +516,7 @@ pub fn diagnose<P: Probe>(
         start: Instant::now(),
         progress: &mut progress,
         stop: None,
+        limits,
     };
     match run.diagnose() {
         Ok(outcome) => match run.check() {

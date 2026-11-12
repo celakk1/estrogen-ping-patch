@@ -298,3 +298,84 @@ fn nativeWindowsSourceBoundDfProbesReturnTheRequestedLoopbackPayloadSizes() {
         assert_eq!(echo.nativeCode, Some(0));
     }
 }
+
+#[test]
+fn explicitResourceLimitsStopBeforeTheNextProbeAndPermitExactCompletion() {
+    struct Counting {
+        fixture: Fixture,
+        calls: usize,
+    }
+    impl Probe for Counting {
+        fn measure(
+            &mut self,
+            plan: &Plan,
+            bytes: u32,
+            timeout: Duration,
+        ) -> AppResult<EchoOutcome> {
+            self.calls += 1;
+            self.fixture.measure(plan, bytes, timeout)
+        }
+    }
+    for (maximumProbes, maximumRequestedIpv4Bytes, completed) in [
+        (10, 5088, true),
+        (9, 5088, false),
+        (10, 5087, false),
+        (10, 1, false),
+    ] {
+        let mut probe = Counting {
+            fixture: Fixture::new(1500),
+            calls: 0,
+        };
+        let report = diagnoseWithLimits(
+            plan(),
+            Limits {
+                maximumProbes,
+                maximumRequestedIpv4Bytes,
+            },
+            &mut probe,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        report.validate().unwrap();
+        assert_eq!(probe.calls, report.samples.len());
+        assert!(report.samples.len() <= maximumProbes);
+        assert!(report.requestedIpv4Bytes <= maximumRequestedIpv4Bytes);
+        assert_eq!(
+            report.outcome,
+            if completed {
+                Outcome::TestedLimitReached
+            } else {
+                Outcome::BudgetExpired
+            }
+        );
+    }
+    for limits in [
+        Limits {
+            maximumProbes: 0,
+            ..Limits::default()
+        },
+        Limits {
+            maximumProbes: 145,
+            ..Limits::default()
+        },
+        Limits {
+            maximumRequestedIpv4Bytes: 0,
+            ..Limits::default()
+        },
+        Limits {
+            maximumRequestedIpv4Bytes: 1_296_001,
+            ..Limits::default()
+        },
+    ] {
+        let mut probe = Counting {
+            fixture: Fixture::new(1500),
+            calls: 0,
+        };
+        assert!(
+            diagnoseWithLimits(plan(), limits, &mut probe, &AtomicBool::new(false), |_| {})
+                .is_err()
+        );
+        assert_eq!(probe.calls, 0);
+    }
+}

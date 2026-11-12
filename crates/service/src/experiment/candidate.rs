@@ -12,6 +12,8 @@ use uuid::Uuid;
 
 const MAX_AGE_MS: u64 = 300_000;
 
+pub mod diagnosis;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Evidence {
@@ -37,12 +39,19 @@ pub struct Summary {
     pub expiresAtUnixMs: u64,
 }
 
+#[derive(Serialize)]
+#[serde(transparent)]
 pub struct MtuProposal {
     summary: Summary,
+    #[serde(skip)]
     original: policy::Capture,
+    #[serde(skip)]
     routeSha256: String,
+    #[serde(skip)]
     deadline: Instant,
+    #[serde(skip)]
     highWaterUnixMs: u64,
+    #[serde(skip)]
     stopped: bool,
 }
 
