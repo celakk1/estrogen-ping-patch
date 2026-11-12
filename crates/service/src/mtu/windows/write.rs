@@ -305,6 +305,31 @@ mod tests {
         assert_eq!(row.SitePrefixLength, 64);
     }
 
+    fn parseProcessIdMarker(value: &str) -> Option<u32> {
+        // file creation can be observed before its complete pid has been written.
+        let value = value.strip_suffix('\n')?;
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        value.parse().ok().filter(|pid| *pid != 0)
+    }
+
+    #[test]
+    fn incompleteOrMalformedProcessIdsCannotSatisfyOwnerReadiness() {
+        for value in [
+            "",
+            "123",
+            "12\n3",
+            "0\n",
+            "+123\n",
+            "4294967296\n",
+            "123\npartial",
+        ] {
+            assert_eq!(parseProcessIdMarker(value), None, "{value:?}");
+        }
+        assert_eq!(parseProcessIdMarker("123\n"), Some(123));
+    }
+
     #[test]
     #[ignore]
     fn waitingChild() {
@@ -322,7 +347,7 @@ mod tests {
                 .unwrap();
             std::fs::write(
                 PathBuf::from(marker).with_extension("ready"),
-                descendant.id().to_string(),
+                format!("{}\n", descendant.id()),
             )
             .unwrap();
             descendant.wait().unwrap();
@@ -345,7 +370,7 @@ mod tests {
             "--exact",
             "mtu::windows::write::tests::waitingChild",
         ]);
-        std::fs::write(marker, child.id().to_string()).unwrap();
+        std::fs::write(marker, format!("{}\n", child.id())).unwrap();
         if std::env::var("EPP_MTU_COMMAND_TEST_STAGE").unwrap() == "suspended" {
             std::thread::sleep(Duration::from_secs(60));
         }
@@ -407,12 +432,18 @@ mod tests {
                     .unwrap(),
             );
             let deadline = Instant::now() + Duration::from_secs(10);
-            let childId = loop {
+            let processIds = loop {
                 if let Ok(value) = std::fs::read_to_string(&marker)
-                    && let Ok(pid) = value.parse::<u32>()
-                    && (suspended || marker.with_extension("ready").is_file())
+                    && let Some(pid) = parseProcessIdMarker(&value)
                 {
-                    break pid;
+                    if suspended {
+                        break vec![pid];
+                    }
+                    if let Ok(value) = std::fs::read_to_string(marker.with_extension("ready"))
+                        && let Some(descendant) = parseProcessIdMarker(&value)
+                    {
+                        break vec![pid, descendant];
+                    }
                 }
                 assert!(
                     owner.0.try_wait().unwrap().is_none(),
@@ -424,15 +455,6 @@ mod tests {
                 );
                 std::thread::sleep(Duration::from_millis(10));
             };
-            let mut processIds = vec![childId];
-            if !suspended {
-                processIds.push(
-                    std::fs::read_to_string(marker.with_extension("ready"))
-                        .unwrap()
-                        .parse::<u32>()
-                        .unwrap(),
-                );
-            }
             let children: Vec<_> = processIds
                 .into_iter()
                 .map(|childId| {
