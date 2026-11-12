@@ -14,7 +14,7 @@ fn execute() -> epp_service::ServiceResult<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.as_slice() {
         #[cfg(feature = "automatic-trials")]
-        [mode, length, parentId] if mode == "--transfer-worker" => epp_service::transfer_worker::run(length, parentId),
+        [mode, length, parentId, progressHandle] if mode == "--transfer-worker" => epp_service::transfer_worker::run(length, parentId, progressHandle),
         #[cfg(feature = "native-mtu-lab")]
         [mode, rest @ ..] if mode == "--native-mtu-lab-service" => {
             epp_service::mtu_lab::run(rest)

@@ -108,6 +108,22 @@ impl SourceBindings {
 }
 
 pub trait BoundTransferRunner: Sync {
+    fn createProgress(&self) -> AppResult<TransferProgress> {
+        Ok(TransferProgress::default())
+    }
+
+    fn execution(&self) -> Option<TransferExecution> {
+        None
+    }
+
+    fn snapshot(&self, progress: &TransferProgress) -> AppResult<ProgressSnapshot> {
+        Ok(ProgressSnapshot {
+            downloadBytesRead: progress.downloadBytesRead.load(Ordering::SeqCst),
+            uploadBodyBytesProvided: progress.uploadBodyBytesProvided.load(Ordering::SeqCst),
+            activeRequests: progress.activeRequests.load(Ordering::SeqCst),
+        })
+    }
+
     fn measureFrom(
         &self,
         plan: TransferPlan,
@@ -115,6 +131,19 @@ pub trait BoundTransferRunner: Sync {
         cancelled: &AtomicBool,
         progress: &TransferProgress,
     ) -> AppResult<TransferResult>;
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProgressSnapshot {
+    pub downloadBytesRead: u64,
+    pub uploadBodyBytesProvided: u64,
+    pub activeRequests: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransferExecution {
+    RestrictedWorkerV1,
 }
 
 struct DirectBoundTransfer;
@@ -175,6 +204,8 @@ pub struct SessionRun {
     pub latencySummaries: Vec<LatencySummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sourceBindings: Option<SourceBindings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transferExecution: Option<TransferExecution>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -215,6 +246,37 @@ struct Observer<'a, F: FnMut(SessionProgress)> {
 }
 
 impl<F: FnMut(SessionProgress)> Observer<'_, F> {
+    fn snapshot(&self, phase: Phase, progress: &TransferProgress) -> AppResult<ProgressSnapshot> {
+        let loaded = matches!(phase, Phase::Download | Phase::Upload);
+        let snapshot = if loaded && self.sourceBindings.is_some() {
+            self.transferRunner.snapshot(progress)?
+        } else {
+            DirectBoundTransfer.snapshot(progress)?
+        };
+        let downloadLimit = if phase == Phase::Download {
+            self.plan.downloadBytesPerProvider
+        } else {
+            0
+        };
+        let uploadLimit = if phase == Phase::Upload {
+            self.plan.uploadBytesPerProvider
+        } else {
+            0
+        };
+        if snapshot.downloadBytesRead > downloadLimit
+            || snapshot.uploadBodyBytesProvided > uploadLimit
+            || snapshot.activeRequests
+                > if loaded {
+                    u64::from(self.plan.streams)
+                } else {
+                    0
+                }
+        {
+            return Err("Transfer progress exceeds its frozen phase allowance".into());
+        }
+        Ok(snapshot)
+    }
+
     fn stopped(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst) || Instant::now() >= self.deadline
     }
@@ -261,9 +323,7 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
         if timeout.as_millis() == 0 {
             return Ok(());
         }
-        let inFlightRequestsAtStart = progress.activeRequests.load(Ordering::SeqCst);
-        let before = progress.downloadBytesRead.load(Ordering::SeqCst)
-            + progress.uploadBodyBytesProvided.load(Ordering::SeqCst);
+        let before = self.snapshot(phase, progress)?;
         if let Some(sample) = measureOnce(
             &self.plan.latencyEndpoints[endpointIndex],
             timeout,
@@ -272,15 +332,21 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
             self.sourceBindings
                 .map(|bindings| &bindings.latency[endpointIndex].source),
         )? {
-            let after = progress.downloadBytesRead.load(Ordering::SeqCst)
-                + progress.uploadBodyBytesProvided.load(Ordering::SeqCst);
+            let after = self.snapshot(phase, progress)?;
+            if after.downloadBytesRead < before.downloadBytesRead
+                || after.uploadBodyBytesProvided < before.uploadBodyBytesProvided
+            {
+                return Err("Transfer payload counters regressed during a latency probe".into());
+            }
             let sample = LatencySample {
                 providerIndex,
                 phase,
                 sample,
-                inFlightRequestsAtStart,
-                inFlightRequestsAtEnd: progress.activeRequests.load(Ordering::SeqCst),
-                payloadProgressDuringProbe: after.saturating_sub(before),
+                inFlightRequestsAtStart: before.activeRequests,
+                inFlightRequestsAtEnd: after.activeRequests,
+                payloadProgressDuringProbe: after.downloadBytesRead - before.downloadBytesRead
+                    + after.uploadBodyBytesProvided
+                    - before.uploadBodyBytesProvided,
             };
             self.samples.push(sample.clone());
             self.notify(providerIndex, phase, progress, Some(sample));
@@ -324,14 +390,28 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
                     .as_millis() as u64,
             ),
         };
-        let progress = TransferProgress::default();
-        self.notify(providerIndex, phase, &progress, None);
-        let done = Arc::new(AtomicBool::new(false));
-        let phaseCancelled = AtomicBool::new(self.stopped());
         let binding = self
             .sourceBindings
             .map(|bindings| bindings.transfers[providerIndex]);
         let transferRunner = self.transferRunner;
+        let progress = if binding.is_some() {
+            match transferRunner.createProgress() {
+                Ok(progress) => progress,
+                Err(error) => {
+                    return Ok(PhaseResult {
+                        providerIndex,
+                        phase,
+                        result: None,
+                        error: Some(error.to_string()),
+                    });
+                }
+            }
+        } else {
+            TransferProgress::default()
+        };
+        self.notify(providerIndex, phase, &progress, None);
+        let done = Arc::new(AtomicBool::new(false));
+        let phaseCancelled = AtomicBool::new(self.stopped());
         let result = thread::scope(|scope| {
             let completion = Completion(done.clone());
             let progress = &progress;
@@ -452,6 +532,9 @@ fn runSessionInternal(
         bindings.validate(&plan)?;
     }
     let startedAt = chrono::Utc::now().to_rfc3339();
+    let transferExecution = sourceBindings
+        .as_ref()
+        .and_then(|_| transferRunner.execution());
     let mut observer = Observer {
         plan: &plan,
         sourceBindings: sourceBindings.as_ref(),
@@ -547,5 +630,6 @@ fn runSessionInternal(
         latencySamples,
         latencySummaries,
         sourceBindings,
+        transferExecution,
     })
 }

@@ -66,7 +66,7 @@ pub fn cohortSha256(run: &SessionRun, selections: &[Selection]) -> AppResult<Str
             return Err("Load comparison metric refers to an unknown latency endpoint".into());
         }
     }
-    Ok(format!(
+    let original = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&(
             "source-bound-load-cohort-v1",
@@ -76,7 +76,19 @@ pub fn cohortSha256(run: &SessionRun, selections: &[Selection]) -> AppResult<Str
             &run.sourceBindings,
             selections
         ))?)
-    ))
+    );
+    Ok(if let Some(execution) = run.transferExecution {
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                "source-bound-load-cohort-v2",
+                execution,
+                original
+            ))?)
+        )
+    } else {
+        original
+    })
 }
 
 fn phaseOrdinal(phase: Phase) -> usize {

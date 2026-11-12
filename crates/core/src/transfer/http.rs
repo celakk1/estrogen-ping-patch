@@ -117,10 +117,10 @@ async fn exchange(
         Direction::Upload => {
             let remaining = result.requestedBytes;
             let uploaded = upload.clone();
-            let totalProvided = progress.uploadBodyBytesProvided.clone();
+            let totalProgress = progress.clone();
             let body = stream::unfold((remaining, payload), move |(remaining, payload)| {
                 let uploaded = uploaded.clone();
-                let totalProvided = totalProvided.clone();
+                let totalProgress = totalProgress.clone();
                 async move {
                     if remaining == 0 {
                         return None;
@@ -128,7 +128,9 @@ async fn exchange(
                     tokio::task::yield_now().await;
                     let size = remaining.min(payload.len() as u64) as usize;
                     uploaded.fetch_add(size as u64, Ordering::SeqCst);
-                    totalProvided.fetch_add(size as u64, Ordering::SeqCst);
+                    totalProgress
+                        .uploadBodyBytesProvided
+                        .fetch_add(size as u64, Ordering::SeqCst);
                     Some((
                         Ok::<_, io::Error>(payload.slice(..size)),
                         (remaining - size as u64, payload),

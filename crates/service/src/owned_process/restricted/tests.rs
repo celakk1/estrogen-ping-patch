@@ -356,7 +356,8 @@ fn wrapperFixture() {
     if let Some(mode) = mode {
         args.push(format!("input-refused={mode}"));
     }
-    let job = CommandJob::spawnRestrictedReader(&fixture.0, &args, Some(&input.handle)).unwrap();
+    let job =
+        CommandJob::spawnRestrictedReader(&fixture.0, &args, Some(&input.handle), None).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let output = job
         .collect(65536, || {

@@ -172,12 +172,13 @@ fn savedRaw(
     routes: &[routing::Capture],
 ) -> (SessionRun, NativeEvidence, NativeEvidence) {
     let start = nowUnixMs().unwrap() - 28_000;
-    let mut run = session::runSourceBoundSession(
+    let mut run = session::runSourceBoundSessionWithRunner(
         collector.scope.config.clone(),
         collector.scope.sessionPlan.clone(),
         collector.scope.bindings.clone(),
         &AtomicBool::new(true),
         |_| {},
+        &crate::transfer_worker::IsolatedTransferRunner::default(),
     )
     .unwrap();
     run.startedAt = time(start);
@@ -341,13 +342,13 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
 
 #[test]
 fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
-    for failure in 0..7 {
+    for failure in 0..8 {
         let (scope, current, routes) = fixture();
         let plan = plan(&scope);
         let storage = Database::new();
         let mut database = storage.open();
         let mut collector = scope.bind(&mut database, plan).unwrap();
-        let (run, mut before, mut after) = savedRaw(&mut collector, &current, &routes);
+        let (mut run, mut before, mut after) = savedRaw(&mut collector, &current, &routes);
         match failure {
             0 => after.0.native.adapterGuid = Uuid::new_v4(),
             1 => {
@@ -367,6 +368,7 @@ fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
             3 => before.0.native.capturedAtUnixMs += 1000,
             4 => after.0.native.capturedAtUnixMs -= 1000,
             5 => after.0.native.settings.nlMtu = 1427,
+            7 => run.transferExecution = None,
             _ => {}
         }
         assert!(

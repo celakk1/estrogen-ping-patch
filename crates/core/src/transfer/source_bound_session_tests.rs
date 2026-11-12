@@ -8,6 +8,97 @@ use session::{Phase, SessionPlan, SourceBindings, runSourceBoundSession};
 
 struct RefusingRunner(std::sync::atomic::AtomicUsize);
 
+#[cfg(windows)]
+#[test]
+fn invalidProgressPreparationOrSnapshotsPreserveRawFailureWithoutHttpFallback() {
+    struct FaultRunner {
+        preparation: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl session::BoundTransferRunner for FaultRunner {
+        fn createProgress(&self) -> crate::AppResult<TransferProgress> {
+            if self.preparation {
+                Err("fixture progress preparation refused".into())
+            } else {
+                Ok(TransferProgress::default())
+            }
+        }
+        fn snapshot(&self, _: &TransferProgress) -> crate::AppResult<session::ProgressSnapshot> {
+            Ok(session::ProgressSnapshot {
+                downloadBytesRead: u64::MAX,
+                uploadBodyBytesProvided: 0,
+                activeRequests: 1,
+            })
+        }
+        fn measureFrom(
+            &self,
+            _: TransferPlan,
+            _: SourceBinding,
+            cancelled: &AtomicBool,
+            _: &TransferProgress,
+        ) -> crate::AppResult<TransferResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !cancelled.load(Ordering::SeqCst) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(cancelled.load(Ordering::SeqCst));
+            Err("fixture cancelled after invalid progress".into())
+        }
+    }
+    for preparation in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (plan, bindings) = scopedPlan(Provider::UserOwnedHttp {
+            origin: format!("http://{}/", listener.local_addr().unwrap()),
+        });
+        let runner = FaultRunner {
+            preparation,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let run = session::runSourceBoundSessionWithRunner(
+            Config::default(),
+            plan,
+            bindings,
+            &AtomicBool::new(false),
+            |_| {},
+            &runner,
+        )
+        .unwrap();
+        assert_eq!(run.status, "partialFailure");
+        assert_eq!(run.transfers.len(), 1);
+        assert!(
+            run.transfers[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains(if preparation {
+                    "preparation refused"
+                } else {
+                    "phase allowance"
+                })
+        );
+        assert!(
+            run.latencySamples
+                .iter()
+                .any(|sample| sample.phase == Phase::Idle)
+        );
+        assert!(
+            run.latencySamples
+                .iter()
+                .any(|sample| sample.phase == Phase::Recovery)
+        );
+        assert_eq!(
+            runner.calls.load(Ordering::SeqCst),
+            usize::from(!preparation)
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
 impl session::BoundTransferRunner for RefusingRunner {
     fn measureFrom(
         &self,

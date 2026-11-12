@@ -224,6 +224,7 @@ impl CommandJob {
             ProcessRole::Setting,
             None,
             None,
+            None,
         )
     }
 
@@ -235,6 +236,7 @@ impl CommandJob {
             ProcessRole::ReadOnly,
             None,
             None,
+            None,
         )
     }
 
@@ -243,6 +245,7 @@ impl CommandJob {
         executable: &Path,
         arguments: &[String],
         input: Option<&OwnedHandle>,
+        progress: Option<&OwnedHandle>,
     ) -> ServiceResult<Self> {
         let token = restricted::create()?;
         Self::create(
@@ -252,6 +255,7 @@ impl CommandJob {
             ProcessRole::ReadOnly,
             Some(token.as_raw_handle()),
             input.map(AsRawHandle::as_raw_handle),
+            progress.map(AsRawHandle::as_raw_handle),
         )
     }
 
@@ -264,6 +268,7 @@ impl CommandJob {
             ProcessRole::Setting,
             None,
             None,
+            None,
         )
     }
 
@@ -274,6 +279,7 @@ impl CommandJob {
         role: ProcessRole,
         restrictedToken: Option<HANDLE>,
         input: Option<HANDLE>,
+        progress: Option<HANDLE>,
     ) -> ServiceResult<Self> {
         ensureStopped()?;
         if role == ProcessRole::ReadOnly && READER_QUIESCENCE_UNKNOWN.load(Ordering::SeqCst) {
@@ -359,6 +365,9 @@ impl CommandJob {
         }
         if let Some(input) = input {
             inherited.push(input);
+        }
+        if let Some(progress) = progress {
+            inherited.push(progress);
         }
         let mut attributes = Attributes::new(2)?;
         // assigning the job after spawning would leave a service-crash window.

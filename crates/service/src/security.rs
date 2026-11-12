@@ -51,6 +51,14 @@ impl Descriptor {
         ))
     }
 
+    #[cfg(feature = "automatic-trials")]
+    pub(crate) fn workerProgress() -> ServiceResult<Self> {
+        let owner = currentSid()?;
+        Self::fromSddl(&format!(
+            "D:P(A;;GA;;;{owner})(A;;0x00000006;;;AU)(A;;RC;;;OW)S:(ML;;NW;;;LW)"
+        ))
+    }
+
     #[cfg(test)]
     pub(crate) fn testObject(sddl: &str) -> ServiceResult<Self> {
         Self::fromSddl(sddl)

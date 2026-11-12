@@ -155,12 +155,13 @@ impl Scope {
             .collect::<ServiceResult<Vec<_>>>()?;
         let bindings = SourceBindings { transfers, latency };
         bindings.validate(&sessionPlan)?;
-        let blueprint = session::runSourceBoundSession(
+        let blueprint = session::runSourceBoundSessionWithRunner(
             config.clone(),
             sessionPlan.clone(),
             bindings.clone(),
             &AtomicBool::new(true),
             |_| {},
+            &crate::transfer_worker::IsolatedTransferRunner::default(),
         )?;
         let hashes = adapter.hashes(comparisonLoad::cohortSha256(&blueprint, &selections)?);
         let attempts =
@@ -291,6 +292,9 @@ impl Collector<'_> {
         after: &(policy::Capture, Vec<routing::Capture>),
         configuration: Configuration,
     ) -> ServiceResult<Session> {
+        if run.transferExecution != Some(session::TransferExecution::RestrictedWorkerV1) {
+            return Err("Bound load collection requires isolated-worker execution evidence".into());
+        }
         if (configuration == Configuration::Candidate) != self.checkpoint.is_some() {
             return Err("Candidate load measurements require their exact issued checkpoint".into());
         }
@@ -385,7 +389,7 @@ impl Measurements for Collector<'_> {
         progress.check()?;
         let cancelled = AtomicBool::new(false);
         let mut progressError = None;
-        let mut run = session::runSourceBoundSession(
+        let mut run = session::runSourceBoundSessionWithRunner(
             self.scope.config.clone(),
             self.scope.sessionPlan.clone(),
             self.scope.bindings.clone(),
@@ -396,6 +400,7 @@ impl Measurements for Collector<'_> {
                     cancelled.store(true, Ordering::SeqCst);
                 }
             },
+            &crate::transfer_worker::IsolatedTransferRunner::default(),
         )?;
         if let Err(error) = progress.check() {
             progressError.get_or_insert_with(|| error.to_string());

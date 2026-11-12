@@ -143,6 +143,7 @@ fn fixture() -> (SessionRun, Vec<Selection>, Plan) {
         }
     }
     let run = SessionRun {
+        transferExecution: None,
         id: 42,
         startedAt: time(0),
         finishedAt: time(28000),
@@ -446,6 +447,28 @@ fn partialMismatchedAndCorruptStreamEvidenceIsNeverAccepted() {
             "failure {failure}"
         );
     }
+}
+
+#[test]
+fn isolatedExecutionCannotShareALegacyCohortAndSurvivesRawRoundTrip() {
+    let (mut run, selections, plan) = fixture();
+    let legacy = serde_json::to_value(&run).unwrap();
+    assert!(legacy.get("transferExecution").is_none());
+    assert_eq!(cohortSha256(&run, &selections).unwrap(), plan.cohortSha256);
+    run.transferExecution = Some(crate::transfer::session::TransferExecution::RestrictedWorkerV1);
+    let isolated = cohortSha256(&run, &selections).unwrap();
+    assert_ne!(isolated, plan.cohortSha256);
+    assert!(convert(&run, &selections, &plan).is_err());
+    let roundTrip: SessionRun =
+        serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+    assert_eq!(roundTrip.transferExecution, run.transferExecution);
+    assert_eq!(cohortSha256(&roundTrip, &selections).unwrap(), isolated);
+    let legacy: SessionRun = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.transferExecution, None);
+    assert_eq!(
+        cohortSha256(&legacy, &selections).unwrap(),
+        plan.cohortSha256
+    );
 }
 
 #[test]

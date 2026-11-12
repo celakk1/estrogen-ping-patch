@@ -214,6 +214,48 @@ fn providerOriginsAndFixedPathsDoNotAcceptCredentialsOrRedirectDestinations() {
 }
 
 #[test]
+fn customProgressStorageSharesActualTransferCountersAndOwnsTheirLifetime() {
+    for direction in [Direction::Download, Direction::Upload] {
+        let (provider, worker) = fixture(Behavior::Normal, 2);
+        let storage = Arc::new(TransferCounters::default());
+        let weak = Arc::downgrade(&storage);
+        let progress = TransferProgress::fromStorage(storage.clone());
+        let retained = progress.clone();
+        let result = measure(
+            plan(provider, direction, 2),
+            &AtomicBool::new(false),
+            &progress,
+        )
+        .unwrap();
+        worker.join().unwrap();
+        assert_eq!(result.status, TransferStatus::Completed);
+        assert_eq!(result.acceptedPayloadBytes, 65_539);
+        assert_eq!(
+            storage.downloadBytesRead.load(Ordering::SeqCst),
+            if direction == Direction::Download {
+                65_539
+            } else {
+                0
+            }
+        );
+        assert_eq!(
+            storage.uploadBodyBytesProvided.load(Ordering::SeqCst),
+            if direction == Direction::Upload {
+                65_539
+            } else {
+                0
+            }
+        );
+        assert_eq!(storage.activeRequests.load(Ordering::SeqCst), 0);
+        drop(storage);
+        drop(progress);
+        assert!(weak.upgrade().is_some());
+        drop(retained);
+        assert!(weak.upgrade().is_none());
+    }
+}
+
+#[test]
 fn parallelDownloadsShareTheTotalBudgetAndRetainRealPeerAddresses() {
     let (provider, worker) = fixture(Behavior::Normal, 4);
     let progress = TransferProgress::default();

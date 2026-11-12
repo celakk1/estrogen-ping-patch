@@ -119,11 +119,52 @@ pub struct TransferResult {
     pub sourceBinding: Option<SourceBinding>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
+#[repr(C)]
+pub struct TransferCounters {
+    pub downloadBytesRead: AtomicU64,
+    pub uploadBodyBytesProvided: AtomicU64,
+    pub activeRequests: AtomicU64,
+}
+
+pub trait TransferProgressStorage: std::any::Any + Send + Sync {
+    fn counters(&self) -> &TransferCounters;
+}
+
+impl TransferProgressStorage for TransferCounters {
+    fn counters(&self) -> &TransferCounters {
+        self
+    }
+}
+
+#[derive(Clone)]
 pub struct TransferProgress {
-    pub downloadBytesRead: Arc<AtomicU64>,
-    pub uploadBodyBytesProvided: Arc<AtomicU64>,
-    pub activeRequests: Arc<AtomicU64>,
+    storage: Arc<dyn TransferProgressStorage>,
+}
+
+impl TransferProgress {
+    pub fn fromStorage(storage: Arc<dyn TransferProgressStorage>) -> Self {
+        Self { storage }
+    }
+
+    pub fn storage<T: TransferProgressStorage>(&self) -> Option<&T> {
+        let storage: &dyn std::any::Any = self.storage.as_ref();
+        storage.downcast_ref()
+    }
+}
+
+impl Default for TransferProgress {
+    fn default() -> Self {
+        Self::fromStorage(Arc::new(TransferCounters::default()))
+    }
+}
+
+impl std::ops::Deref for TransferProgress {
+    type Target = TransferCounters;
+
+    fn deref(&self) -> &Self::Target {
+        self.storage.counters()
+    }
 }
 
 pub fn measure(

@@ -14,7 +14,72 @@ use std::{
 };
 
 mod protocol;
+mod shared;
 pub use protocol::{Counters, Observation, ProgressUpdate};
+
+#[derive(Default)]
+pub struct IsolatedTransferRunner {
+    #[cfg(test)]
+    image: Option<std::path::PathBuf>,
+}
+
+impl epp_core::transfer::session::BoundTransferRunner for IsolatedTransferRunner {
+    fn createProgress(&self) -> ServiceResult<TransferProgress> {
+        Ok(TransferProgress::fromStorage(shared::SharedProgress::new()?))
+    }
+
+    fn execution(&self) -> Option<epp_core::transfer::session::TransferExecution> {
+        Some(epp_core::transfer::session::TransferExecution::RestrictedWorkerV1)
+    }
+
+    fn snapshot(
+        &self,
+        progress: &TransferProgress,
+    ) -> ServiceResult<epp_core::transfer::session::ProgressSnapshot> {
+        let counters = progress
+            .storage::<shared::SharedProgress>()
+            .ok_or("Isolated transfers require their own shared progress capability")?
+            .read()?;
+        Ok(epp_core::transfer::session::ProgressSnapshot {
+            downloadBytesRead: counters.downloadBytesRead,
+            uploadBodyBytesProvided: counters.uploadBodyBytesProvided,
+            activeRequests: counters.activeRequests,
+        })
+    }
+
+    fn measureFrom(
+        &self,
+        plan: TransferPlan,
+        binding: SourceBinding,
+        cancelled: &AtomicBool,
+        progress: &TransferProgress,
+    ) -> ServiceResult<TransferResult> {
+        let started = Instant::now();
+        let shared = progress
+            .storage::<shared::SharedProgress>()
+            .ok_or("Isolated transfers require their own shared progress capability")?;
+        #[cfg(test)]
+        let image = if let Some(image) = &self.image {
+            image.clone()
+        } else {
+            workerImage()?
+        };
+        #[cfg(not(test))]
+        let image = workerImage()?;
+        measureUsingStorage(
+            &image,
+            Request {
+                schemaVersion: SCHEMA_VERSION,
+                plan,
+                binding,
+            },
+            cancelled,
+            shared,
+            started,
+            |_| Ok(()),
+        )
+    }
+}
 
 const SCHEMA_VERSION: u32 = 1;
 #[cfg(test)]
@@ -45,12 +110,12 @@ struct Response {
     result: TransferResult,
 }
 
-pub fn run(length: &str, parentId: &str) -> ServiceResult<()> {
+pub fn run(length: &str, parentId: &str, progressHandle: &str) -> ServiceResult<()> {
     let bytes = request::read(length, parentId)?;
     let input: Request = serde_json::from_slice(&bytes)?;
     input.validate()?;
     let cancelled = AtomicBool::new(false);
-    let progress = TransferProgress::default();
+    let progress = TransferProgress::fromStorage(shared::SharedProgress::open(progressHandle)?);
     let started = Instant::now();
     let stdout = std::io::stdout();
     let mut encoder = protocol::Encoder::new(stdout.lock());
@@ -103,6 +168,11 @@ pub fn measureWithProgress(
     cancelled: &AtomicBool,
     onProgress: impl FnMut(ProgressUpdate) -> ServiceResult<()>,
 ) -> ServiceResult<TransferResult> {
+    let image = workerImage()?;
+    measureUsingProgress(&image, plan, binding, cancelled, onProgress)
+}
+
+fn workerImage() -> ServiceResult<std::path::PathBuf> {
     let image = std::env::current_exe()?.canonicalize()?;
     if !image
         .file_name()
@@ -110,7 +180,7 @@ pub fn measureWithProgress(
     {
         return Err("Isolated transfers must be launched by the known service image".into());
     }
-    measureUsingProgress(&image, plan, binding, cancelled, onProgress)
+    Ok(image)
 }
 
 #[cfg(test)]
@@ -128,7 +198,7 @@ fn measureUsingProgress(
     plan: TransferPlan,
     binding: SourceBinding,
     cancelled: &AtomicBool,
-    mut onProgress: impl FnMut(ProgressUpdate) -> ServiceResult<()>,
+    onProgress: impl FnMut(ProgressUpdate) -> ServiceResult<()>,
 ) -> ServiceResult<TransferResult> {
     let started = Instant::now();
     let input = Request {
@@ -137,10 +207,30 @@ fn measureUsingProgress(
         binding,
     };
     input.validate()?;
+    let shared = shared::SharedProgress::new()?;
+    measureUsingStorage(image, input, cancelled, &shared, started, onProgress)
+}
+
+fn measureUsingStorage(
+    image: &Path,
+    input: Request,
+    cancelled: &AtomicBool,
+    shared: &shared::SharedProgress,
+    started: Instant,
+    mut onProgress: impl FnMut(ProgressUpdate) -> ServiceResult<()>,
+) -> ServiceResult<TransferResult> {
+    input.validate()?;
+    if shared.read()? != Counters::default() {
+        return Err("Isolated transfer progress cannot be reused".into());
+    }
+    let mut previous = Counters::default();
     let deadline = started
         .checked_add(Duration::from_millis(input.plan.timeoutMs))
         .ok_or("Benchmark worker deadline overflowed")?;
-    let check = || {
+    let mut check = || {
+        let counters = shared.read()?;
+        counters.validate(&input, previous)?;
+        previous = counters;
         if cancelled.load(Ordering::SeqCst) {
             Err("Isolated transfer cancelled".into())
         } else if Instant::now() >= deadline {
@@ -151,6 +241,7 @@ fn measureUsingProgress(
     };
     check()?;
     let mapping = Input::new(&serde_json::to_vec(&input)?)?;
+    let progressHandle = shared.inherit()?;
     check()?;
     let child = CommandJob::spawnRestrictedReader(
         image,
@@ -158,14 +249,23 @@ fn measureUsingProgress(
             "--transfer-worker".into(),
             mapping.length.to_string(),
             std::process::id().to_string(),
+            {
+                use std::os::windows::io::AsRawHandle;
+                (progressHandle.as_raw_handle() as usize).to_string()
+            },
         ],
         Some(&mapping.handle),
+        Some(&progressHandle),
     )?;
     let mut decoder = protocol::Decoder::new(&input);
     child.stream(protocol::STREAM_BYTES, check, |chunk| {
         decoder.consume(chunk, &mut onProgress)
     })?;
-    decoder.finish()
+    let result = decoder.finish()?;
+    if shared.read()? != Counters::fromResult(&result) {
+        return Err("Benchmark worker result disagrees with its shared counters".into());
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

@@ -62,9 +62,32 @@ pub(super) fn response(input: &Request) -> Response {
 }
 
 #[test]
+fn isolatedRunnerRefusesOrdinaryProgressAndNeverReusesCompletedCounters() {
+    use epp_core::transfer::session::BoundTransferRunner;
+    let runner = IsolatedTransferRunner::default();
+    assert!(runner.snapshot(&TransferProgress::default()).is_err());
+    let first = runner.createProgress().unwrap();
+    let second = runner.createProgress().unwrap();
+    first.downloadBytesRead.store(1, Ordering::SeqCst);
+    assert_eq!(runner.snapshot(&first).unwrap().downloadBytesRead, 1);
+    assert_eq!(runner.snapshot(&second).unwrap().downloadBytesRead, 0);
+    let request = input("127.0.0.1:8080".parse().unwrap(), Direction::Download);
+    let error = measureUsingStorage(
+        Path::new("not-an-executable"),
+        request,
+        &AtomicBool::new(false),
+        first.storage::<shared::SharedProgress>().unwrap(),
+        Instant::now(),
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("cannot be reused"));
+}
+
+#[test]
 fn rejectsUnrestrictedEntryAndInvalidRequestsBeforeLaunch() {
     assert!(
-        run("not-a-length", "not-a-parent")
+        run("not-a-length", "not-a-parent", "not-a-progress-handle")
             .unwrap_err()
             .to_string()
             .contains("restricted token")
@@ -223,14 +246,21 @@ fn parentDeathFixture() {
     request.plan.streams = 1;
     request.plan.timeoutMs = 60_000;
     let mapping = Input::new(&serde_json::to_vec(&request).unwrap()).unwrap();
+    let shared = shared::SharedProgress::new().unwrap();
+    let progressHandle = shared.inherit().unwrap();
     let child = CommandJob::spawnRestrictedReader(
         &image,
         &[
             "--transfer-worker".into(),
             mapping.length.to_string(),
             std::process::id().to_string(),
+            {
+                use std::os::windows::io::AsRawHandle;
+                (progressHandle.as_raw_handle() as usize).to_string()
+            },
         ],
         Some(&mapping.handle),
+        Some(&progressHandle),
     )
     .unwrap();
     std::fs::write(
@@ -477,6 +507,157 @@ fn serveControlled(
         }
         total
     })
+}
+
+#[test]
+#[ignore = "requires a separately built automatic-trials service executable"]
+fn isolatedWorkerSharedCountersAdvanceWhileFrameConsumerIsBlocked() {
+    let image = Image::configured();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let request = input(listener.local_addr().unwrap(), Direction::Download);
+    let shared = shared::SharedProgress::new().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let server = serveControlled(listener, Direction::Download, Some(receiver));
+    let mut blocked = false;
+    let result = measureUsingStorage(
+        &image.0,
+        request,
+        &AtomicBool::new(false),
+        &shared,
+        Instant::now(),
+        |update| {
+            if !blocked
+                && update.observation.counters.downloadBytesRead > 0
+                && update.observation.counters.downloadBytesRead < 4097
+            {
+                blocked = true;
+                sender.send(()).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let counters = shared.read()?;
+                    if counters.downloadBytesRead == 4097 && counters.activeRequests == 0 {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "shared counters depended on pipe consumption"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                    update.observation.counters.downloadBytesRead
+                        < shared.read()?.downloadBytesRead
+                );
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(blocked);
+    assert_eq!(result.status, TransferStatus::Completed);
+    assert_eq!(server.join().unwrap(), 4097);
+}
+
+#[test]
+#[ignore = "requires a separately built automatic-trials service executable"]
+fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
+    use epp_core::{
+        benchmark::{Endpoint, ProbeProtocol, SourceBinding as EchoBinding},
+        config::Config,
+        icmp::EchoTarget,
+        transfer::session::{self, Phase, SessionPlan, SourceBindings, TransferExecution},
+    };
+    let image = Image::configured();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let request = input(listener.local_addr().unwrap(), Direction::Download);
+    let (downloadSender, downloadReceiver) = std::sync::mpsc::channel();
+    let (uploadSender, uploadReceiver) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        for (direction, receiver) in [
+            (Direction::Download, downloadReceiver),
+            (Direction::Upload, uploadReceiver),
+        ] {
+            assert_eq!(
+                serveControlled(listener.try_clone().unwrap(), direction, Some(receiver))
+                    .join()
+                    .unwrap(),
+                4097
+            );
+        }
+    });
+    let runner = IsolatedTransferRunner {
+        image: Some(image.0.clone()),
+    };
+    let mut released = [false; 2];
+    let run = session::runSourceBoundSessionWithRunner(
+        Config::default(),
+        SessionPlan {
+            providers: vec![request.plan.provider],
+            downloadBytesPerProvider: 4097,
+            uploadBytesPerProvider: 4097,
+            streams: 2,
+            phaseTimeoutMs: 3000,
+            idleRounds: 3,
+            intervalMs: 250,
+            probeTimeoutMs: 100,
+            latencyEndpoints: ["127.0.0.1", "::1"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, address)| Endpoint {
+                    id: format!("loopback-{index}"),
+                    address: address.into(),
+                    protocol: ProbeProtocol::IcmpEcho,
+                    dnsQuery: None,
+                })
+                .collect(),
+        },
+        SourceBindings {
+            transfers: vec![request.binding],
+            latency: ["127.0.0.1", "::1"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, address)| EchoBinding {
+                    endpointId: format!("loopback-{index}"),
+                    source: EchoTarget::parse(address).unwrap(),
+                })
+                .collect(),
+        },
+        &AtomicBool::new(false),
+        |update| {
+            if let Some(sample) = update.sample
+                && matches!(sample.phase, Phase::Download | Phase::Upload)
+                && sample.inFlightRequestsAtStart > 0
+                && sample.inFlightRequestsAtEnd > 0
+            {
+                let index = usize::from(sample.phase == Phase::Upload);
+                if !released[index] {
+                    released[index] = true;
+                    if index == 0 {
+                        downloadSender.send(()).unwrap();
+                    } else {
+                        uploadSender.send(()).unwrap();
+                    }
+                }
+            }
+        },
+        &runner,
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(run.status, "completed", "{:?}", run.transfers);
+    assert_eq!(released, [true, true]);
+    assert_eq!(
+        run.transferExecution,
+        Some(TransferExecution::RestrictedWorkerV1)
+    );
+    for phase in [Phase::Download, Phase::Upload] {
+        assert!(run.latencySamples.iter().any(|sample| sample.phase == phase
+            && sample.inFlightRequestsAtStart > 0
+            && sample.inFlightRequestsAtEnd > 0));
+    }
+    let restored: session::SessionRun =
+        serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+    assert_eq!(restored.transferExecution, run.transferExecution);
 }
 
 #[test]

@@ -14,6 +14,38 @@ pub struct Counters {
 }
 
 impl Counters {
+    pub(super) fn validate(self, input: &Request, previous: Self) -> ServiceResult<()> {
+        if self.downloadBytesRead < previous.downloadBytesRead
+            || self.uploadBodyBytesProvided < previous.uploadBodyBytesProvided
+            || self.downloadBytesRead > input.plan.bytes
+            || self.uploadBodyBytesProvided > input.plan.bytes
+            || (input.plan.direction == Direction::Download && self.uploadBodyBytesProvided != 0)
+            || (input.plan.direction == Direction::Upload && self.downloadBytesRead != 0)
+            || self.activeRequests > u64::from(input.plan.streams)
+        {
+            return Err(
+                "Benchmark worker counters contradict their fixed transfer allowance".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn fromResult(result: &TransferResult) -> Self {
+        Self {
+            downloadBytesRead: result
+                .streams
+                .iter()
+                .map(|stream| stream.downloadBytesRead)
+                .sum(),
+            uploadBodyBytesProvided: result
+                .streams
+                .iter()
+                .map(|stream| stream.uploadBodyBytesProvided)
+                .sum(),
+            activeRequests: 0,
+        }
+    }
+
     fn read(progress: &TransferProgress) -> Self {
         Self {
             downloadBytesRead: progress.downloadBytesRead.load(Ordering::SeqCst),
@@ -209,20 +241,12 @@ impl<'a> Decoder<'a> {
         match frame.event {
             Event::Progress(observation) => {
                 let next = observation.counters;
+                next.validate(self.input, self.counters)?;
                 self.activeTransitions = self
                     .activeTransitions
                     .checked_add(next.activeRequests.abs_diff(self.counters.activeRequests))
                     .ok_or("Benchmark worker activity count overflowed")?;
                 if next == self.counters
-                    || next.downloadBytesRead < self.counters.downloadBytesRead
-                    || next.uploadBodyBytesProvided < self.counters.uploadBodyBytesProvided
-                    || next.downloadBytesRead > self.input.plan.bytes
-                    || next.uploadBodyBytesProvided > self.input.plan.bytes
-                    || (self.input.plan.direction == Direction::Download
-                        && next.uploadBodyBytesProvided != 0)
-                    || (self.input.plan.direction == Direction::Upload
-                        && next.downloadBytesRead != 0)
-                    || next.activeRequests > u64::from(self.input.plan.streams)
                     || self.activeTransitions > 2 * u64::from(self.input.plan.streams)
                     || observation.elapsedMicros < self.elapsedMicros
                     || observation.elapsedMicros > self.input.plan.timeoutMs * 1000 + 1_000_000
@@ -240,21 +264,7 @@ impl<'a> Decoder<'a> {
             }
             Event::Result(response) => {
                 validateResult(self.input, &response)?;
-                let counters = Counters {
-                    downloadBytesRead: response
-                        .result
-                        .streams
-                        .iter()
-                        .map(|stream| stream.downloadBytesRead)
-                        .sum(),
-                    uploadBodyBytesProvided: response
-                        .result
-                        .streams
-                        .iter()
-                        .map(|stream| stream.uploadBodyBytesProvided)
-                        .sum(),
-                    activeRequests: 0,
-                };
+                let counters = Counters::fromResult(&response.result);
                 if counters != self.counters {
                     return Err("Benchmark worker result disagrees with its final counters".into());
                 }
