@@ -172,7 +172,7 @@ pub fn measure(
     cancelled: &AtomicBool,
     progress: &TransferProgress,
 ) -> AppResult<TransferResult> {
-    measureBound(plan, None, cancelled, progress)
+    measureBound(plan, None, cancelled, progress, TransferTls::Native)
 }
 
 pub fn measureFrom(
@@ -182,7 +182,37 @@ pub fn measureFrom(
     progress: &TransferProgress,
 ) -> AppResult<TransferResult> {
     binding.validate(&plan.provider)?;
-    measureBound(plan, Some(binding), cancelled, progress)
+    measureBound(
+        plan,
+        Some(binding),
+        cancelled,
+        progress,
+        TransferTls::Native,
+    )
+}
+
+#[cfg(feature = "isolated-tls")]
+pub fn measureIsolatedFrom(
+    plan: TransferPlan,
+    binding: SourceBinding,
+    cancelled: &AtomicBool,
+    progress: &TransferProgress,
+) -> AppResult<TransferResult> {
+    binding.validate(&plan.provider)?;
+    measureBound(
+        plan,
+        Some(binding),
+        cancelled,
+        progress,
+        TransferTls::IsolatedRustls,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum TransferTls {
+    Native,
+    #[cfg(feature = "isolated-tls")]
+    IsolatedRustls,
 }
 
 fn measureBound(
@@ -190,13 +220,14 @@ fn measureBound(
     binding: Option<SourceBinding>,
     cancelled: &AtomicBool,
     progress: &TransferProgress,
+    tls: TransferTls,
 ) -> AppResult<TransferResult> {
     plan.validate()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(4)
         .enable_all()
         .build()?;
-    let result = runtime.block_on(http::measure(plan, binding, cancelled, progress));
+    let result = runtime.block_on(http::measure(plan, binding, cancelled, progress, tls));
     runtime.shutdown_timeout(Duration::from_millis(100));
     result
 }

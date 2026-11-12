@@ -510,6 +510,78 @@ fn serveControlled(
 }
 
 #[test]
+#[ignore = "manual public HTTPS smoke; excluded from ordinary test.bat selection"]
+fn manualPublicTlsSmokeUsesOneBoundedCloudflareDownload() {
+    use std::net::{ToSocketAddrs, UdpSocket};
+    assert_eq!(
+        std::env::var("EPP_PUBLIC_TLS_SMOKE").as_deref(),
+        Ok("cloudflare-1024-byte-download")
+    );
+    let image = Image::configured();
+    let peer = ("speed.cloudflare.com", 443)
+        .to_socket_addrs()
+        .unwrap()
+        .find(SocketAddr::is_ipv4)
+        .expect("Cloudflare HTTPS smoke needs an available IPv4 destination");
+    let route = UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect(peer).unwrap();
+    let source = route.local_addr().unwrap().ip();
+    let result = measureUsing(
+        &image.0,
+        TransferPlan {
+            provider: epp_core::transfer::Provider::Cloudflare,
+            direction: Direction::Download,
+            bytes: 1024,
+            streams: 1,
+            timeoutMs: 5000,
+        },
+        SourceBinding { source, peer },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(result.status, TransferStatus::Completed, "{result:?}");
+    assert_eq!(result.acceptedPayloadBytes, 1024);
+    assert_eq!(result.streams.len(), 1);
+    assert_eq!(result.streams[0].downloadBytesRead, 1024);
+    assert_eq!(result.streams[0].uploadBodyBytesProvided, 0);
+    assert_eq!(
+        result.streams[0].remoteAddress.as_deref(),
+        Some(peer.to_string().as_str())
+    );
+    let rejected = measureUsing(
+        &image.0,
+        TransferPlan {
+            provider: epp_core::transfer::Provider::UserOwnedHttp {
+                origin: format!("https://{}/", peer.ip()),
+            },
+            direction: Direction::Download,
+            bytes: 1024,
+            streams: 1,
+            timeoutMs: 5000,
+        },
+        SourceBinding { source, peer },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        rejected.status,
+        TransferStatus::NetworkError,
+        "{rejected:?}"
+    );
+    assert_eq!(rejected.acceptedPayloadBytes, 0);
+    assert_eq!(rejected.streams[0].downloadBytesRead, 0);
+    assert_eq!(rejected.streams[0].httpStatus, None);
+    assert!(
+        rejected.streams[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("certificate"),
+        "{rejected:?}"
+    );
+}
+
+#[test]
 #[ignore = "requires a separately built automatic-trials service executable"]
 fn isolatedWorkerSharedCountersAdvanceWhileFrameConsumerIsBlocked() {
     let image = Image::configured();
@@ -648,7 +720,7 @@ fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
     assert_eq!(released, [true, true]);
     assert_eq!(
         run.transferExecution,
-        Some(TransferExecution::RestrictedWorkerV1)
+        Some(TransferExecution::RestrictedWorkerV2)
     );
     for phase in [Phase::Download, Phase::Upload] {
         assert!(run.latencySamples.iter().any(|sample| sample.phase == phase
@@ -796,7 +868,7 @@ fn isolatedWorkerStopsStalledTrafficOnDeadlineAndCancellation() {
         listener.set_nonblocking(true).unwrap();
         let mut request = input(listener.local_addr().unwrap(), Direction::Download);
         request.plan.streams = 1;
-        request.plan.timeoutMs = if cancel { 3000 } else { 500 };
+        request.plan.timeoutMs = 3000;
         let cancelled = AtomicBool::new(false);
         thread::scope(|scope| {
             let cancelledRef = &cancelled;

@@ -144,6 +144,7 @@ pub struct ProgressSnapshot {
 #[serde(rename_all = "camelCase")]
 pub enum TransferExecution {
     RestrictedWorkerV1,
+    RestrictedWorkerV2,
 }
 
 struct DirectBoundTransfer;

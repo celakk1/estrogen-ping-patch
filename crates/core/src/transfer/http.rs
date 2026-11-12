@@ -1,6 +1,6 @@
 use super::{
     Direction, Provider, SourceBinding, StreamResult, TransferPlan, TransferProgress,
-    TransferResult, TransferStatus, deadline,
+    TransferResult, TransferStatus, TransferTls, deadline,
 };
 use crate::AppResult;
 use bytes::Bytes;
@@ -40,9 +40,41 @@ impl From<reqwest::Error> for Failure {
             } else {
                 TransferStatus::NetworkError
             },
-            error.without_url().to_string().chars().take(512).collect(),
+            requestDiagnostic(error),
         )
     }
+}
+
+fn requestDiagnostic(error: reqwest::Error) -> String {
+    let error = error.without_url();
+    describeCauses(&error)
+}
+
+fn describeCauses(error: &dyn std::error::Error) -> String {
+    let mut sources = Vec::new();
+    let mut source = Some(error);
+    for _ in 0..8 {
+        let Some(current) = source else {
+            break;
+        };
+        let description: String = current.to_string().chars().take(512).collect();
+        if sources.last() != Some(&description) {
+            sources.push(description);
+        }
+        source = current.source();
+    }
+    sources
+        .join(": ")
+        .chars()
+        .take(512)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn protocolFailure(message: &str) -> Failure {
@@ -272,35 +304,50 @@ pub(super) async fn measure(
     binding: Option<SourceBinding>,
     cancelled: &AtomicBool,
     progress: &TransferProgress,
+    tls: TransferTls,
 ) -> AppResult<TransferResult> {
     let provider = plan.provider.info()?;
-    let client = Client::builder()
-        .http1_only()
-        .http1_max_headers(64)
-        .no_proxy()
-        .no_gzip()
-        .no_brotli()
-        .no_deflate()
-        .no_zstd()
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .timeout(deadline(&plan))
-        .pool_max_idle_per_host(0)
-        .user_agent(concat!("estrogen-ping-patch/", env!("CARGO_PKG_VERSION")))
-        .default_headers(
-            [
-                (
-                    header::ACCEPT_ENCODING,
-                    header::HeaderValue::from_static("identity"),
-                ),
-                (
-                    header::CACHE_CONTROL,
-                    header::HeaderValue::from_static("no-store"),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        );
+    let client = match tls {
+        TransferTls::Native => Client::builder().tls_backend_native(),
+        #[cfg(feature = "isolated-tls")]
+        TransferTls::IsolatedRustls => {
+            static PROVIDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if !*PROVIDER.get_or_init(|| {
+                rustls::crypto::ring::default_provider()
+                    .install_default()
+                    .is_ok()
+            }) {
+                return Err("The fixed isolated TLS cryptography provider is unavailable".into());
+            }
+            Client::builder().tls_backend_rustls()
+        }
+    }
+    .http1_only()
+    .http1_max_headers(64)
+    .no_proxy()
+    .no_gzip()
+    .no_brotli()
+    .no_deflate()
+    .no_zstd()
+    .redirect(reqwest::redirect::Policy::none())
+    .retry(reqwest::retry::never())
+    .timeout(deadline(&plan))
+    .pool_max_idle_per_host(0)
+    .user_agent(concat!("estrogen-ping-patch/", env!("CARGO_PKG_VERSION")))
+    .default_headers(
+        [
+            (
+                header::ACCEPT_ENCODING,
+                header::HeaderValue::from_static("identity"),
+            ),
+            (
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
     let client = if let Some(binding) = binding {
         let origin = reqwest::Url::parse(&provider.origin)?;
         client.local_address(binding.source).resolve(
@@ -363,4 +410,43 @@ pub(super) async fn measure(
         streams,
         sourceBinding: binding,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requestDiagnosticsKeepCausesWithoutUrlsOrUnboundedControlText() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = Client::builder()
+            .tls_backend_native()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(
+                client
+                    .get("http://127.0.0.1:0/private?api_key=fixture-secret")
+                    .send(),
+            )
+            .unwrap_err()
+            .without_url();
+        let rootLength = error.to_string().len();
+        let diagnostic = requestDiagnostic(error);
+        assert!(diagnostic.len() > rootLength);
+        assert!(
+            !diagnostic.contains("fixture-secret")
+                && !diagnostic.contains("/private")
+                && !diagnostic.contains("127.0.0.1")
+        );
+        assert!(diagnostic.chars().count() <= 512);
+        let long = std::io::Error::other(format!("fixture\n{}\x1b", "X".repeat(1024)));
+        let diagnostic = describeCauses(&long);
+        assert_eq!(diagnostic.chars().count(), 512);
+        assert!(!diagnostic.chars().any(char::is_control));
+    }
 }

@@ -29,7 +29,7 @@ impl epp_core::transfer::session::BoundTransferRunner for IsolatedTransferRunner
     }
 
     fn execution(&self) -> Option<epp_core::transfer::session::TransferExecution> {
-        Some(epp_core::transfer::session::TransferExecution::RestrictedWorkerV1)
+        Some(epp_core::transfer::session::TransferExecution::RestrictedWorkerV2)
     }
 
     fn snapshot(
@@ -124,7 +124,7 @@ pub fn run(length: &str, parentId: &str, progressHandle: &str) -> ServiceResult<
         let progressRef = &progress;
         let cancelledRef = &cancelled;
         scope.spawn(move || {
-            let result = epp_core::transfer::measureFrom(
+            let result = epp_core::transfer::measureIsolatedFrom(
                 input.plan,
                 input.binding,
                 cancelledRef,

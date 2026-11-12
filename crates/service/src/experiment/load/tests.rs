@@ -342,7 +342,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
 
 #[test]
 fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
-    for failure in 0..8 {
+    for failure in 0..9 {
         let (scope, current, routes) = fixture();
         let plan = plan(&scope);
         let storage = Database::new();
@@ -369,6 +369,7 @@ fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
             4 => after.0.native.capturedAtUnixMs -= 1000,
             5 => after.0.native.settings.nlMtu = 1427,
             7 => run.transferExecution = None,
+            8 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV1),
             _ => {}
         }
         assert!(
