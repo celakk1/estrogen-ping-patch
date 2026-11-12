@@ -135,6 +135,7 @@ fn validateTransfers(run: &SessionRun, start: u64, finish: u64) -> AppResult<Vec
         if phase.providerIndex != providerIndex
             || phase.phase != expectedPhase
             || phase.error.is_some()
+            || phase.interruptedProgress.is_some()
             || result.status != TransferStatus::Completed
             || first < previous
             || last < first

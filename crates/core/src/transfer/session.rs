@@ -133,11 +133,24 @@ pub trait BoundTransferRunner: Sync {
     ) -> AppResult<TransferResult>;
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProgressSnapshot {
     pub downloadBytesRead: u64,
     pub uploadBodyBytesProvided: u64,
     pub activeRequests: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum InterruptedProgress {
+    Observed {
+        capturedAt: String,
+        counters: ProgressSnapshot,
+    },
+    Unavailable {
+        detail: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -188,6 +201,8 @@ pub struct PhaseResult {
     pub phase: Phase,
     pub result: Option<TransferResult>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruptedProgress: Option<InterruptedProgress>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -239,6 +254,7 @@ struct Observer<'a, F: FnMut(SessionProgress)> {
     plan: &'a SessionPlan,
     sourceBindings: Option<&'a SourceBindings>,
     transferRunner: &'a dyn BoundTransferRunner,
+    transferExecution: Option<TransferExecution>,
     cancelled: &'a AtomicBool,
     deadline: Instant,
     echoProbe: EchoProbe,
@@ -247,6 +263,39 @@ struct Observer<'a, F: FnMut(SessionProgress)> {
 }
 
 impl<F: FnMut(SessionProgress)> Observer<'_, F> {
+    fn interruptedProgress(
+        &self,
+        phase: Phase,
+        progress: Option<&TransferProgress>,
+    ) -> Option<InterruptedProgress> {
+        self.transferExecution?;
+        Some(match progress {
+            Some(progress) => match self.snapshot(phase, progress) {
+                Ok(counters) => InterruptedProgress::Observed {
+                    capturedAt: chrono::Utc::now().to_rfc3339(),
+                    counters,
+                },
+                Err(error) => InterruptedProgress::Unavailable {
+                    detail: error
+                        .to_string()
+                        .chars()
+                        .take(512)
+                        .map(|character| {
+                            if character.is_control() {
+                                ' '
+                            } else {
+                                character
+                            }
+                        })
+                        .collect(),
+                },
+            },
+            None => InterruptedProgress::Unavailable {
+                detail: "Worker progress storage was not initialized".into(),
+            },
+        })
+    }
+
     fn snapshot(&self, phase: Phase, progress: &TransferProgress) -> AppResult<ProgressSnapshot> {
         let loaded = matches!(phase, Phase::Download | Phase::Upload);
         let snapshot = if loaded && self.sourceBindings.is_some() {
@@ -404,6 +453,7 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
                         phase,
                         result: None,
                         error: Some(error.to_string()),
+                        interruptedProgress: self.interruptedProgress(phase, None),
                     });
                 }
             }
@@ -451,6 +501,11 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
             }
             result
         });
+        let interruptedProgress = if result.is_err() {
+            self.interruptedProgress(phase, Some(&progress))
+        } else {
+            None
+        };
         self.notify(providerIndex, phase, &progress, None);
         Ok(match result {
             Ok(result) => PhaseResult {
@@ -458,12 +513,14 @@ impl<F: FnMut(SessionProgress)> Observer<'_, F> {
                 phase,
                 result: Some(result),
                 error: None,
+                interruptedProgress: None,
             },
             Err(error) => PhaseResult {
                 providerIndex,
                 phase,
                 result: None,
                 error: Some(error.to_string()),
+                interruptedProgress,
             },
         })
     }
@@ -540,6 +597,7 @@ fn runSessionInternal(
         plan: &plan,
         sourceBindings: sourceBindings.as_ref(),
         transferRunner,
+        transferExecution,
         cancelled,
         deadline: Instant::now() + Duration::from_secs(u64::from(config.sessionMinutes) * 60),
         echoProbe: EchoProbe::default(),

@@ -227,6 +227,7 @@ fn savedRaw(
         let provider = run.plan.providers[0].clone();
         let binding = collector.scope.bindings.transfers[0];
         run.transfers.push(PhaseResult {
+            interruptedProgress: None,
             providerIndex: 0,
             phase,
             error: None,

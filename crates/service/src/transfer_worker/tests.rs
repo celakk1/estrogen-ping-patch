@@ -218,7 +218,13 @@ impl Image {
 
 impl Drop for Image {
     fn drop(&mut self) {
-        for name in ["owner.pid", "owner.log"] {
+        for name in [
+            "owner.pid",
+            "owner.log",
+            "interrupted.sqlite",
+            "interrupted.sqlite-wal",
+            "interrupted.sqlite-shm",
+        ] {
             let _ = std::fs::remove_file(self.0.parent().unwrap().join(name));
         }
         let _ = std::fs::remove_file(&self.0);
@@ -581,6 +587,125 @@ fn manualPublicTlsSmokeUsesOneBoundedCloudflareDownload() {
     );
 }
 
+fn serveStalledDownload(listener: TcpListener) -> thread::JoinHandle<()> {
+    listener.set_nonblocking(true).unwrap();
+    thread::spawn(move || {
+        let mut stream = accept(&listener);
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut size = 0;
+        loop {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            size += line.len();
+            assert!(size <= 8192);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4097\r\nX-Epp-Benchmark-Protocol: 1\r\nConnection: close\r\n\r\n").unwrap();
+        stream.write_all(&[b'X'; 1024]).unwrap();
+        stream.flush().unwrap();
+        match stream.read(&mut [0; 1]) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            outcome => panic!("stalled worker traffic remained alive: {outcome:?}"),
+        }
+    })
+}
+
+#[test]
+#[ignore = "requires a separately built automatic-trials service executable"]
+fn isolatedWorkerInterruptedSessionPreservesPartialCountersAcrossStorageReopen() {
+    use epp_core::{
+        benchmark::{Endpoint, ProbeProtocol, SourceBinding as EchoBinding},
+        config::Config,
+        icmp::EchoTarget,
+        transfer::session::{self, InterruptedProgress, SessionPlan, SourceBindings},
+    };
+    let image = Image::configured();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let request = input(listener.local_addr().unwrap(), Direction::Download);
+    let server = serveStalledDownload(listener);
+    let cancelled = AtomicBool::new(false);
+    let mut run = session::runSourceBoundSessionWithRunner(
+        Config::default(),
+        SessionPlan {
+            providers: vec![request.plan.provider],
+            downloadBytesPerProvider: 4097,
+            uploadBytesPerProvider: 4097,
+            streams: 1,
+            phaseTimeoutMs: 3000,
+            idleRounds: 3,
+            intervalMs: 250,
+            probeTimeoutMs: 100,
+            latencyEndpoints: ["127.0.0.1", "::1"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, address)| Endpoint {
+                    id: format!("loopback-{index}"),
+                    address: address.into(),
+                    protocol: ProbeProtocol::IcmpEcho,
+                    dnsQuery: None,
+                })
+                .collect(),
+        },
+        SourceBindings {
+            transfers: vec![request.binding],
+            latency: ["127.0.0.1", "::1"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, address)| EchoBinding {
+                    endpointId: format!("loopback-{index}"),
+                    source: EchoTarget::parse(address).unwrap(),
+                })
+                .collect(),
+        },
+        &cancelled,
+        |update| {
+            if update.downloadBytesRead >= 1024 {
+                cancelled.store(true, Ordering::SeqCst);
+            }
+        },
+        &IsolatedTransferRunner {
+            image: Some(image.0.clone()),
+        },
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(run.status, "cancelled");
+    assert_eq!(run.transfers.len(), 1);
+    assert!(run.transfers[0].result.is_none());
+    assert!(
+        run.transfers[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("cancelled")
+    );
+    let databasePath = image.0.parent().unwrap().join("interrupted.sqlite");
+    let mut database = epp_core::storage::openDatabase(&databasePath).unwrap();
+    epp_core::storage::saveLoadSession(&mut database, &mut run).unwrap();
+    drop(database);
+    let database = epp_core::storage::openDatabase(&databasePath).unwrap();
+    let history = epp_core::storage::loadSessionHistory(&database, 1).unwrap();
+    assert_eq!(
+        serde_json::to_value(&history[0]).unwrap(),
+        serde_json::to_value(&run).unwrap()
+    );
+    match &history[0].transfers[0].interruptedProgress {
+        Some(InterruptedProgress::Observed {
+            capturedAt,
+            counters,
+        }) => {
+            assert!(chrono::DateTime::parse_from_rfc3339(capturedAt).is_ok());
+            assert_eq!(counters.downloadBytesRead, 1024);
+            assert_eq!(counters.uploadBodyBytesProvided, 0);
+            assert_eq!(counters.activeRequests, 1);
+        }
+        evidence => panic!("interrupted counters were not durably preserved: {evidence:?}"),
+    }
+}
+
 #[test]
 #[ignore = "requires a separately built automatic-trials service executable"]
 fn isolatedWorkerSharedCountersAdvanceWhileFrameConsumerIsBlocked() {
@@ -779,31 +904,9 @@ fn isolatedWorkerStopsBeforeReturningARefusedOrPanickingProgressConsumer() {
     let image = Image::configured();
     for panic in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
         let mut request = input(listener.local_addr().unwrap(), Direction::Download);
         request.plan.streams = 1;
-        let server = thread::spawn(move || {
-            let mut stream = accept(&listener);
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut size = 0;
-            loop {
-                let mut line = String::new();
-                assert!(reader.read_line(&mut line).unwrap() > 0);
-                size += line.len();
-                assert!(size <= 8192);
-                if line == "\r\n" {
-                    break;
-                }
-            }
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4097\r\nX-Epp-Benchmark-Protocol: 1\r\nConnection: close\r\n\r\n").unwrap();
-            stream.write_all(&[b'X'; 1024]).unwrap();
-            stream.flush().unwrap();
-            match stream.read(&mut [0; 1]) {
-                Ok(0) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-                outcome => panic!("refused consumer left worker traffic alive: {outcome:?}"),
-            }
-        });
+        let server = serveStalledDownload(listener);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             measureUsingProgress(
                 &image.0,

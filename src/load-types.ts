@@ -63,6 +63,7 @@ export interface LoadRun {
   finishedAt: string;
   appVersion: string;
   status: string;
+  transferExecution?: 'restrictedWorkerV1' | 'restrictedWorkerV2';
   config: Config;
   plan: LoadPlan;
   transfers: {
@@ -70,6 +71,17 @@ export interface LoadRun {
     phase: LoadPhase;
     result: TransferResult | null;
     error: string | null;
+    interruptedProgress?:
+      | {
+          status: 'observed';
+          capturedAt: string;
+          counters: {
+            downloadBytesRead: number;
+            uploadBodyBytesProvided: number;
+            activeRequests: number;
+          };
+        }
+      | { status: 'unavailable'; detail: string };
   }[];
   latencySamples: LoadSample[];
   latencySummaries: { providerIndex: number; phase: LoadPhase; results: BenchmarkRun['results'] }[];

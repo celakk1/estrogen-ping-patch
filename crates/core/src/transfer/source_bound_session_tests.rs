@@ -16,6 +16,9 @@ fn invalidProgressPreparationOrSnapshotsPreserveRawFailureWithoutHttpFallback() 
         calls: std::sync::atomic::AtomicUsize,
     }
     impl session::BoundTransferRunner for FaultRunner {
+        fn execution(&self) -> Option<session::TransferExecution> {
+            Some(session::TransferExecution::RestrictedWorkerV2)
+        }
         fn createProgress(&self) -> crate::AppResult<TransferProgress> {
             if self.preparation {
                 Err("fixture progress preparation refused".into())
@@ -67,6 +70,10 @@ fn invalidProgressPreparationOrSnapshotsPreserveRawFailureWithoutHttpFallback() 
         .unwrap();
         assert_eq!(run.status, "partialFailure");
         assert_eq!(run.transfers.len(), 1);
+        assert!(matches!(
+            run.transfers[0].interruptedProgress,
+            Some(session::InterruptedProgress::Unavailable { .. })
+        ));
         assert!(
             run.transfers[0]
                 .error
@@ -173,6 +180,12 @@ fn aDelegatedTransferRefusalCannotFallBackToInProcessHttp() {
     .unwrap();
     assert_eq!(runner.0.load(Ordering::SeqCst), 1);
     assert_eq!(run.status, "partialFailure");
+    assert!(run.transfers[0].interruptedProgress.is_none());
+    assert!(
+        serde_json::to_value(&run).unwrap()["transfers"][0]
+            .get("interruptedProgress")
+            .is_none()
+    );
     assert_eq!(run.sourceBindings, Some(bindings));
     assert_eq!(run.transfers.len(), 1);
     assert!(run.transfers[0].result.is_none());

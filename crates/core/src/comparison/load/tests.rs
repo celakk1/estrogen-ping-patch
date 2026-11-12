@@ -60,6 +60,7 @@ fn fixture() -> (SessionRun, Vec<Selection>, Plan) {
     ]
     .into_iter()
     .map(|(phase, direction, start)| PhaseResult {
+        interruptedProgress: None,
         providerIndex: 0,
         phase,
         error: None,
@@ -471,6 +472,32 @@ fn isolatedExecutionCannotShareALegacyCohortAndSurvivesRawRoundTrip() {
         cohortSha256(&legacy, &selections).unwrap(),
         plan.cohortSha256
     );
+}
+
+#[test]
+fn interruptedProgressCannotPromoteAnIncompleteOrContradictoryTransfer() {
+    use crate::transfer::session::{InterruptedProgress, ProgressSnapshot};
+    for evidence in [
+        InterruptedProgress::Observed {
+            capturedAt: time(10000),
+            counters: ProgressSnapshot {
+                downloadBytesRead: 1024,
+                uploadBodyBytesProvided: 0,
+                activeRequests: 1,
+            },
+        },
+        InterruptedProgress::Unavailable {
+            detail: "fixture counters unavailable".into(),
+        },
+    ] {
+        let (mut run, selections, plan) = fixture();
+        assert!(convert(&run, &selections, &plan).is_ok());
+        run.transfers[0].interruptedProgress = Some(evidence);
+        assert!(convert(&run, &selections, &plan).is_err());
+        run.transfers[0].result = None;
+        run.transfers[0].error = Some("fixture interrupted worker".into());
+        assert!(convert(&run, &selections, &plan).is_err());
+    }
 }
 
 #[test]
