@@ -4,7 +4,7 @@
 
 The optional adapter-bound load collector now delegates HTTP transfers to a restricted worker. The owned-process boundary, sealed request, bounded live frames, shared atomic probe counters, and execution-specific comparison cohort are implemented. A bounded public HTTPS download and certificate-name rejection passed with the worker's separate TLS backend. Manual desktop diagnostics retain their direct implementation. Installed-account and broader TLS validation, plus production optimization, remain unfinished.
 
-Native route, adapter, policy, checkpoint, watchdog, and journal ownership stay in the service. HTTP/TLS parsing must run in a separately bounded worker with no setting, authorization, journal, arbitrary-command, or path capability. The core session observer can keep its bounded source-bound echo sampling while delegating only `TransferPlan` plus its frozen `SourceBinding` to this worker. Manual desktop diagnostics retain their existing implementation.
+Native route, adapter, policy, checkpoint, watchdog, and journal ownership stay in the service. HTTP/TLS parsing must run in a separately bounded worker with no setting, authorization, journal, arbitrary-command, or path capability. The core session observer can keep its bounded source-bound echo sampling while delegating only `TransferPlan` plus its frozen `SourceBinding` to this worker. The optional packet-size candidate collector separately delegates route capture and packet diagnosis to [diagnostic workers](diagnostic-workers.md). Manual desktop diagnostics retain their existing implementation.
 
 ## Required execution boundary
 

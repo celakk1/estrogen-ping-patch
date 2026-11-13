@@ -1,8 +1,8 @@
 use super::*;
-use epp_core::packet_size::{self, Limits, NativeProbe, Probe, Sample};
+use epp_core::packet_size::{self, Limits, Sample};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const FINAL_HEADROOM_MS: u64 = 16_000;
+const FINAL_HEADROOM_MS: u64 = 19_000;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,7 +76,14 @@ pub enum Collection {
     },
 }
 
-trait Backend: Probe {
+trait Backend {
+    fn diagnose(
+        &mut self,
+        plan: packet_size::Plan,
+        limits: Limits,
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(&Sample) -> ServiceResult<()>,
+    ) -> ServiceResult<Report>;
     fn policy(
         &mut self,
         adapterGuid: Uuid,
@@ -90,22 +97,18 @@ trait Backend: Probe {
 }
 
 #[derive(Default)]
-struct Native {
-    probe: NativeProbe,
-}
-
-impl Probe for Native {
-    fn measure(
-        &mut self,
-        plan: &packet_size::Plan,
-        bytes: u32,
-        timeout: Duration,
-    ) -> epp_core::AppResult<epp_core::icmp::EchoOutcome> {
-        self.probe.measure(plan, bytes, timeout)
-    }
-}
+struct Native;
 
 impl Backend for Native {
+    fn diagnose(
+        &mut self,
+        plan: packet_size::Plan,
+        limits: Limits,
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(&Sample) -> ServiceResult<()>,
+    ) -> ServiceResult<Report> {
+        crate::read_worker::diagnose(plan, limits, cancelled, progress)
+    }
     fn policy(
         &mut self,
         adapterGuid: Uuid,
@@ -118,7 +121,7 @@ impl Backend for Native {
         targets: &[routing::Address],
         cancelled: &AtomicBool,
     ) -> ServiceResult<Vec<routing::Capture>> {
-        routing::capture(targets, cancelled)
+        crate::read_worker::routes(targets, cancelled)
     }
 }
 
@@ -166,7 +169,7 @@ pub fn collect(
     cancelled: &AtomicBool,
     progress: impl FnMut(usize, &Sample) -> ServiceResult<()>,
 ) -> ServiceResult<Collection> {
-    collectWithBackend(plan, cancelled, progress, &mut Native::default())
+    collectWithBackend(plan, cancelled, progress, &mut Native)
 }
 
 fn collectWithBackend<B: Backend>(
@@ -256,35 +259,36 @@ fn collectWithBackend<B: Backend>(
                 unreachable!()
             };
             let mut callbackError = None;
-            let report = packet_size::diagnoseWithLimits(
-                packet_size::Plan {
-                    source,
-                    destination,
-                    interfaceMtu: before.native.settings.nlMtu,
-                    timeoutMs: 750,
-                    intervalMs: 75,
-                    budgetMs,
-                },
-                Limits {
-                    maximumProbes: (plan.maximumProbes - usedProbes).min(144),
-                    maximumRequestedIpv4Bytes: (plan.maximumRequestedIpv4Bytes - usedBytes)
-                        .min(Limits::default().maximumRequestedIpv4Bytes),
-                },
-                backend,
-                cancelled,
-                |sample| {
-                    if callbackError.is_none() {
-                        let result = guard
-                            .check()
-                            .and_then(|_| progress(index, sample).map_err(failed));
-                        if let Err(error) = result {
-                            callbackError = Some(error);
-                            cancelled.store(true, Ordering::SeqCst);
+            let report = backend
+                .diagnose(
+                    packet_size::Plan {
+                        source,
+                        destination,
+                        interfaceMtu: before.native.settings.nlMtu,
+                        timeoutMs: 750,
+                        intervalMs: 75,
+                        budgetMs,
+                    },
+                    Limits {
+                        maximumProbes: (plan.maximumProbes - usedProbes).min(144),
+                        maximumRequestedIpv4Bytes: (plan.maximumRequestedIpv4Bytes - usedBytes)
+                            .min(Limits::default().maximumRequestedIpv4Bytes),
+                    },
+                    cancelled,
+                    &mut |sample| {
+                        if callbackError.is_none() {
+                            let result = guard
+                                .check()
+                                .and_then(|_| progress(index, sample).map_err(failed));
+                            if let Err(error) = result {
+                                callbackError = Some(error);
+                                cancelled.store(true, Ordering::SeqCst);
+                            }
                         }
-                    }
-                },
-            )
-            .map_err(failed)?;
+                        Ok(())
+                    },
+                )
+                .map_err(failed)?;
             usedProbes += report.samples.len();
             usedBytes += report.requestedIpv4Bytes;
             let outcome = report.outcome;

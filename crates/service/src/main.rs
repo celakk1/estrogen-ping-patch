@@ -15,6 +15,10 @@ fn execute() -> epp_service::ServiceResult<()> {
     match arguments.as_slice() {
         #[cfg(feature = "automatic-trials")]
         [mode, length, parentId, progressHandle] if mode == "--transfer-worker" => epp_service::transfer_worker::run(length, parentId, progressHandle),
+        #[cfg(feature = "automatic-trials")]
+        [mode, length, parentId] if mode == "--network-read-worker" => epp_service::read_worker::run(length, parentId),
+        #[cfg(feature = "automatic-trials")]
+        [mode, length, parentId] if mode == "--packet-read-worker" => epp_service::read_worker::runPacket(length, parentId),
         #[cfg(feature = "native-mtu-lab")]
         [mode, rest @ ..] if mode == "--native-mtu-lab-service" => {
             epp_service::mtu_lab::run(rest)

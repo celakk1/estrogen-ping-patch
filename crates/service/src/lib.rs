@@ -12,6 +12,8 @@ pub mod mtu_lab;
 mod owned_process;
 pub mod preview;
 pub mod protocol;
+#[cfg(all(windows, feature = "automatic-trials"))]
+pub mod read_worker;
 pub mod recovery;
 pub mod routing;
 #[cfg(windows)]

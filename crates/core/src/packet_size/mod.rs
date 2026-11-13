@@ -21,10 +21,25 @@ const CONTROL_BYTES: u32 = 84;
 const MIN_SEARCH_BYTES: u32 = 576;
 const PACKET_TOO_BIG: u32 = 11009;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Limits {
     pub maximumProbes: usize,
     pub maximumRequestedIpv4Bytes: u64,
+}
+
+impl Limits {
+    pub fn validate(&self) -> AppResult<()> {
+        if !(1..=MAX_PROBES).contains(&self.maximumProbes)
+            || self.maximumRequestedIpv4Bytes == 0
+            || self.maximumRequestedIpv4Bytes > Self::default().maximumRequestedIpv4Bytes
+        {
+            return Err(
+                "Packet-size resource limits exceed the fixed per-destination allowance".into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Default for Limits {
@@ -487,14 +502,7 @@ pub fn diagnoseWithLimits<P: Probe>(
     mut progress: impl FnMut(&Sample),
 ) -> AppResult<Report> {
     plan.validate()?;
-    if !(1..=MAX_PROBES).contains(&limits.maximumProbes)
-        || limits.maximumRequestedIpv4Bytes == 0
-        || limits.maximumRequestedIpv4Bytes > Limits::default().maximumRequestedIpv4Bytes
-    {
-        return Err(
-            "Packet-size resource limits exceed the fixed per-destination allowance".into(),
-        );
-    }
+    limits.validate()?;
     let now = nowUnixMs()?;
     let mut run = Run {
         report: Report {

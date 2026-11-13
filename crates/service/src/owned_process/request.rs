@@ -94,6 +94,16 @@ impl Input {
 
 pub(crate) fn read(length: &str, parentId: &str) -> ServiceResult<Vec<u8>> {
     restricted::validateCurrent()?;
+    readVerified(length, parentId)
+}
+
+#[cfg(feature = "automatic-trials")]
+pub(crate) fn readPacket(length: &str, parentId: &str) -> ServiceResult<Vec<u8>> {
+    restricted::validateCurrentPacketReader()?;
+    readVerified(length, parentId)
+}
+
+fn readVerified(length: &str, parentId: &str) -> ServiceResult<Vec<u8>> {
     restricted::verifyParent(parentId)?;
     let length: usize = length.parse()?;
     if length == 0 || length > MAX_BYTES {

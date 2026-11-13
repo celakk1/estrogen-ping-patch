@@ -14,6 +14,17 @@ use windows_sys::Win32::{
 const CHILD: &str = "owned_process::restricted::tests::childFixture";
 const WRAPPER: &str = "owned_process::restricted::tests::wrapperFixture";
 
+#[cfg(feature = "automatic-trials")]
+#[test]
+fn packetReaderPolicyRetainsRestrictionsWithoutChangingTheLowWorker() {
+    let packet = createPacketReader().unwrap();
+    validateAtIntegrity(packet.as_raw_handle(), "S-1-16-8192").unwrap();
+    assert!(validate(packet.as_raw_handle()).is_err());
+    let low = create().unwrap();
+    validate(low.as_raw_handle()).unwrap();
+    assert!(validateAtIntegrity(low.as_raw_handle(), "S-1-16-8192").is_err());
+}
+
 struct Fixture(PathBuf);
 
 impl Fixture {
@@ -121,6 +132,36 @@ fn restrictedChildRejectsWritableAndEscalatableRequestCapabilities() {
     }
 }
 
+#[cfg(feature = "automatic-trials")]
+#[test]
+fn packetChildPreservesProtectedAccessAndImmutableInputRefusals() {
+    for mode in [
+        None,
+        Some("writable"),
+        Some("upgrade"),
+        Some("permissions"),
+        Some("owner"),
+    ] {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(arguments(WRAPPER))
+            .env("EPP_RESTRICTED_SENTINEL", "parent-only")
+            .env("EPP_PACKET_POLICY", "1")
+            .creation_flags(CREATE_NO_WINDOW);
+        if let Some(mode) = mode {
+            command.env("EPP_RESTRICTED_INPUT_MODE", mode);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("restricted-child-verified"));
+    }
+}
+
 fn unsafeInput(owner: &str, payload: &[u8], mode: &str) -> request::Input {
     use windows_sys::Win32::{
         Foundation::DuplicateHandle,
@@ -182,7 +223,7 @@ fn unsafeInput(owner: &str, payload: &[u8], mode: &str) -> request::Input {
     }
 }
 
-fn refusesOriginalToken(parent: u32) {
+fn refusesOriginalToken(parent: u32, expectedIntegrity: &str) {
     use windows_sys::Win32::{
         Foundation::DuplicateHandle,
         Security::{
@@ -250,7 +291,7 @@ fn refusesOriginalToken(parent: u32) {
                 .unwrap()
                     < SecurityImpersonation;
             if !identificationOnly {
-                validate(duplicate.as_raw_handle())
+                validateAtIntegrity(duplicate.as_raw_handle(), expectedIntegrity)
                     .expect("worker expanded an authority-bearing linked token handle");
             }
             if identificationOnly {
@@ -274,7 +315,7 @@ fn refusesOriginalToken(parent: u32) {
                     } != 0
                     {
                         let converted = unsafe { OwnedHandle::from_raw_handle(converted) };
-                        validate(converted.as_raw_handle()).expect(
+                        validateAtIntegrity(converted.as_raw_handle(), expectedIntegrity).expect(
                             "worker converted an identification token into original authority",
                         );
                     }
@@ -294,7 +335,7 @@ fn refusesOriginalToken(parent: u32) {
         } != 0
         {
             let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate) };
-            validate(duplicate.as_raw_handle())
+            validateAtIntegrity(duplicate.as_raw_handle(), expectedIntegrity)
                 .expect("worker regained an original token through its linked token");
         }
     }
@@ -351,11 +392,20 @@ fn wrapperFixture() {
     );
     drop(unsafe { OwnedHandle::from_raw_handle(opened) });
     let mut args = arguments(CHILD);
+    let packet = std::env::var_os("EPP_PACKET_POLICY").is_some();
+    args.push(format!("packet-fixture={packet}"));
     args.push(format!("identity-fixture={context}"));
     args.push(format!("input-length={}", input.length));
     if let Some(mode) = mode {
         args.push(format!("input-refused={mode}"));
     }
+    #[cfg(feature = "automatic-trials")]
+    let job = if packet {
+        CommandJob::spawnPacketReader(&fixture.0, &args, &input.handle).unwrap()
+    } else {
+        CommandJob::spawnRestrictedReader(&fixture.0, &args, Some(&input.handle), None).unwrap()
+    };
+    #[cfg(not(feature = "automatic-trials"))]
     let job =
         CommandJob::spawnRestrictedReader(&fixture.0, &args, Some(&input.handle), None).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -376,7 +426,18 @@ fn wrapperFixture() {
 #[test]
 #[ignore]
 fn childFixture() {
-    validateCurrent().unwrap();
+    let packet = std::env::args().any(|arg| arg == "packet-fixture=true");
+    #[cfg(feature = "automatic-trials")]
+    if packet {
+        validateCurrentPacketReader().unwrap();
+    } else {
+        validateCurrent().unwrap();
+    }
+    #[cfg(not(feature = "automatic-trials"))]
+    {
+        assert!(!packet);
+        validateCurrent().unwrap();
+    }
     assert!(std::env::var_os("EPP_RESTRICTED_SENTINEL").is_none());
     for (key, _) in std::env::vars_os() {
         assert!(
@@ -395,6 +456,13 @@ fn childFixture() {
     let length = std::env::args()
         .find_map(|arg| arg.strip_prefix("input-length=").map(str::to_owned))
         .unwrap();
+    #[cfg(feature = "automatic-trials")]
+    let bytes = if packet {
+        request::readPacket(&length, context.split('-').next().unwrap())
+    } else {
+        request::read(&length, context.split('-').next().unwrap())
+    };
+    #[cfg(not(feature = "automatic-trials"))]
     let bytes = request::read(&length, context.split('-').next().unwrap());
     if let Some(mode) =
         std::env::args().find_map(|arg| arg.strip_prefix("input-refused=").map(str::to_owned))
@@ -447,7 +515,7 @@ fn childFixture() {
         );
         assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
     }
-    refusesOriginalToken(parent);
+    refusesOriginalToken(parent, if packet { "S-1-16-8192" } else { "S-1-16-4096" });
     let child = Command::new(std::env::current_exe().unwrap())
         .arg("--list")
         .creation_flags(CREATE_NO_WINDOW)

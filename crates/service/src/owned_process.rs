@@ -259,6 +259,24 @@ impl CommandJob {
         )
     }
 
+    #[cfg(feature = "automatic-trials")]
+    pub(crate) fn spawnPacketReader(
+        executable: &Path,
+        arguments: &[String],
+        input: &OwnedHandle,
+    ) -> ServiceResult<Self> {
+        let token = restricted::createPacketReader()?;
+        Self::create(
+            executable,
+            arguments,
+            false,
+            ProcessRole::ReadOnly,
+            Some(token.as_raw_handle()),
+            Some(input.as_raw_handle()),
+            None,
+        )
+    }
+
     #[cfg(all(test, any(feature = "native-mtu-lab", feature = "native-recovery")))]
     pub(crate) fn spawnFixture(executable: &Path, arguments: &[String]) -> ServiceResult<Self> {
         Self::create(

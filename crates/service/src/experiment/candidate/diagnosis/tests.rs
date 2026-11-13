@@ -1,5 +1,6 @@
 use super::*;
 use epp_core::icmp::{EchoOutcome, EchoStatus};
+use epp_core::packet_size::Probe;
 
 struct Fixture {
     policy: policy::Capture,
@@ -81,6 +82,19 @@ impl Probe for Fixture {
 }
 
 impl Backend for Fixture {
+    fn diagnose(
+        &mut self,
+        plan: packet_size::Plan,
+        limits: Limits,
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(&Sample) -> ServiceResult<()>,
+    ) -> ServiceResult<Report> {
+        packet_size::diagnoseWithLimits(plan, limits, self, cancelled, |sample| {
+            if progress(sample).is_err() {
+                cancelled.store(true, Ordering::SeqCst);
+            }
+        })
+    }
     fn policy(&mut self, adapterGuid: Uuid, _: &AtomicBool) -> ServiceResult<policy::Capture> {
         assert_eq!(adapterGuid, self.policy.native.adapterGuid);
         self.policies += 1;

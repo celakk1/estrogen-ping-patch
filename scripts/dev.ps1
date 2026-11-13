@@ -144,6 +144,7 @@ try {
             try {
                 $env:EPP_TRANSFER_WORKER_IMAGE = Join-Path $workerTarget 'debug\epp-network-service.exe'
                 invokeChecked 'cargo.exe' @('test', '--locked', '-p', 'epp-service', '--features', 'automatic-trials', '--lib', 'transfer_worker::tests::isolatedWorker', '--', '--ignored')
+                invokeChecked 'cargo.exe' @('test', '--locked', '-p', 'epp-service', '--features', 'automatic-trials', '--lib', 'read_worker::tests::isolatedReadWorker', '--', '--ignored')
             } finally {
                 $env:EPP_TRANSFER_WORKER_IMAGE = $previousWorkerImage
             }

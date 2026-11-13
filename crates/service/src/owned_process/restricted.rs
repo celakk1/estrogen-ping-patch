@@ -87,6 +87,15 @@ fn primaryToken(access: u32) -> ServiceResult<OwnedHandle> {
 }
 
 pub(super) fn create() -> ServiceResult<OwnedHandle> {
+    createAtIntegrity("S-1-16-4096")
+}
+
+#[cfg(feature = "automatic-trials")]
+pub(super) fn createPacketReader() -> ServiceResult<OwnedHandle> {
+    createAtIntegrity("S-1-16-8192")
+}
+
+fn createAtIntegrity(integrity: &str) -> ServiceResult<OwnedHandle> {
     let original =
         primaryToken(TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY)?;
     let administrator = Sid::new("S-1-5-32-544")?;
@@ -162,14 +171,14 @@ pub(super) fn create() -> ServiceResult<OwnedHandle> {
             size_of_val(&dacl) as u32,
         )
     })?;
-    let low = Sid::new("S-1-16-4096")?;
-    let sidBytes = unsafe { GetLengthSid(low.0) } as usize;
+    let integritySid = Sid::new(integrity)?;
+    let sidBytes = unsafe { GetLengthSid(integritySid.0) } as usize;
     let length = size_of::<TOKEN_MANDATORY_LABEL>() + sidBytes;
     let mut label = vec![0u64; length.div_ceil(8)];
     let labelAddress = label.as_mut_ptr().cast::<u8>();
     let sidAddress = unsafe { labelAddress.add(size_of::<TOKEN_MANDATORY_LABEL>()) };
     unsafe {
-        std::ptr::copy_nonoverlapping(low.0.cast::<u8>(), sidAddress, sidBytes);
+        std::ptr::copy_nonoverlapping(integritySid.0.cast::<u8>(), sidAddress, sidBytes);
         *label.as_mut_ptr().cast::<TOKEN_MANDATORY_LABEL>() = TOKEN_MANDATORY_LABEL {
             Label: SID_AND_ATTRIBUTES {
                 Sid: sidAddress.cast(),
@@ -177,7 +186,7 @@ pub(super) fn create() -> ServiceResult<OwnedHandle> {
             },
         };
     }
-    succeeded("Lower benchmark token integrity", unsafe {
+    succeeded("Set benchmark token integrity", unsafe {
         SetTokenInformation(
             token.as_raw_handle(),
             TokenIntegrityLevel,
@@ -185,11 +194,15 @@ pub(super) fn create() -> ServiceResult<OwnedHandle> {
             length as u32,
         )
     })?;
-    validate(token.as_raw_handle())?;
+    validateAtIntegrity(token.as_raw_handle(), integrity)?;
     Ok(token)
 }
 
 fn validate(token: HANDLE) -> ServiceResult<()> {
+    validateAtIntegrity(token, "S-1-16-4096")
+}
+
+fn validateAtIntegrity(token: HANDLE, expectedIntegrity: &str) -> ServiceResult<()> {
     if unsafe { IsTokenRestricted(token) } == 0 {
         return Err("Benchmark worker requires a restricted token".into());
     }
@@ -227,9 +240,9 @@ fn validate(token: HANDLE) -> ServiceResult<()> {
     }
     let integrity = Information::query(token, TokenIntegrityLevel)?;
     if crate::security::sidText(integrity.header::<TOKEN_MANDATORY_LABEL>()?.Label.Sid)?
-        != "S-1-16-4096"
+        != expectedIntegrity
     {
-        return Err("Benchmark worker requires low integrity".into());
+        return Err("Benchmark worker has an unexpected integrity policy".into());
     }
     let mut changeNotify = LUID::default();
     succeeded("Resolve permitted benchmark privilege", unsafe {
@@ -268,6 +281,12 @@ fn validate(token: HANDLE) -> ServiceResult<()> {
 pub(super) fn validateCurrent() -> ServiceResult<()> {
     let token = primaryToken(TOKEN_QUERY)?;
     validate(token.as_raw_handle())
+}
+
+#[cfg(feature = "automatic-trials")]
+pub(super) fn validateCurrentPacketReader() -> ServiceResult<()> {
+    let token = primaryToken(TOKEN_QUERY)?;
+    validateAtIntegrity(token.as_raw_handle(), "S-1-16-8192")
 }
 
 pub(super) fn verifyParent(parentId: &str) -> ServiceResult<()> {
