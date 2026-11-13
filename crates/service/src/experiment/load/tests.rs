@@ -37,7 +37,7 @@ pub(super) fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
         probeTimeoutMs: 100,
         latencyEndpoints: endpoints,
     };
-    let selections = vec![
+    let mut selections = vec![
         comparisonLoad::Selection {
             metricId: "download".into(),
             providerIndex: 0,
@@ -69,6 +69,14 @@ pub(super) fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
             },
         },
     ];
+    for required in comparisonLoad::requiredSafetySelections(&config, &plan).unwrap() {
+        if !selections.iter().any(|selection| {
+            selection.providerIndex == required.providerIndex
+                && selection.statistic == required.statistic
+        }) {
+            selections.push(required);
+        }
+    }
     let adapter = AdapterScope::fromEvidence(
         template,
         targets(&plan.latencyEndpoints, &[peer]).unwrap(),
@@ -94,14 +102,15 @@ pub(super) fn plan(scope: &Scope) -> Plan {
         .enumerate()
         .map(|(index, selection)| MetricRule {
             id: selection.metricId.clone(),
-            unit: if index < 2 {
-                Unit::MegabitsPerSecond
-            } else if index == 2 {
-                Unit::Milliseconds
-            } else {
-                Unit::Percent
+            unit: match selection.statistic {
+                comparisonLoad::Statistic::GoodputMbps { .. } => Unit::MegabitsPerSecond,
+                comparisonLoad::Statistic::FailurePercent { .. } => Unit::Percent,
+                _ => Unit::Milliseconds,
             },
-            direction: if index < 2 {
+            direction: if matches!(
+                selection.statistic,
+                comparisonLoad::Statistic::GoodputMbps { .. }
+            ) {
                 Direction::HigherIsBetter
             } else {
                 Direction::LowerIsBetter
@@ -111,7 +120,14 @@ pub(super) fn plan(scope: &Scope) -> Plan {
             } else {
                 Role::Guard
             },
-            resolution: if index == 3 { 100.0 / 12.0 } else { 1.0 },
+            resolution: if matches!(
+                selection.statistic,
+                comparisonLoad::Statistic::FailurePercent { .. }
+            ) {
+                100.0 / 12.0
+            } else {
+                1.0
+            },
             minimumImprovement: threshold(10.0),
             maximumRegression: threshold(0.0),
             maximumBaselineDrift: threshold(5.0),
@@ -291,6 +307,116 @@ fn savedRaw(
 }
 
 #[test]
+fn missingOrDuplicateSafetyCoverageIsRefusedBeforeNativeCaptureAndStorage() {
+    for failure in 0..5 {
+        let (mut scope, _, _) = fixture();
+        match failure {
+            0 => {
+                scope.selections.pop();
+            }
+            1 => scope.selections[49].statistic = scope.selections[48].statistic.clone(),
+            2 => scope.selections.truncate(4),
+            3 => scope.selections[1].statistic = scope.selections[0].statistic.clone(),
+            _ => {
+                scope.selections[49].statistic = comparisonLoad::Statistic::FailurePercent {
+                    phase: Phase::Upload,
+                    endpointId: "server-1".into(),
+                }
+            }
+        }
+        let peers = scope
+            .bindings
+            .transfers
+            .iter()
+            .map(|binding| binding.peer)
+            .collect();
+        let error = Scope::capture(
+            scope.adapter.template.clone(),
+            scope.config.clone(),
+            scope.sessionPlan.clone(),
+            peers,
+            scope.selections.clone(),
+            &AtomicBool::new(false),
+        )
+        .err()
+        .unwrap();
+        assert!(
+            error.to_string().contains("every provider"),
+            "{failure}: {error}"
+        );
+        let plan = plan(&scope);
+        let storage = Database::new();
+        let mut database = storage.open();
+        let error = scope.bind(&mut database, plan).err().unwrap();
+        assert!(
+            error.to_string().contains("every provider"),
+            "{failure}: {error}"
+        );
+        assert_eq!(database.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('adapter_load_measurements','adapter_load_recordings')", [], |row| row.get::<_,u32>(0)).unwrap(), 0);
+    }
+}
+
+#[test]
+fn uploadAndRecoveryFailuresOnAnotherEndpointCannotEscapeTheSafetySet() {
+    for phase in [Phase::Upload, Phase::Recovery] {
+        let (scope, current, routes) = fixture();
+        let plan = plan(&scope);
+        let storage = Database::new();
+        let mut database = storage.open();
+        let mut collector = scope.bind(&mut database, plan).unwrap();
+        let (mut run, before, after) = savedRaw(&mut collector, &current, &routes);
+        let sample = run
+            .latencySamples
+            .iter_mut()
+            .find(|sample| sample.phase == phase && sample.sample.endpointId == "server-1")
+            .unwrap();
+        let echo = sample.sample.echo.as_mut().unwrap();
+        echo.status = EchoStatus::TimedOut;
+        echo.rttMs = None;
+        echo.nativeCode = Some(11010);
+        echo.responder = None;
+        sample.sample.error = Some("fixture timeout".into());
+        let raw = serde_json::to_string(&run).unwrap();
+        collector
+            .database
+            .execute(
+                "UPDATE load_sessions SET report_json=?1 WHERE id=?2",
+                rusqlite::params![raw, run.id],
+            )
+            .unwrap();
+        let error = collector
+            .acceptRaw(&run, &before, &after, Configuration::Original)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("twelve qualifying successful replies"),
+            "{error}"
+        );
+        assert_eq!(
+            collector
+                .database
+                .query_row(
+                    "SELECT count(*) FROM adapter_load_measurements",
+                    [],
+                    |row| row.get::<_, u32>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let stored: String = collector
+            .database
+            .query_row(
+                "SELECT report_json FROM load_sessions WHERE id=?1",
+                [run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, raw);
+    }
+}
+
+#[test]
 fn loadScopeDerivesEverySourceAndConservativelyCoversAllRequestsPayloadAndProbes() {
     let (scope, _, _) = fixture();
     assert_eq!(scope.bindings.latency.len(), 2);
@@ -324,7 +450,8 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
     let measured = collector
         .acceptRaw(&run, &before, &after, Configuration::Original)
         .unwrap();
-    assert_eq!(measured.values[2..], [20.0, 0.0]);
+    assert_eq!(measured.values[2..4], [20.0, 0.0]);
+    assert_eq!(measured.values.len(), 50);
     let (payload, checksum): (String, String) = collector
         .database
         .query_row(
@@ -675,7 +802,7 @@ fn medianAndP99ReceiptsPreserveNativeResolutionAndRawValues() {
     for tail in [false, true] {
         for tooPrecise in [false, true] {
             let (mut scope, current, routes) = fixture();
-            scope.selections[2].statistic = if tail {
+            let statistic = if tail {
                 comparisonLoad::Statistic::P99Ms {
                     phase: Phase::Download,
                     endpointId: "server-0".into(),
@@ -686,6 +813,14 @@ fn medianAndP99ReceiptsPreserveNativeResolutionAndRawValues() {
                     endpointId: "server-0".into(),
                 }
             };
+            let selected = scope
+                .selections
+                .iter()
+                .position(|selection| {
+                    selection.providerIndex == 0 && selection.statistic == statistic
+                })
+                .unwrap();
+            scope.selections.swap(2, selected);
             let peers = scope
                 .bindings
                 .transfers
@@ -738,7 +873,7 @@ fn variationReceiptsUseRawRttValuesAndRefuseSubMillisecondRules() {
     for successive in [false, true] {
         for tooPrecise in [false, true] {
             let (mut scope, current, routes) = fixture();
-            scope.selections[2].statistic = if successive {
+            let statistic = if successive {
                 comparisonLoad::Statistic::SuccessiveVariationMs {
                     phase: session::Phase::Download,
                     endpointId: "server-0".into(),
@@ -749,6 +884,14 @@ fn variationReceiptsUseRawRttValuesAndRefuseSubMillisecondRules() {
                     endpointId: "server-0".into(),
                 }
             };
+            let selected = scope
+                .selections
+                .iter()
+                .position(|selection| {
+                    selection.providerIndex == 0 && selection.statistic == statistic
+                })
+                .unwrap();
+            scope.selections.swap(2, selected);
             let peers = scope
                 .bindings
                 .transfers

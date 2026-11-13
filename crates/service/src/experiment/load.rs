@@ -100,6 +100,7 @@ impl Scope {
         cancelled: &AtomicBool,
     ) -> ServiceResult<Self> {
         Self::validateInput(&template, &config, &plan, &peers)?;
+        comparisonLoad::validateSafetyCoverage(&config, &plan, &selections)?;
         let adapter = AdapterScope::capture(
             template,
             targets(&plan.latencyEndpoints, &peers)?,
@@ -116,6 +117,7 @@ impl Scope {
         selections: Vec<comparisonLoad::Selection>,
     ) -> ServiceResult<Self> {
         Self::validateInput(&adapter.template, &config, &sessionPlan, &peers)?;
+        comparisonLoad::validateSafetyCoverage(&config, &sessionPlan, &selections)?;
         if adapter.targets != targets(&sessionPlan.latencyEndpoints, &peers)? {
             return Err("Load targets differ from the captured adapter scope".into());
         }
@@ -214,6 +216,7 @@ impl Scope {
             &self.selections,
             &plan.comparison,
         )?;
+        comparisonLoad::validateSafetyCoverage(&self.config, &self.sessionPlan, &self.selections)?;
         for (rule, selection) in plan.comparison.metrics.iter().zip(&self.selections) {
             let (unit, direction, resolution, guard) = match selection.statistic {
                 comparisonLoad::Statistic::GoodputMbps { .. } => (

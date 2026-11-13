@@ -6,17 +6,17 @@ use super::{
 use crate::{
     AppResult,
     benchmark::summarizeEndpoint,
-    config::Profile,
+    config::{Config, Profile},
     transfer::{
         self, TransferStatus,
-        session::{LatencySample, Phase, SessionRun},
+        session::{LatencySample, Phase, SessionPlan, SessionRun},
     },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Statistic {
     GoodputMbps { direction: transfer::Direction },
@@ -34,6 +34,112 @@ pub struct Selection {
     pub metricId: String,
     pub providerIndex: usize,
     pub statistic: Statistic,
+}
+
+pub fn requiredSafetySelections(config: &Config, plan: &SessionPlan) -> AppResult<Vec<Selection>> {
+    const STATISTICS: usize = 6;
+    plan.validate(config)?;
+    let directions = [
+        ("download", transfer::Direction::Download),
+        ("upload", transfer::Direction::Upload),
+    ];
+    let phases = [
+        ("idle", Phase::Idle),
+        ("download", Phase::Download),
+        ("upload", Phase::Upload),
+        ("recovery", Phase::Recovery),
+    ];
+    let count = plan.providers.len()
+        * (directions.len() + phases.len() * STATISTICS * plan.latencyEndpoints.len());
+    if count > super::MAX_METRICS {
+        return Err(format!("Four-phase load coverage needs {count} metrics, exceeding the {}-metric bound; select a smaller fixed provider/destination cohort before collection", super::MAX_METRICS).into());
+    }
+    let mut selections = Vec::with_capacity(count);
+    for providerIndex in 0..plan.providers.len() {
+        for (key, direction) in directions {
+            selections.push(Selection {
+                metricId: format!("provider-{providerIndex}.{key}.goodput"),
+                providerIndex,
+                statistic: Statistic::GoodputMbps { direction },
+            });
+        }
+        for (phaseKey, phase) in phases {
+            for (endpointIndex, endpoint) in plan.latencyEndpoints.iter().enumerate() {
+                let endpointId = endpoint.id.clone();
+                let statistics: [(&str, Statistic); STATISTICS] = [
+                    (
+                        "median",
+                        Statistic::MedianMs {
+                            phase,
+                            endpointId: endpointId.clone(),
+                        },
+                    ),
+                    (
+                        "p95",
+                        Statistic::P95Ms {
+                            phase,
+                            endpointId: endpointId.clone(),
+                        },
+                    ),
+                    (
+                        "p99",
+                        Statistic::P99Ms {
+                            phase,
+                            endpointId: endpointId.clone(),
+                        },
+                    ),
+                    (
+                        "iqr",
+                        Statistic::IqrMs {
+                            phase,
+                            endpointId: endpointId.clone(),
+                        },
+                    ),
+                    (
+                        "variation",
+                        Statistic::SuccessiveVariationMs {
+                            phase,
+                            endpointId: endpointId.clone(),
+                        },
+                    ),
+                    ("failures", Statistic::FailurePercent { phase, endpointId }),
+                ];
+                for (key, statistic) in statistics {
+                    selections.push(Selection {
+                        metricId: format!(
+                            "provider-{providerIndex}.{phaseKey}.endpoint-{endpointIndex}.{key}"
+                        ),
+                        providerIndex,
+                        statistic,
+                    });
+                }
+            }
+        }
+    }
+    Ok(selections)
+}
+
+pub fn validateSafetyCoverage(
+    config: &Config,
+    plan: &SessionPlan,
+    selections: &[Selection],
+) -> AppResult<()> {
+    let required = requiredSafetySelections(config, plan)?;
+    if selections.len() != required.len()
+        || required.iter().any(|expected| {
+            selections
+                .iter()
+                .filter(|selection| {
+                    selection.providerIndex == expected.providerIndex
+                        && selection.statistic == expected.statistic
+                })
+                .count()
+                != 1
+        })
+    {
+        return Err("Load trials require exactly one throughput metric per direction and median/p95/p99, RTT spread/variation, and failure metrics for every provider, endpoint, and phase".into());
+    }
+    Ok(())
 }
 
 pub fn validateProfileObjectives(

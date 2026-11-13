@@ -12,7 +12,7 @@ mod tests;
 
 const MIN_BLOCKS: usize = 12;
 const MAX_BLOCKS: usize = 128;
-const MAX_METRICS: usize = 16;
+const MAX_METRICS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,7 +178,7 @@ impl Plan {
             || !self.metrics.iter().any(|rule| rule.role == Role::Objective)
             || !self.metrics.iter().any(|rule| rule.role == Role::Guard)
         {
-            return Err("Comparison requires canonical evidence hashes, objective and safety metrics, and at most sixteen metrics".into());
+            return Err(format!("Comparison requires canonical evidence hashes, objective and safety metrics, and at most {MAX_METRICS} metrics").into());
         }
         let mut identifiers = BTreeSet::new();
         for rule in &self.metrics {

@@ -278,7 +278,10 @@ fn invalidPolicyAndPercentagesCannotEnterTheAnalysis() {
             }
             "capacity" => {
                 let metric = plan.metrics[0].clone();
-                plan.metrics.resize(17, metric);
+                plan.metrics.resize(MAX_METRICS + 1, metric);
+                for (index, rule) in plan.metrics.iter_mut().enumerate() {
+                    rule.id = format!("metric-{index}");
+                }
             }
             _ => unreachable!(),
         }
@@ -291,4 +294,40 @@ fn invalidPolicyAndPercentagesCannotEnterTheAnalysis() {
     assert!(analyze(&plan, &evidence).is_err());
     assert!(analyze(&plan, &[]).is_err());
     assert!(analyze(&plan, &blocks(129)).is_err());
+}
+
+#[test]
+fn maximumMetricCountKeepsEveryRegressionGuardAndTheFamilyAdjustment() {
+    for width in [16, MAX_METRICS] {
+        let mut plan = plan();
+        let mut rule = plan.metrics[0].clone();
+        rule.role = Role::Guard;
+        plan.metrics.resize(width, rule);
+        for (index, rule) in plan.metrics.iter_mut().enumerate() {
+            rule.id = format!("metric-{index}");
+        }
+        let mut blocks = blocks(12);
+        for (index, block) in blocks.iter_mut().enumerate() {
+            block.originalBefore.values.resize(width, 30.0);
+            block.originalAfter.values.resize(width, 30.0);
+            block
+                .candidate
+                .values
+                .resize(width, if index % 2 == 0 { 29.5 } else { 30.5 });
+        }
+        blocks[11].candidate.values[width - 1] = 40.0;
+        let report = analyze(&plan, &blocks).unwrap();
+        assert_eq!(report.outcome, Outcome::Reject);
+        assert_eq!(report.metrics.len(), width);
+        assert_eq!(report.metrics[width - 1].hardRegressionBlocks, [11]);
+        assert_eq!(report.resamples, bootstrap::RESAMPLES);
+        assert_eq!(
+            report.metrics[0]
+                .benefitInterval
+                .as_ref()
+                .unwrap()
+                .nominalConfidence,
+            1.0 - 0.05 / (3 * width) as f64
+        );
+    }
 }

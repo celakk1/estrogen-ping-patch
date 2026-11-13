@@ -242,6 +242,55 @@ impl Host for HostFixture {
 }
 
 #[test]
+fn widestRepeatedPlanPreservesAllThirtyTwoBracketsWithinTheDurableLimit() {
+    let temporary = Temporary::new();
+    let mut store = Store::open(&temporary.0).unwrap();
+    let now = nowUnixMs().unwrap();
+    let mut plan = plan();
+    plan.createdAtUnixMs = now - 1000;
+    plan.blockCount = 32;
+    let mut guard = plan.comparison.metrics[1].clone();
+    guard.role = Role::Guard;
+    plan.comparison.metrics.resize(64, guard);
+    for (index, rule) in plan.comparison.metrics.iter_mut().enumerate() {
+        rule.id = format!("metric-{index}-{}", "x".repeat(88));
+    }
+    let mut snapshot = store.begin(plan, now).unwrap();
+    for index in 0..32 {
+        let start = snapshot.plan.createdAtUnixMs + index * 20;
+        let session = |offset: u64, configuration: &str| Session {
+            id: format!("session-{index}-{offset}-{}", "x".repeat(82)),
+            startedAtUnixMs: start + offset,
+            finishedAtUnixMs: start + offset + 1,
+            completed: true,
+            cohortSha256: snapshot.plan.comparison.cohortSha256.clone(),
+            environmentSha256: snapshot.plan.comparison.environmentSha256.clone(),
+            configurationSha256: configuration.into(),
+            values: vec![999_999_999_999.999_9; 64],
+        };
+        snapshot.blocks.push(MatchedBlock {
+            originalBefore: session(0, &snapshot.plan.comparison.originalConfigurationSha256),
+            candidate: session(5, &snapshot.plan.comparison.candidateConfigurationSha256),
+            originalAfter: session(10, &snapshot.plan.comparison.originalConfigurationSha256),
+        });
+        snapshot.checkpoints.push(format!("checkpoint-{index}"));
+    }
+    snapshot.state = State::Completed;
+    snapshot.reservedBlocks = 32;
+    snapshot.revision = 1;
+    store.save(&snapshot).unwrap();
+    let expected = serde_json::to_value(&snapshot).unwrap();
+    assert!(serde_json::to_vec(&snapshot).unwrap().len() <= 262_144);
+    drop(store);
+    let store = Store::open(&temporary.0).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.load(&snapshot.plan.id).unwrap()).unwrap(),
+        expected
+    );
+    assert!(store.pending().unwrap().is_empty());
+}
+
+#[test]
 fn repeatedTrialsPersistAllBracketsAndNeverAuthorizeRetention() {
     let temporary = Temporary::new();
     let mut store = Store::open(&temporary.0).unwrap();

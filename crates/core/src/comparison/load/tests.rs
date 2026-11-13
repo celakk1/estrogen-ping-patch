@@ -242,6 +242,92 @@ fn convert(run: &SessionRun, selections: &[Selection], plan: &Plan) -> AppResult
 }
 
 #[test]
+fn fourPhaseSafetySelectionsCoverEveryEndpointAndProduceRawValues() {
+    let (run, _, mut plan) = fixture();
+    let selections = requiredSafetySelections(&run.config, &run.plan).unwrap();
+    assert_eq!(selections.len(), 50);
+    validateSafetyCoverage(&run.config, &run.plan, &selections).unwrap();
+    let original = plan.metrics.clone();
+    plan.metrics = selections.iter().map(|selection| {
+        let source = match selection.statistic {
+            Statistic::GoodputMbps { .. } => 0,
+            Statistic::FailurePercent { .. } => 3,
+            _ => 2,
+        };
+        let mut rule = original[source].clone();
+        rule.id = selection.metricId.clone();
+        rule.role = if matches!(&selection.statistic, Statistic::P95Ms { phase: Phase::Download, endpointId } if endpointId == "endpoint-0") { Role::Objective } else { Role::Guard };
+        rule
+    }).collect();
+    plan.cohortSha256 = cohortSha256(&run, &selections).unwrap();
+    let values = convert(&run, &selections, &plan).unwrap().values;
+    assert_eq!(values.len(), 50);
+    for (selection, value) in selections.iter().zip(values) {
+        if matches!(
+            selection.statistic,
+            Statistic::FailurePercent { .. }
+                | Statistic::IqrMs { .. }
+                | Statistic::SuccessiveVariationMs { .. }
+        ) {
+            assert_eq!(value, 0.0);
+        } else {
+            assert!(value > 0.0);
+        }
+    }
+    for failure in 0..6 {
+        let mut changed = selections.clone();
+        match failure {
+            0 => {
+                changed.pop();
+            }
+            1 => changed[49].statistic = changed[48].statistic.clone(),
+            2 => changed[49].providerIndex = 1,
+            3 => {
+                changed[49].statistic = Statistic::FailurePercent {
+                    phase: Phase::Download,
+                    endpointId: "endpoint-1".into(),
+                }
+            }
+            4 => {
+                changed[49].statistic = Statistic::FailurePercent {
+                    phase: Phase::Recovery,
+                    endpointId: "endpoint-0".into(),
+                }
+            }
+            _ => changed.push(changed[49].clone()),
+        }
+        assert!(
+            validateSafetyCoverage(&run.config, &run.plan, &changed).is_err(),
+            "{failure}"
+        );
+    }
+    let mut renamed = selections;
+    for (index, selection) in renamed.iter_mut().enumerate() {
+        selection.metricId = format!("reviewed-{index}");
+    }
+    validateSafetyCoverage(&run.config, &run.plan, &renamed).unwrap();
+    assert_ne!(cohortSha256(&run, &renamed).unwrap(), plan.cohortSha256);
+}
+
+#[test]
+fn oversizedSafetyCohortsAreRefusedWithoutDroppingServers() {
+    let (mut run, _, _) = fixture();
+    run.plan.providers.push(Provider::UserOwnedHttp {
+        origin: "https://second-owned.example/".into(),
+    });
+    let error = requiredSafetySelections(&run.config, &run.plan).unwrap_err();
+    assert!(error.to_string().contains("100 metrics"));
+    assert_eq!(run.plan.providers.len(), 2);
+    assert_eq!(run.plan.latencyEndpoints.len(), 2);
+    run.plan.providers.pop();
+    let selections = requiredSafetySelections(&run.config, &run.plan).unwrap();
+    assert_eq!(selections.len(), 50);
+    assert_eq!(run.plan.latencyEndpoints.len(), 2);
+    run.plan.latencyEndpoints.truncate(1);
+    assert!(requiredSafetySelections(&run.config, &run.plan).is_err());
+}
+
+#[test]
 fn primaryObjectivesFollowTheFrozenProfileWithoutRemovingSafetyRules() {
     for profile in [Profile::Latency, Profile::Balanced, Profile::Download] {
         for objective in 0..4 {
