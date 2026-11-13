@@ -23,7 +23,7 @@ impl BoundTransferRunner for Runner {
     }
 
     fn execution(&self) -> Option<TransferExecution> {
-        Some(TransferExecution::RecordedRestrictedWorkerV1)
+        Some(TransferExecution::RecordedRestrictedWorkerV2)
     }
 
     fn snapshot(&self, progress: &transfer::TransferProgress) -> ServiceResult<ProgressSnapshot> {
@@ -80,7 +80,7 @@ impl Header {
                 std::process::id(),
             )?,
             appVersion: env!("CARGO_PKG_VERSION").into(),
-            execution: TransferExecution::RecordedRestrictedWorkerV1,
+            execution: TransferExecution::RecordedRestrictedWorkerV2,
             experiment: experiment.clone(),
             configuration,
             config: scope.config.clone(),
@@ -102,7 +102,11 @@ impl Header {
         self.sessionPlan.validate(&self.config)?;
         self.bindings.validate(&self.sessionPlan)?;
         if self.schemaVersion != 1
-            || self.execution != TransferExecution::RecordedRestrictedWorkerV1
+            || !matches!(
+                self.execution,
+                TransferExecution::RecordedRestrictedWorkerV1
+                    | TransferExecution::RecordedRestrictedWorkerV2
+            )
             || self.id.is_nil()
             || self.createdAtUnixMs < self.experiment.createdAtUnixMs
             || self.createdAtUnixMs >= self.experiment.expiresAtUnixMs

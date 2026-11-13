@@ -11,10 +11,10 @@ pub struct WorkerCpu {
     pub userTime100ns: String,
 }
 
-fn counter(value: &str) -> AppResult<u64> {
+pub(super) fn counter(value: &str) -> AppResult<u64> {
     let parsed: u64 = value.parse()?;
     if parsed.to_string() != value {
-        return Err("Worker CPU counters require canonical unsigned decimal values".into());
+        return Err("CPU counters require canonical unsigned decimal values".into());
     }
     Ok(parsed)
 }
@@ -44,19 +44,16 @@ impl WorkerCpuEvidence {
     pub fn validate(&self) -> AppResult<()> {
         match self {
             Self::Measured { usage } => usage.validate(),
-            Self::Unavailable { reason } => {
-                if reason.is_empty()
-                    || reason.chars().count() > 512
-                    || reason.chars().any(char::is_control)
-                {
-                    return Err(
-                        "Unavailable worker CPU evidence needs a bounded readable reason".into(),
-                    );
-                }
-                Ok(())
-            }
+            Self::Unavailable { reason } => validateUnavailableReason(reason),
         }
     }
+}
+
+pub(super) fn validateUnavailableReason(reason: &str) -> AppResult<()> {
+    if reason.is_empty() || reason.chars().count() > 512 || reason.chars().any(char::is_control) {
+        return Err("Unavailable CPU evidence needs a bounded readable reason".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ mod http;
 mod provider;
 mod resources;
 pub mod session;
+mod system_cpu;
 
 use crate::AppResult;
 pub use provider::{Provider, ProviderInfo};
@@ -15,6 +16,7 @@ use std::{
     },
     time::Duration,
 };
+pub use system_cpu::{SystemCpu, SystemCpuEvidence, SystemCpuSnapshot};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -121,6 +123,8 @@ pub struct TransferResult {
     pub sourceBinding: Option<SourceBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workerCpu: Option<WorkerCpuEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub systemCpu: Option<SystemCpuEvidence>,
 }
 
 #[derive(Default)]

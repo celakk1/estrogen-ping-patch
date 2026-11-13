@@ -278,6 +278,9 @@ fn validateTransfers(run: &SessionRun, start: u64, finish: u64) -> AppResult<Vec
         if let Some(cpu) = &result.workerCpu {
             cpu.validate()?;
         }
+        if let Some(cpu) = &result.systemCpu {
+            cpu.validate()?;
+        }
         let expectedBytes = if index % 2 == 0 {
             run.plan.downloadBytesPerProvider
         } else {

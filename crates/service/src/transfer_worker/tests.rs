@@ -40,6 +40,7 @@ pub(super) fn response(input: &Request) -> Response {
             applicationGoodputMbps: Some(4097.0 * 8.0 / 1_000_000.0),
             sourceBinding: Some(input.binding),
             workerCpu: None,
+            systemCpu: None,
             streams: (0..2)
                 .map(|ordinal| {
                     let requestedBytes = if ordinal == 0 { 2049 } else { 2048 };
@@ -195,6 +196,61 @@ fn childCannotSupplyMeasuredOrUnavailableCpuEvidence() {
         let mut forged = response(&request);
         forged.result.workerCpu = Some(evidence);
         assert!(parseResult(&request, &serde_json::to_vec(&forged).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn childCannotSupplySystemCpuEvidence() {
+    use epp_core::transfer::{SystemCpu, SystemCpuEvidence, SystemCpuSnapshot};
+    let snapshot = SystemCpuSnapshot {
+        capturedAt: "2026-11-13T12:00:00Z".into(),
+        queryElapsedNs: "0".into(),
+        processorGroups: 1,
+        activeProcessors: 8,
+        idleTime100ns: "100".into(),
+        kernelTime100ns: "200".into(),
+        userTime100ns: "100".into(),
+    };
+    let request = input("127.0.0.1:8080".parse().unwrap(), Direction::Download);
+    for evidence in [
+        SystemCpuEvidence::Measured {
+            usage: Box::new(SystemCpu {
+                schemaVersion: 1,
+                before: snapshot.clone(),
+                after: snapshot,
+                elapsedNs: "1".into(),
+            }),
+        },
+        SystemCpuEvidence::Unavailable {
+            reason: "unsupported processor coverage".into(),
+        },
+    ] {
+        evidence.validate().unwrap();
+        let mut forged = response(&request);
+        forged.result.systemCpu = Some(evidence);
+        assert!(parseResult(&request, &serde_json::to_vec(&forged).unwrap()).is_err());
+    }
+}
+
+fn verifySystemCpu(result: &TransferResult) {
+    let evidence = result
+        .systemCpu
+        .as_ref()
+        .expect("missing parent system CPU evidence");
+    evidence.validate().unwrap();
+    if unsafe { windows_sys::Win32::System::Threading::GetActiveProcessorGroupCount() } == 1 {
+        assert!(
+            matches!(
+                evidence,
+                epp_core::transfer::SystemCpuEvidence::Measured { .. }
+            ),
+            "{evidence:?}"
+        );
+    } else {
+        assert!(matches!(
+            evidence,
+            epp_core::transfer::SystemCpuEvidence::Unavailable { .. }
+        ));
     }
 }
 
@@ -874,7 +930,7 @@ fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
     assert_eq!(released, [true, true]);
     assert_eq!(
         run.transferExecution,
-        Some(TransferExecution::RestrictedWorkerV2)
+        Some(TransferExecution::RestrictedWorkerV3)
     );
     for phase in [Phase::Download, Phase::Upload] {
         assert!(run.latencySamples.iter().any(|sample| sample.phase == phase
@@ -882,6 +938,7 @@ fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
             && sample.inFlightRequestsAtEnd > 0));
     }
     for transfer in &run.transfers {
+        verifySystemCpu(transfer.result.as_ref().unwrap());
         let Some(epp_core::transfer::WorkerCpuEvidence::Measured { usage }) =
             &transfer.result.as_ref().unwrap().workerCpu
         else {
@@ -1004,6 +1061,7 @@ fn isolatedWorkerTransfersOverIpv4AndIpv6WithoutAServiceInstall() {
             .unwrap();
             assert_eq!(result.status, TransferStatus::Completed);
             assert_eq!(result.acceptedPayloadBytes, 4097);
+            verifySystemCpu(&result);
             let Some(epp_core::transfer::WorkerCpuEvidence::Measured { usage }) = &result.workerCpu
             else {
                 panic!("completed owned worker is missing native CPU evidence");

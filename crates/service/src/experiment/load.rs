@@ -302,7 +302,7 @@ impl Collector<'_> {
         after: &(policy::Capture, Vec<routing::Capture>),
         configuration: Configuration,
     ) -> ServiceResult<Session> {
-        if run.transferExecution != Some(session::TransferExecution::RecordedRestrictedWorkerV1) {
+        if run.transferExecution != Some(session::TransferExecution::RecordedRestrictedWorkerV2) {
             return Err("Bound load collection requires isolated-worker execution evidence".into());
         }
         if (configuration == Configuration::Candidate) != self.checkpoint.is_some() {

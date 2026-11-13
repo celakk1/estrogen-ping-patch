@@ -158,7 +158,9 @@ pub enum InterruptedProgress {
 pub enum TransferExecution {
     RestrictedWorkerV1,
     RestrictedWorkerV2,
+    RestrictedWorkerV3,
     RecordedRestrictedWorkerV1,
+    RecordedRestrictedWorkerV2,
 }
 
 struct DirectBoundTransfer;

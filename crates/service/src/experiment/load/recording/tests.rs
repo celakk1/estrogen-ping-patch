@@ -39,6 +39,55 @@ fn idle(header: &Header) -> SessionProgress {
 }
 
 #[test]
+fn earlierRecordedExecutionRemainsReadableWithoutUpgradingItsCohort() {
+    let storage = Database::new();
+    let mut database = storage.open();
+    let (scope, policy, routes) = fixture();
+    let plan = plan(&scope);
+    let mut header = Header::capture(
+        &scope,
+        &plan,
+        Configuration::Original,
+        None,
+        &(policy, routes),
+    )
+    .unwrap();
+    let mut run = session::runSourceBoundSessionWithRunner(
+        scope.config,
+        scope.sessionPlan,
+        scope.bindings,
+        &AtomicBool::new(true),
+        |_| {},
+        &Runner,
+    )
+    .unwrap();
+    let currentCohort = header.experiment.comparison.cohortSha256.clone();
+    header.execution = TransferExecution::RecordedRestrictedWorkerV1;
+    run.transferExecution = Some(header.execution);
+    header.experiment.comparison.cohortSha256 =
+        comparisonLoad::cohortSha256(&run, &header.selections).unwrap();
+    assert_ne!(header.experiment.comparison.cohortSha256, currentCohort);
+    let legacyCohort = header.experiment.comparison.cohortSha256.clone();
+    let mut recorder = Recorder::start(&mut database, header).unwrap();
+    recorder
+        .append(&mut database, idle(&recorder.header), nowUnixMs().unwrap())
+        .unwrap();
+    recorder.finish(&mut database, &mut run, None).unwrap();
+    drop(database);
+    let database = storage.open();
+    let saved = history(&database, 1).unwrap();
+    assert_eq!(
+        saved[0].header.execution,
+        TransferExecution::RecordedRestrictedWorkerV1
+    );
+    assert_eq!(
+        saved[0].header.experiment.comparison.cohortSha256,
+        legacyCohort
+    );
+    assert_eq!(saved[0].runId, Some(run.id));
+}
+
+#[test]
 fn fullMultiProviderHeaderSurvivesDurableReadbackWithoutTruncatingRules() {
     let storage = Database::new();
     let mut database = storage.open();

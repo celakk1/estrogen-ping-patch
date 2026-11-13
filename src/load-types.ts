@@ -22,6 +22,19 @@ export interface LoadSample {
   payloadProgressDuringProbe: number;
 }
 export interface TransferResult {
+  workerCpu?: CpuEvidence<{
+    schemaVersion: number;
+    creationTime100ns: string;
+    exitTime100ns: string;
+    kernelTime100ns: string;
+    userTime100ns: string;
+  }>;
+  systemCpu?: CpuEvidence<{
+    schemaVersion: number;
+    before: SystemCpuSnapshot;
+    after: SystemCpuSnapshot;
+    elapsedNs: string;
+  }>;
   plan: {
     direction: 'download' | 'upload';
     bytes: number;
@@ -57,13 +70,29 @@ export interface TransferResult {
     error: string | null;
   }[];
 }
+export type CpuEvidence<T> =
+  { status: 'measured'; usage: T } | { status: 'unavailable'; reason: string };
+export interface SystemCpuSnapshot {
+  capturedAt: string;
+  queryElapsedNs: string;
+  processorGroups: number;
+  activeProcessors: number;
+  idleTime100ns: string;
+  kernelTime100ns: string;
+  userTime100ns: string;
+}
 export interface LoadRun {
   id: number;
   startedAt: string;
   finishedAt: string;
   appVersion: string;
   status: string;
-  transferExecution?: 'restrictedWorkerV1' | 'restrictedWorkerV2' | 'recordedRestrictedWorkerV1';
+  transferExecution?:
+    | 'restrictedWorkerV1'
+    | 'restrictedWorkerV2'
+    | 'restrictedWorkerV3'
+    | 'recordedRestrictedWorkerV1'
+    | 'recordedRestrictedWorkerV2';
   config: Config;
   plan: LoadPlan;
   transfers: {

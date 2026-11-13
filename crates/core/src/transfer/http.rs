@@ -410,6 +410,7 @@ pub(super) async fn measure(
         streams,
         sourceBinding: binding,
         workerCpu: None,
+        systemCpu: None,
     })
 }
 

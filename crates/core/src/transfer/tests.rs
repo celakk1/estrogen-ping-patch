@@ -290,6 +290,13 @@ fn parallelDownloadsShareTheTotalBudgetAndRetainRealPeerAddresses() {
     let saved: TransferResult =
         serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
     assert!(saved.workerCpu.is_none());
+    assert!(saved.systemCpu.is_none());
+    assert!(
+        serde_json::to_value(&result)
+            .unwrap()
+            .get("systemCpu")
+            .is_none()
+    );
     assert!(
         serde_json::to_value(&result)
             .unwrap()
@@ -515,6 +522,9 @@ fn sessionsKeepProviderCohortsAndConcurrentRequestLatencySeparate() {
         };
         evidence.validate().unwrap();
         transfer.result.as_mut().unwrap().workerCpu = Some(evidence);
+        transfer.result.as_mut().unwrap().systemCpu = Some(SystemCpuEvidence::Unavailable {
+            reason: "fixture system CPU query unavailable".into(),
+        });
     }
     crate::storage::saveLoadSession(&mut database, &mut result).unwrap();
     let history = crate::storage::loadSessionHistory(&database, 10).unwrap();

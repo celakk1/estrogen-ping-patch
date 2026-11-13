@@ -229,6 +229,7 @@ fn wideRaw(
                 applicationGoodputMbps: None,
                 sourceBinding: Some(binding),
                 workerCpu: None,
+                systemCpu: None,
                 streams: Vec::new(),
             };
             for ordinal in 0..2 {
@@ -451,6 +452,7 @@ fn savedRaw(
                 applicationGoodputMbps: None,
                 sourceBinding: Some(binding),
                 workerCpu: None,
+                systemCpu: None,
                 streams: (0..2)
                     .map(|ordinal| StreamResult {
                         ordinal,
@@ -729,7 +731,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
 
 #[test]
 fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
-    for failure in 0..10 {
+    for failure in 0..12 {
         let (scope, current, routes) = fixture();
         let plan = plan(&scope);
         let storage = Database::new();
@@ -758,6 +760,10 @@ fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
             7 => run.transferExecution = None,
             8 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV1),
             9 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV2),
+            10 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV3),
+            11 => {
+                run.transferExecution = Some(session::TransferExecution::RecordedRestrictedWorkerV1)
+            }
             _ => {}
         }
         assert!(

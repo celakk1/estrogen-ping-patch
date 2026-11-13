@@ -81,6 +81,7 @@ fn fixture() -> (SessionRun, Vec<Selection>, Plan) {
             applicationGoodputMbps: Some(999_999.0),
             sourceBinding: Some(binding),
             workerCpu: None,
+            systemCpu: None,
             streams: (0..2)
                 .map(|ordinal| StreamResult {
                     ordinal,
@@ -782,6 +783,21 @@ fn optionalCpuAccountingDoesNotBecomeAComparisonMetric() {
         reason: String::new(),
     });
     assert!(convert(&run, &selections, &plan).is_err());
+    run.transfers[0].result.as_mut().unwrap().workerCpu = None;
+    run.transfers[0].result.as_mut().unwrap().systemCpu =
+        Some(crate::transfer::SystemCpuEvidence::Unavailable {
+            reason: "unsupported processor coverage".into(),
+        });
+    assert_eq!(cohortSha256(&run, &selections).unwrap(), plan.cohortSha256);
+    assert_eq!(
+        serde_json::to_value(convert(&run, &selections, &plan).unwrap()).unwrap(),
+        original
+    );
+    run.transfers[0].result.as_mut().unwrap().systemCpu =
+        Some(crate::transfer::SystemCpuEvidence::Unavailable {
+            reason: String::new(),
+        });
+    assert!(convert(&run, &selections, &plan).is_err());
 }
 
 #[test]
@@ -801,9 +817,17 @@ fn isolatedExecutionCannotShareALegacyCohortAndSurvivesRawRoundTrip() {
     run.transferExecution = Some(crate::transfer::session::TransferExecution::RestrictedWorkerV2);
     let second = cohortSha256(&run, &selections).unwrap();
     assert_ne!(second, isolated);
+    run.transferExecution = Some(crate::transfer::session::TransferExecution::RestrictedWorkerV3);
+    let third = cohortSha256(&run, &selections).unwrap();
+    assert_ne!(third, second);
     run.transferExecution =
         Some(crate::transfer::session::TransferExecution::RecordedRestrictedWorkerV1);
-    assert_ne!(cohortSha256(&run, &selections).unwrap(), second);
+    let recorded = cohortSha256(&run, &selections).unwrap();
+    assert_ne!(recorded, third);
+    run.transferExecution =
+        Some(crate::transfer::session::TransferExecution::RecordedRestrictedWorkerV2);
+    assert_ne!(cohortSha256(&run, &selections).unwrap(), recorded);
+    assert_ne!(cohortSha256(&run, &selections).unwrap(), third);
     let legacy: SessionRun = serde_json::from_value(legacy).unwrap();
     assert_eq!(legacy.transferExecution, None);
     assert_eq!(

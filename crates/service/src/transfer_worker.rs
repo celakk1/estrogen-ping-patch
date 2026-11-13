@@ -15,6 +15,7 @@ use std::{
 
 mod protocol;
 mod shared;
+mod system_cpu;
 pub use protocol::{Counters, Observation, ProgressUpdate};
 
 #[derive(Default)]
@@ -29,7 +30,7 @@ impl epp_core::transfer::session::BoundTransferRunner for IsolatedTransferRunner
     }
 
     fn execution(&self) -> Option<epp_core::transfer::session::TransferExecution> {
-        Some(epp_core::transfer::session::TransferExecution::RestrictedWorkerV2)
+        Some(epp_core::transfer::session::TransferExecution::RestrictedWorkerV3)
     }
 
     fn snapshot(
@@ -240,6 +241,7 @@ fn measureUsingStorage(
         }
     };
     check()?;
+    let systemCpu = system_cpu::Window::start();
     let mapping = Input::new(&serde_json::to_vec(&input)?)?;
     let progressHandle = shared.inherit()?;
     check()?;
@@ -258,7 +260,7 @@ fn measureUsingStorage(
         Some(&progressHandle),
     )?;
     let mut decoder = protocol::Decoder::new(&input);
-    let cpu = child.streamWithCpu(protocol::STREAM_BYTES, check, |chunk| {
+    let cpu = child.streamWithCpu(protocol::STREAM_BYTES, &mut check, |chunk| {
         decoder.consume(chunk, &mut onProgress)
     })?;
     let mut result = decoder.finish()?;
@@ -266,7 +268,11 @@ fn measureUsingStorage(
         return Err("Benchmark worker result disagrees with its shared counters".into());
     }
     cpu.validate()?;
+    let systemCpu = systemCpu.finish();
+    systemCpu.validate()?;
+    check()?;
     result.workerCpu = Some(cpu);
+    result.systemCpu = Some(systemCpu);
     Ok(result)
 }
 
@@ -288,6 +294,7 @@ fn validateResult(input: &Request, response: &Response) -> ServiceResult<()> {
     let result = &response.result;
     if response.schemaVersion != SCHEMA_VERSION
         || result.workerCpu.is_some()
+        || result.systemCpu.is_some()
         || serde_json::to_value(&result.plan)? != serde_json::to_value(&input.plan)?
         || serde_json::to_value(&result.provider)?
             != serde_json::to_value(input.plan.provider.info()?)?
