@@ -259,6 +259,119 @@ fn loadValuesAreRecomputedFromRawStreamsAndQualifyingEchoes() {
     assert!(session.completed);
 }
 
+fn quantileFixture(phase: Phase, tail: bool) -> (SessionRun, Vec<Selection>, Plan) {
+    let (mut run, mut selections, mut plan) = fixture();
+    for (round, sample) in run
+        .latencySamples
+        .iter_mut()
+        .filter(|sample| sample.phase == phase && sample.sample.endpointId == "endpoint-0")
+        .enumerate()
+    {
+        let rtt = if round == 11 { 100 } else { round as u32 };
+        let echo = sample.sample.echo.as_mut().unwrap();
+        echo.rttMs = Some(rtt);
+        echo.callDurationMs = f64::from(rtt);
+    }
+    selections[2].statistic = if tail {
+        Statistic::P99Ms {
+            phase,
+            endpointId: "endpoint-0".into(),
+        }
+    } else {
+        Statistic::MedianMs {
+            phase,
+            endpointId: "endpoint-0".into(),
+        }
+    };
+    plan.cohortSha256 = cohortSha256(&run, &selections).unwrap();
+    (run, selections, plan)
+}
+
+#[test]
+fn medianAndP99UseRawRepliesInEveryPhaseAndHaveSeparateCohorts() {
+    for phase in [Phase::Idle, Phase::Download, Phase::Upload, Phase::Recovery] {
+        let (run, median, medianPlan) = quantileFixture(phase, false);
+        let (_, tail, tailPlan) = quantileFixture(phase, true);
+        assert!((convert(&run, &median, &medianPlan).unwrap().values[2] - 5.5).abs() < 1e-9);
+        assert!((convert(&run, &tail, &tailPlan).unwrap().values[2] - 90.1).abs() < 1e-9);
+        assert_ne!(medianPlan.cohortSha256, tailPlan.cohortSha256);
+        assert!(convert(&run, &median, &tailPlan).is_err());
+        assert!(convert(&run, &tail, &medianPlan).is_err());
+        for (selections, plan) in [(median, medianPlan), (tail, tailPlan)] {
+            let restored: Vec<Selection> =
+                serde_json::from_str(&serde_json::to_string(&selections).unwrap()).unwrap();
+            assert_eq!(cohortSha256(&run, &restored).unwrap(), plan.cohortSha256);
+            assert!(convert(&run, &restored, &plan).is_ok());
+            let mut changed = selections;
+            let endpointId = match &mut changed[2].statistic {
+                Statistic::MedianMs { endpointId, .. } | Statistic::P99Ms { endpointId, .. } => {
+                    endpointId
+                }
+                _ => unreachable!(),
+            };
+            *endpointId = "unknown-endpoint".into();
+            assert!(cohortSha256(&run, &changed).is_err());
+        }
+    }
+}
+
+#[test]
+fn quantilesRefuseTooFewRepliesPartialOverlapAndIncompatibleRules() {
+    for tail in [false, true] {
+        for failure in 0..7 {
+            let (mut run, selections, mut plan) = quantileFixture(Phase::Download, tail);
+            match failure {
+                0 => plan.metrics[2].resolution = 0.1,
+                1 => plan.metrics[2].unit = Unit::Count,
+                2 => plan.metrics[2].direction = Direction::HigherIsBetter,
+                3 => {
+                    let sample = run
+                        .latencySamples
+                        .iter_mut()
+                        .find(|sample| {
+                            sample.phase == Phase::Download
+                                && sample.sample.endpointId == "endpoint-0"
+                        })
+                        .unwrap();
+                    let echo = sample.sample.echo.as_mut().unwrap();
+                    echo.status = EchoStatus::TimedOut;
+                    echo.rttMs = None;
+                    echo.nativeCode = Some(11010);
+                    echo.responder = None;
+                    sample.sample.error = Some("timeout".into());
+                }
+                4 => {
+                    let sample = run
+                        .latencySamples
+                        .iter_mut()
+                        .find(|sample| {
+                            sample.phase == Phase::Download
+                                && sample.sample.endpointId == "endpoint-0"
+                        })
+                        .unwrap();
+                    sample.inFlightRequestsAtEnd = 0;
+                }
+                5 => {
+                    let sample = run
+                        .latencySamples
+                        .iter_mut()
+                        .find(|sample| {
+                            sample.phase == Phase::Download
+                                && sample.sample.endpointId == "endpoint-0"
+                        })
+                        .unwrap();
+                    sample.sample.echo.as_mut().unwrap().rttUnitMs = 0;
+                }
+                _ => plan.metrics[2].id = "different-metric".into(),
+            }
+            assert!(
+                convert(&run, &selections, &plan).is_err(),
+                "tail={tail}, failure={failure}"
+            );
+        }
+    }
+}
+
 fn variationFixture(phase: Phase, successive: bool) -> (SessionRun, Vec<Selection>, Plan) {
     let (mut run, mut selections, mut plan) = fixture();
     for (round, sample) in run

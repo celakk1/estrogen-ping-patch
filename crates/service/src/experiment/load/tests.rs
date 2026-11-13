@@ -621,6 +621,69 @@ fn loadEvidenceOutsideItsIssuedCheckpointLeaseCannotProduceACandidateReceipt() {
 }
 
 #[test]
+fn medianAndP99ReceiptsPreserveNativeResolutionAndRawValues() {
+    for tail in [false, true] {
+        for tooPrecise in [false, true] {
+            let (mut scope, current, routes) = fixture();
+            scope.selections[2].statistic = if tail {
+                comparisonLoad::Statistic::P99Ms {
+                    phase: Phase::Download,
+                    endpointId: "server-0".into(),
+                }
+            } else {
+                comparisonLoad::Statistic::MedianMs {
+                    phase: Phase::Download,
+                    endpointId: "server-0".into(),
+                }
+            };
+            let peers = scope
+                .bindings
+                .transfers
+                .iter()
+                .map(|binding| binding.peer)
+                .collect();
+            let scope = Scope::fromAdapter(
+                scope.adapter,
+                scope.config,
+                scope.sessionPlan,
+                peers,
+                scope.selections,
+            )
+            .unwrap();
+            let mut plan = plan(&scope);
+            if tooPrecise {
+                plan.comparison.metrics[2].resolution = 0.1;
+            }
+            let storage = Database::new();
+            let mut database = storage.open();
+            let result = scope.bind(&mut database, plan);
+            if tooPrecise {
+                assert!(result.is_err());
+            } else {
+                let mut collector = result.unwrap();
+                let (run, before, after) = savedRaw(&mut collector, &current, &routes);
+                let measured = collector
+                    .acceptRaw(&run, &before, &after, Configuration::Original)
+                    .unwrap();
+                assert_eq!(measured.values[2], 20.0);
+                assert_eq!(measured.cohortSha256, collector.scope.hashes.cohortSha256);
+                assert_eq!(
+                    collector
+                        .database
+                        .query_row(
+                            "SELECT count(*) FROM adapter_load_measurements WHERE run_id=?1",
+                            [run.id],
+                            |row| row.get::<_, u32>(0)
+                        )
+                        .unwrap(),
+                    1
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn variationReceiptsUseRawRttValuesAndRefuseSubMillisecondRules() {
     for successive in [false, true] {
         for tooPrecise in [false, true] {

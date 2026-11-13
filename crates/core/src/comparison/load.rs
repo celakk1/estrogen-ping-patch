@@ -19,7 +19,9 @@ use std::collections::BTreeSet;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Statistic {
     GoodputMbps { direction: transfer::Direction },
+    MedianMs { phase: Phase, endpointId: String },
     P95Ms { phase: Phase, endpointId: String },
+    P99Ms { phase: Phase, endpointId: String },
     IqrMs { phase: Phase, endpointId: String },
     SuccessiveVariationMs { phase: Phase, endpointId: String },
     FailurePercent { phase: Phase, endpointId: String },
@@ -53,7 +55,9 @@ pub fn cohortSha256(run: &SessionRun, selections: &[Selection]) -> AppResult<Str
                     .into(),
             );
         }
-        if let Statistic::P95Ms { endpointId, .. }
+        if let Statistic::MedianMs { endpointId, .. }
+        | Statistic::P95Ms { endpointId, .. }
+        | Statistic::P99Ms { endpointId, .. }
         | Statistic::IqrMs { endpointId, .. }
         | Statistic::SuccessiveVariationMs { endpointId, .. }
         | Statistic::FailurePercent { endpointId, .. } = &selection.statistic
@@ -377,7 +381,9 @@ pub fn fromRun(
                     false,
                 )
             }
-            Statistic::P95Ms { phase, endpointId }
+            Statistic::MedianMs { phase, endpointId }
+            | Statistic::P95Ms { phase, endpointId }
+            | Statistic::P99Ms { phase, endpointId }
             | Statistic::IqrMs { phase, endpointId }
             | Statistic::SuccessiveVariationMs { phase, endpointId }
             | Statistic::FailurePercent { phase, endpointId } => {
@@ -411,7 +417,9 @@ pub fn fromRun(
                 }
                 let value = match selection.statistic {
                     Statistic::FailurePercent { .. } => summary.echoTimeoutPercent,
+                    Statistic::MedianMs { .. } => summary.medianMs,
                     Statistic::P95Ms { .. } => summary.p95Ms,
+                    Statistic::P99Ms { .. } => summary.p99Ms,
                     Statistic::IqrMs { .. } => summary.iqrMs,
                     Statistic::SuccessiveVariationMs { .. } => successiveVariation(
                         &run.latencySamples,

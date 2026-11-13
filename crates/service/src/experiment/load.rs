@@ -220,7 +220,9 @@ impl Scope {
                     0.0,
                     false,
                 ),
-                comparisonLoad::Statistic::P95Ms { .. }
+                comparisonLoad::Statistic::MedianMs { .. }
+                | comparisonLoad::Statistic::P95Ms { .. }
+                | comparisonLoad::Statistic::P99Ms { .. }
                 | comparisonLoad::Statistic::IqrMs { .. }
                 | comparisonLoad::Statistic::SuccessiveVariationMs { .. } => (
                     comparison::Unit::Milliseconds,
