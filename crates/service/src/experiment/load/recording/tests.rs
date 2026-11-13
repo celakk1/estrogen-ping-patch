@@ -91,7 +91,15 @@ fn earlierRecordedExecutionRemainsReadableWithoutUpgradingItsCohort() {
 fn fullMultiProviderHeaderSurvivesDurableReadbackWithoutTruncatingRules() {
     let storage = Database::new();
     let mut database = storage.open();
-    let (scope, policy, routes) = crate::experiment::load::tests::wideFixture(3, 6);
+    let (scope, policy, mut routes) = crate::experiment::load::tests::wideFixture(3, 6);
+    for route in &mut routes {
+        let routing::Capture::Captured { snapshot } = route else {
+            unreachable!()
+        };
+        snapshot.linkStatistics = Some(Box::new(crate::routing::tests::statistics(
+            snapshot.capturedAtUnixMs,
+        )));
+    }
     let plan = plan(&scope);
     let header = Header::capture(
         &scope,
@@ -115,6 +123,7 @@ fn fullMultiProviderHeaderSurvivesDurableReadbackWithoutTruncatingRules() {
     assert_eq!(records[0].header.id, id);
     assert_eq!(records[0].header.selections.len(), 438);
     assert_eq!(records[0].header.experiment.comparison.metrics.len(), 438);
+    assert!(records[0].header.routesBefore.iter().all(|route| matches!(route, routing::Capture::Captured { snapshot } if snapshot.linkStatistics.as_ref().is_some_and(|statistics| statistics.receivedOctets == "9007199254740993"))));
     assert_eq!(records[0].state, State::Interrupted);
 }
 

@@ -301,6 +301,15 @@ fn isolatedReadWorkerCapturesLoopbackRoutesAndActualSourceBoundPackets() {
         assert!(
             matches!(route, routing::Capture::Captured { snapshot } if snapshot.destination == *target)
         );
+        let routing::Capture::Captured { snapshot } = route else {
+            unreachable!()
+        };
+        snapshot
+            .linkStatistics
+            .as_ref()
+            .expect("owned route worker omitted adapter statistics")
+            .validate(snapshot.capturedAtUnixMs)
+            .unwrap();
     }
     let Request::Packet { plan, limits } = input() else {
         unreachable!()

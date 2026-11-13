@@ -1,5 +1,95 @@
 use super::*;
 
+pub(crate) fn statistics(capturedAtUnixMs: u64) -> LinkStatistics {
+    LinkStatistics {
+        schemaVersion: 1,
+        queryStartedAtUnixMs: capturedAtUnixMs.saturating_sub(2).max(1),
+        queryFinishedAtUnixMs: capturedAtUnixMs,
+        queryElapsedNs: "1000".into(),
+        interfaceType: 6,
+        operStatus: 1,
+        adminStatus: 1,
+        mediaConnectState: 1,
+        receiveLinkSpeedBps: "1000000000".into(),
+        transmitLinkSpeedBps: "1000000000".into(),
+        receivedOctets: "9007199254740993".into(),
+        sentOctets: u64::MAX.to_string(),
+        receivedUnicastPackets: "100".into(),
+        receivedNonUnicastPackets: "20".into(),
+        sentUnicastPackets: "90".into(),
+        sentNonUnicastPackets: "10".into(),
+        receivedDiscards: "0".into(),
+        receivedErrors: "0".into(),
+        receivedUnknownProtocols: "0".into(),
+        sentDiscards: "0".into(),
+        sentErrors: "0".into(),
+    }
+}
+
+#[test]
+fn nativeStatisticsRemainExactWhileVolatileCountersStayOutsideRouteIdentity() {
+    let original = snapshot();
+    assert!(
+        serde_json::to_value(&original)
+            .unwrap()
+            .get("linkStatistics")
+            .is_none()
+    );
+    let captures = |snapshot| vec![Capture::Captured { snapshot }];
+    let legacyDigest = fingerprint(&captures(original.clone())).unwrap();
+    let mut before = original;
+    before.linkStatistics = Some(Box::new(statistics(before.capturedAtUnixMs)));
+    assert_eq!(
+        fingerprint(&captures(before.clone())).unwrap(),
+        legacyDigest
+    );
+    let mut after = before.clone();
+    after.capturedAtUnixMs += 1000;
+    let stats = after.linkStatistics.as_mut().unwrap();
+    stats.queryStartedAtUnixMs += 1000;
+    stats.queryFinishedAtUnixMs += 1000;
+    stats.queryElapsedNs = "2000".into();
+    stats.receivedOctets = "9007199254741094".into();
+    stats.sentErrors = "1".into();
+    stats.receiveLinkSpeedBps = "0".into();
+    stats.operStatus = 2;
+    assert_eq!(fingerprint(&captures(after.clone())).unwrap(), legacyDigest);
+    let restored: Snapshot = serde_json::from_slice(&serde_json::to_vec(&before).unwrap()).unwrap();
+    assert_eq!(restored, before);
+    assert_eq!(
+        restored.linkStatistics.unwrap().sentOctets,
+        u64::MAX.to_string()
+    );
+    assert_ne!(
+        serde_json::to_value(before).unwrap(),
+        serde_json::to_value(after).unwrap()
+    );
+}
+
+#[test]
+fn malformedStatisticsCannotBecomeTrustedRouteEvidence() {
+    for failure in 0..8 {
+        let mut route = snapshot();
+        let mut stats = statistics(route.capturedAtUnixMs);
+        match failure {
+            0 => stats.schemaVersion = 2,
+            1 => stats.queryStartedAtUnixMs = 0,
+            2 => stats.queryStartedAtUnixMs = stats.queryFinishedAtUnixMs + 1,
+            3 => stats.queryFinishedAtUnixMs = route.capturedAtUnixMs + 1,
+            4 => stats.queryElapsedNs = "-1".into(),
+            5 => stats.receivedOctets = "01".into(),
+            6 => stats.sentOctets = "+1".into(),
+            _ => stats.receiveLinkSpeedBps = "18446744073709551616".into(),
+        }
+        route.linkStatistics = Some(Box::new(stats));
+        assert!(route.validate().is_err(), "accepted statistics {failure}");
+        assert!(fingerprint(&[Capture::Captured { snapshot: route }]).is_err());
+    }
+    let mut extra = serde_json::to_value(statistics(1000)).unwrap();
+    extra["extra"] = true.into();
+    assert!(serde_json::from_value::<LinkStatistics>(extra).is_err());
+}
+
 fn snapshot() -> Snapshot {
     Snapshot {
         schemaVersion: 1,
@@ -35,6 +125,7 @@ fn snapshot() -> Snapshot {
         validLifetimeSeconds: u32::MAX,
         preferredLifetimeSeconds: u32::MAX,
         ageSeconds: 12,
+        linkStatistics: None,
     }
 }
 
@@ -228,6 +319,12 @@ fn realWindowsLoopbackRouteSelectionHasGuidBoundEvidenceWithoutTraffic() {
             panic!("Route inspection failed: {result:?}")
         };
         snapshot.validate().unwrap();
+        snapshot
+            .linkStatistics
+            .as_ref()
+            .expect("native route omitted adapter statistics")
+            .validate(snapshot.capturedAtUnixMs)
+            .unwrap();
         assert_eq!(snapshot.destination, destination);
         assert_eq!(snapshot.source.ip, destination.ip);
         assert!(snapshot.loopback);

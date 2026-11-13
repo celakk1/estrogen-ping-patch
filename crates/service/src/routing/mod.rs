@@ -9,8 +9,10 @@ use uuid::Uuid;
 
 pub(crate) const MAX_DESTINATIONS: usize = 16;
 
+mod statistics;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+pub use statistics::LinkStatistics;
 #[cfg(windows)]
 mod windows;
 
@@ -58,11 +60,16 @@ pub struct Snapshot {
     pub validLifetimeSeconds: u32,
     pub preferredLifetimeSeconds: u32,
     pub ageSeconds: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linkStatistics: Option<Box<LinkStatistics>>,
 }
 
 impl Snapshot {
     pub fn validate(&self) -> ServiceResult<()> {
         self.destination.validateDestination()?;
+        if let Some(statistics) = &self.linkStatistics {
+            statistics.validate(self.capturedAtUnixMs)?;
+        }
         let luid: u64 = self.interfaceLuid.parse()?;
         let prefixMatches = match (self.destination.ip, self.destinationPrefix.ip) {
             (IpAddr::V4(destination), IpAddr::V4(prefix)) if self.prefixLength <= 32 => {
@@ -173,9 +180,10 @@ pub fn fingerprint(captures: &[Capture]) -> ServiceResult<Option<String>> {
         };
         snapshot.validate()?;
         let mut value = snapshot.clone();
-        // preserve countdowns in raw evidence while comparing their lifetime category.
+        // exclude volatile observations while comparing lifetime categories.
         value.capturedAtUnixMs = 1;
         value.ageSeconds = 0;
+        value.linkStatistics = None;
         let category = |lifetime| match lifetime {
             0 => 0,
             u32::MAX => u32::MAX,

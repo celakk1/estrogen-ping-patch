@@ -1,8 +1,9 @@
-use super::{Address, Snapshot};
+use super::{Address, LinkStatistics, Snapshot};
 use crate::ServiceResult;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ptr::null,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::{
     Win32::{
@@ -92,7 +93,17 @@ pub(super) fn capture(destination: &Address) -> ServiceResult<Snapshot> {
         InterfaceLuid: route.InterfaceLuid,
         ..Default::default()
     };
+    let queryStartedAtUnixMs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?;
+    let queryStarted = Instant::now();
     checked("GetIfEntry2", unsafe { GetIfEntry2(&mut link) })?;
+    let queryElapsedNs = u64::try_from(queryStarted.elapsed().as_nanos())?.to_string();
+    let queryFinishedAtUnixMs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?;
     let adapterGuid = uuid::Uuid::from_fields(guid.data1, guid.data2, guid.data3, &guid.data4);
     if unsafe { roundTrip.Value } != unsafe { route.InterfaceLuid.Value }
         || unsafe { link.InterfaceLuid.Value } != unsafe { route.InterfaceLuid.Value }
@@ -131,6 +142,29 @@ pub(super) fn capture(destination: &Address) -> ServiceResult<Snapshot> {
         validLifetimeSeconds: route.ValidLifetime,
         preferredLifetimeSeconds: route.PreferredLifetime,
         ageSeconds: route.Age,
+        linkStatistics: Some(Box::new(LinkStatistics {
+            schemaVersion: 1,
+            queryStartedAtUnixMs,
+            queryFinishedAtUnixMs,
+            queryElapsedNs,
+            interfaceType: link.Type,
+            operStatus: link.OperStatus,
+            adminStatus: link.AdminStatus,
+            mediaConnectState: link.MediaConnectState,
+            receiveLinkSpeedBps: link.ReceiveLinkSpeed.to_string(),
+            transmitLinkSpeedBps: link.TransmitLinkSpeed.to_string(),
+            receivedOctets: link.InOctets.to_string(),
+            sentOctets: link.OutOctets.to_string(),
+            receivedUnicastPackets: link.InUcastPkts.to_string(),
+            receivedNonUnicastPackets: link.InNUcastPkts.to_string(),
+            sentUnicastPackets: link.OutUcastPkts.to_string(),
+            sentNonUnicastPackets: link.OutNUcastPkts.to_string(),
+            receivedDiscards: link.InDiscards.to_string(),
+            receivedErrors: link.InErrors.to_string(),
+            receivedUnknownProtocols: link.InUnknownProtos.to_string(),
+            sentDiscards: link.OutDiscards.to_string(),
+            sentErrors: link.OutErrors.to_string(),
+        })),
     };
     snapshot.validate()?;
     Ok(snapshot)

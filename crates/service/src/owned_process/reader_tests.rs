@@ -30,6 +30,29 @@ fn unexpectedResumeCountReportsTheObservedProcessAndThreadState() {
     assert!(error.contains("thread exit true:"), "{error}");
 }
 
+#[test]
+fn unexpectedExtraSuspensionStopsTheOwnedReaderBeforeReturning() {
+    let child = fixture("waits");
+    let process = child.process.try_clone().unwrap();
+    assert_eq!(
+        unsafe {
+            windows_sys::Win32::System::Threading::SuspendThread(child.thread.as_raw_handle())
+        },
+        1
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let error = child
+        .collect(8192, || within(deadline))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("previous suspend count 2"), "{error}");
+    assert_eq!(
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+        WAIT_OBJECT_0
+    );
+    ensureStopped().unwrap();
+}
+
 fn within(deadline: Instant) -> ServiceResult<()> {
     if Instant::now() >= deadline {
         Err("test worker deadline".into())

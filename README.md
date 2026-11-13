@@ -65,6 +65,8 @@ ICMP reports Windows' whole-millisecond RTT separately from TCP connect time and
 
 Connection tests also save Windows' selected local routes before and after measurements. A short results note reports matching, changed, or unavailable route evidence. Matching local routes do not establish a stable internet path or complete experiment environment. Older reports have no route evidence.
 
+New raw route records also preserve [adapter-wide traffic and error counters](docs/routing.md#adapter-statistics), reported link speeds, and capture timing. These include other applications' traffic and do not measure end-to-end capacity or application packet loss. Changing traffic counters do not make the route note report a changed route.
+
 DNS benchmarks send the chosen query name directly to each resolver over UDP with TCP fallback. Successful lookup timing, negative answers, timeouts, and system errors remain separate. Resolver cache state is unknown, and AD is resolver-reported rather than independently validated DNSSEC. Windows DNS settings stay unchanged. See [DNS behavior and limitations](docs/dns.md).
 
 Under **Network tests**, choose **Speed test**, review **Test size**, the providers and data limit, then press **Start speed test**. The default Quick test requests 16 MiB down and 4 MiB up per provider, about 21 MB of payload in total. The four stages measure responsiveness before downloading, during download, during upload, and afterward. Results show download/upload speed in Mbps and a side-by-side response-time table in ms. **Advanced settings** exposes custom providers, exact payload sizes, parallel streams, and probe targets.

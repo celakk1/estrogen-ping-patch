@@ -63,6 +63,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nativeAdapterStatisticsSurviveDesktopEvidenceAndSavedHistory() {
+        let destinations = ["127.0.0.1", "::1"]
+            .into_iter()
+            .map(|address| epp_service::routing::Address {
+                ip: address.parse().unwrap(),
+                scopeId: 0,
+            })
+            .collect::<Vec<_>>();
+        let cancelled = AtomicBool::new(false);
+        let routing = evidence(
+            capture(&destinations, &cancelled),
+            capture(&destinations, &cancelled),
+        );
+        assert!(matches!(routing.status, RoutingStatus::Unchanged));
+        for value in [&routing.before, &routing.after] {
+            assert_eq!(value.as_array().unwrap().len(), 2);
+            for capture in value.as_array().unwrap() {
+                let statistics = &capture["snapshot"]["linkStatistics"];
+                assert!(statistics.is_object(), "{capture}");
+                assert!(statistics["receivedOctets"].is_string());
+                assert!(statistics["sentOctets"].is_string());
+            }
+        }
+        let mut run = epp_core::benchmark::runBenchmark(
+            epp_core::config::Config::default(),
+            ["127.0.0.1:9", "[::1]:9"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, address)| Endpoint {
+                    id: format!("loopback-{index}"),
+                    address: address.into(),
+                    protocol: epp_core::benchmark::ProbeProtocol::TcpConnect,
+                    dnsQuery: None,
+                })
+                .collect(),
+            &AtomicBool::new(true),
+            |_, _, _| panic!("cancelled history fixture must not send probes"),
+        )
+        .unwrap();
+        assert!(run.samples.is_empty());
+        run.routing = Some(routing);
+        let mut database =
+            epp_core::storage::openDatabase(std::path::Path::new(":memory:")).unwrap();
+        epp_core::storage::saveRun(&mut database, &mut run).unwrap();
+        let saved = epp_core::storage::history(&database, 1).unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved[0]).unwrap(),
+            serde_json::to_value(&run).unwrap()
+        );
+    }
+
+    #[test]
     fn cancellationPreservesUnavailableEvidenceInsteadOfInventingStableRoutes() {
         let destination = epp_service::routing::Address {
             ip: "127.0.0.1".parse().unwrap(),

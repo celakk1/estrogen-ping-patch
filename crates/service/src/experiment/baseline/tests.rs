@@ -134,6 +134,7 @@ pub(crate) fn evidence() -> (
                 validLifetimeSeconds: u32::MAX,
                 preferredLifetimeSeconds: u32::MAX,
                 ageSeconds: 1,
+                linkStatistics: None,
             },
         })
         .collect();

@@ -707,7 +707,17 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
     let storage = Database::new();
     let mut database = storage.open();
     let mut collector = scope.bind(&mut database, plan).unwrap();
-    let (run, before, after) = savedRaw(&mut collector, &current, &routes);
+    let (run, mut before, mut after) = savedRaw(&mut collector, &current, &routes);
+    for (phase, (_, captures)) in [&mut before, &mut after].into_iter().enumerate() {
+        for capture in captures {
+            let routing::Capture::Captured { snapshot } = capture else {
+                unreachable!()
+            };
+            let mut statistics = crate::routing::tests::statistics(snapshot.capturedAtUnixMs);
+            statistics.receivedOctets = (9_007_199_254_740_993u64 + phase as u64 * 101).to_string();
+            snapshot.linkStatistics = Some(Box::new(statistics));
+        }
+    }
     let measured = collector
         .acceptRaw(&run, &before, &after, Configuration::Original)
         .unwrap();
@@ -724,6 +734,14 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
     assert_eq!(checksum, epp_core::backups::checksum(&payload));
     let receipt: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(receipt["rawRunSha256"], hash(&run).unwrap());
+    assert_eq!(
+        receipt["routesBefore"][0]["snapshot"]["linkStatistics"]["receivedOctets"],
+        "9007199254740993"
+    );
+    assert_eq!(
+        receipt["routesAfter"][0]["snapshot"]["linkStatistics"]["receivedOctets"],
+        "9007199254741094"
+    );
     assert_eq!(receipt["routesBefore"].as_array().unwrap().len(), 3);
     assert_eq!(receipt["experimentId"], collector.plan.id);
     assert!(receipt["checkpointId"].is_null());

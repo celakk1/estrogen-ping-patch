@@ -2,7 +2,7 @@
 
 Connection tests capture Windows' selected local route before and after measurements. The desktop saves both captures with the run and displays a short route note in the results and readable HTML report. Raw JSON includes the route records and fingerprints. Old reports have no route metadata; the application does not invent it for them.
 
-This is read-only diagnostic evidence. It does not enable settings writes, establish a complete comparison environment, or provide a rollback checkpoint. Speed/load sessions do not yet capture it.
+This is read-only diagnostic evidence. It does not enable settings writes, establish a complete comparison environment, or provide a rollback checkpoint. The desktop speed-test flow does not yet save route evidence; optional adapter-bound service collectors do.
 
 ## Capture and identity
 
@@ -18,7 +18,7 @@ The two captures are not an atomic Windows snapshot. GetBestRoute2 reports a loc
 
 ## Fingerprints and presentation
 
-The `selected-route-v1` fingerprint hashes the ordered, validated route records after normalizing capture time and route age. Positive finite lifetime counters normalize to a finite category; zero and infinite lifetimes remain distinct. Ordinary countdown ticks therefore do not masquerade as a different route. Raw records retain every original counter. Changes between two positive finite durations are not distinguished by this fingerprint and must not be interpreted as verified policy stability.
+The `selected-route-v1` fingerprint hashes the ordered, validated route records after normalizing capture time and route age and excluding optional link statistics. Positive finite lifetime counters normalize to a finite category; zero and infinite lifetimes remain distinct. Ordinary countdown ticks and traffic-counter changes therefore do not masquerade as a different route. Raw records retain every original counter. Changes between two positive finite durations are not distinguished by this fingerprint and must not be interpreted as verified policy stability. Link state/speed changes are separate resource evidence, not selected-route identity.
 
 | Status | Meaning |
 | --- | --- |
@@ -28,7 +28,17 @@ The `selected-route-v1` fingerprint hashes the ordered, validated route records 
 
 The displayed unchanged note says that Windows reported the same local route. It does not claim that the entire connection, configuration, or internet path stayed unchanged. Changed evidence asks the user to repeat the test before comparing it with earlier results. Failed route capture leaves the measurements available and reports the route check as unavailable.
 
-The optional `routing` field is added to the existing baseline JSON. Its own schema version is one. Existing measurement fields and database version five retain their meaning; older previews ignore the additional field. The service pipe remains status-only protocol two, and recovery SQLite remains independently version three.
+The optional `routing` field remains schema one. This additive raw metadata does not change SQLite or service pipe versions; current versions are documented in [README](../README.md) and [service documentation](service.md). Older route records omit link statistics and remain readable with their original fingerprints.
+
+## Adapter statistics
+
+Native route records now retain optional `linkStatistics` from the existing GUID/LUID/index-checked [GetIfEntry2](https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-getifentry2) result. No additional driver statistics query, worker mode, executable, setting operation, or public traffic is added. The reader records the query's UTC start/finish and monotonic duration, reported interface type/state, receive/transmit link speeds, octets, unicast/non-unicast packet counts, discards, errors, and unknown receive protocols. Exact 64-bit values use canonical decimal strings rather than JSON numbers.
+
+[MIB_IF_ROW2](https://learn.microsoft.com/en-us/windows/win32/api/netioapi/ns-netioapi-mib_if_row2) describes these interface-wide counters and reports link speed in bits per second. They include traffic from other applications. Driver reporting/update behavior and unsupported or unknown fields require separate qualification; a returned zero is not proof of zero utilization or universal packet loss. Link speed is not end-to-end available capacity. Repeated destinations can refer to the same interface and must not be summed as independent adapters.
+
+The query window bounds the observed API call, not individual packet timestamps, counter freshness, or simultaneous driver accounting. Current reports preserve raw observations only. They do not derive utilization, detect all background workloads, normalize counter resets/wraps, attribute traffic to a process, or supply calibrated resource guards. Malformed optional statistics invalidate the route record rather than being silently discarded. Entirely missing statistics remain legacy/unavailable evidence, never fabricated zeros.
+
+Direct connection-test history/export and optional worker/collector receipts preserve this additive data. Route identity explicitly removes the complete statistics object, keeping older fingerprint bytes unchanged. Future statistics comparisons need their own frozen policy and exact interface/driver binding. Production optimization remains disabled.
 
 ## Remaining comparison work
 
@@ -38,4 +48,6 @@ The baseline comparison adapter does enforce recorded route failures: present me
 
 ## Validation
 
-Seven route tests cover actual IPv4/IPv6 loopback route reads without sending traffic, GUID/interface binding, exact LUID round trips, native socket byte order and scope, prefix bounds, cancellation, and changed-choice versus aging-only fingerprints. A core test covers protocol destination extraction, and a saved real TCP fixture verifies exact persistence of optional route metadata and honest legacy reads. The desktop cancellation test preserves unavailable evidence. Frontend tests distinguish unchanged, changed, unavailable, inconsistent, future-version, and absent evidence, and check readable export wording. The local packaged desktop checks passed actual IPv4/IPv6 route capture, results wording, exact JSON/HTML export, and history reload. Packaged MCP and temporary installer/shortcut/GUI/uninstall checks also passed. At `7e154ad`, the [full hosted Windows pipeline](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41302172177) and [separate service lifecycle](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41302174699) both passed. These checks do not validate complete environment binding, actual route failover during a measurement, or production optimization.
+Route tests cover actual IPv4/IPv6 loopback route reads without sending traffic, GUID/interface binding, exact LUID round trips, native socket byte order and scope, prefix bounds, cancellation, and changed-choice versus aging-only fingerprints. A core test covers protocol destination extraction, and a saved real TCP fixture verifies exact persistence of optional route metadata and honest legacy reads. The desktop cancellation test preserves unavailable evidence. Frontend tests distinguish unchanged, changed, unavailable, inconsistent, future-version, and absent evidence, and check readable export wording. Earlier local packaged desktop checks passed actual IPv4/IPv6 route capture, results wording, exact JSON/HTML export, and history reload. Packaged MCP and temporary installer/shortcut/GUI/uninstall checks also passed. At `7e154ad`, the [full hosted Windows pipeline](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41302172177) and [separate service lifecycle](https://github.com/celakk1/estrogen-ping-patch/actions/runs/41302174699) both passed. These historical checks predate optional link statistics and do not validate complete environment binding, actual route failover during a measurement, or production optimization.
+
+Counter-specific checks preserve values above JavaScript's integer range through route serialization, load receipts, and a 438-rule recording across database reopen. Removing the explicit fingerprint exclusion reproduces a failing identity test; restoring it passes while retaining the changed raw counters. A native desktop history fixture preserves actual IPv4/IPv6 statistics with a cancelled benchmark and no measurement probes. Actual owned-worker tests require statistics for all sixteen requested loopback routes. Malformed schema, timestamps, decimal counters, and unknown fields are refused. These source checks do not qualify physical-driver accuracy, derive utilization, or replace installed-account and packaged validation.
