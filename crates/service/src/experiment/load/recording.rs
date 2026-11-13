@@ -23,7 +23,7 @@ impl BoundTransferRunner for Runner {
     }
 
     fn execution(&self) -> Option<TransferExecution> {
-        Some(TransferExecution::RecordedRestrictedWorkerV2)
+        Some(TransferExecution::RecordedRestrictedWorkerV3)
     }
 
     fn snapshot(&self, progress: &transfer::TransferProgress) -> ServiceResult<ProgressSnapshot> {
@@ -80,7 +80,7 @@ impl Header {
                 std::process::id(),
             )?,
             appVersion: env!("CARGO_PKG_VERSION").into(),
-            execution: TransferExecution::RecordedRestrictedWorkerV2,
+            execution: TransferExecution::RecordedRestrictedWorkerV3,
             experiment: experiment.clone(),
             configuration,
             config: scope.config.clone(),
@@ -106,6 +106,7 @@ impl Header {
                 self.execution,
                 TransferExecution::RecordedRestrictedWorkerV1
                     | TransferExecution::RecordedRestrictedWorkerV2
+                    | TransferExecution::RecordedRestrictedWorkerV3
             )
             || self.id.is_nil()
             || self.createdAtUnixMs < self.experiment.createdAtUnixMs
@@ -143,9 +144,21 @@ impl Header {
                 "Load recording native original differs from its selected configuration".into(),
             );
         }
-        if comparisonLoad::cohortSha256(&blueprint, &self.selections)?
-            != self.experiment.comparison.cohortSha256
-        {
+        let transferCohort = comparisonLoad::cohortSha256(&blueprint, &self.selections)?;
+        let cohort = if self.execution == TransferExecution::RecordedRestrictedWorkerV3 {
+            resources::transferPlan(
+                &self.experiment.comparison,
+                self.selections.len(),
+                transferCohort.clone(),
+            )?;
+            resources::cohort(
+                &transferCohort,
+                &resources::AdapterContext::fromRoutes(&self.routesBefore)?,
+            )?
+        } else {
+            transferCohort
+        };
+        if cohort != self.experiment.comparison.cohortSha256 {
             return Err("Load recording differs from its frozen comparison cohort".into());
         }
         Ok(())

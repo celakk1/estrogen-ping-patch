@@ -92,7 +92,8 @@ export interface LoadRun {
     | 'restrictedWorkerV2'
     | 'restrictedWorkerV3'
     | 'recordedRestrictedWorkerV1'
-    | 'recordedRestrictedWorkerV2';
+    | 'recordedRestrictedWorkerV2'
+    | 'recordedRestrictedWorkerV3';
   config: Config;
   plan: LoadPlan;
   transfers: {

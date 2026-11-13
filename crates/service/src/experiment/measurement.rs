@@ -20,6 +20,7 @@ pub struct ScopeHashes {
 }
 
 pub(super) struct AdapterScope {
+    pub initialRoutes: Vec<routing::Capture>,
     pub template: MtuCheckpoint,
     pub targets: Vec<routing::Address>,
     pub sources: Vec<routing::Address>,
@@ -121,6 +122,7 @@ impl AdapterScope {
         let originalConfigurationSha256 = hash(&current.native.settings)?;
         let candidateConfigurationSha256 = hash(&candidate)?;
         Ok(Self {
+            initialRoutes: routes,
             template,
             targets,
             sources,

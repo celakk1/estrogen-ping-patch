@@ -17,6 +17,8 @@ use rusqlite::Connection;
 use std::{collections::BTreeMap, net::SocketAddr};
 
 pub mod recording;
+mod resources;
+pub use resources::ADAPTER_GUARD_IDS;
 
 pub struct Scope {
     adapter: AdapterScope,
@@ -26,6 +28,8 @@ pub struct Scope {
     selections: Vec<comparisonLoad::Selection>,
     hashes: ScopeHashes,
     costs: BTreeMap<String, Resources>,
+    transferCohortSha256: String,
+    adapterContext: resources::AdapterContext,
 }
 
 fn address(peer: SocketAddr) -> routing::Address {
@@ -167,7 +171,9 @@ impl Scope {
             |_| {},
             &recording::Runner,
         )?;
-        let hashes = adapter.hashes(comparisonLoad::cohortSha256(&blueprint, &selections)?);
+        let transferCohortSha256 = comparisonLoad::cohortSha256(&blueprint, &selections)?;
+        let adapterContext = resources::AdapterContext::fromRoutes(&adapter.initialRoutes)?;
+        let hashes = adapter.hashes(resources::cohort(&transferCohortSha256, &adapterContext)?);
         let attempts =
             (u64::from(config.sessionMinutes) * 60_000).div_ceil(sessionPlan.intervalMs) + 1;
         let mut costs = BTreeMap::new();
@@ -199,6 +205,8 @@ impl Scope {
             selections,
             hashes,
             costs,
+            transferCohortSha256,
+            adapterContext,
         })
     }
 
@@ -211,10 +219,15 @@ impl Scope {
 
     pub fn bind(self, database: &mut Connection, plan: Plan) -> ServiceResult<Collector<'_>> {
         measurement::validatePlan(&plan, &self.hashes, &self.costs)?;
+        let transferPlan = resources::transferPlan(
+            &plan.comparison,
+            self.selections.len(),
+            self.transferCohortSha256.clone(),
+        )?;
         comparisonLoad::validateProfileObjectives(
             self.config.profile,
             &self.selections,
-            &plan.comparison,
+            &transferPlan,
         )?;
         comparisonLoad::validateSafetyCoverage(&self.config, &self.sessionPlan, &self.selections)?;
         for (rule, selection) in plan.comparison.metrics.iter().zip(&self.selections) {
@@ -302,16 +315,21 @@ impl Collector<'_> {
         after: &(policy::Capture, Vec<routing::Capture>),
         configuration: Configuration,
     ) -> ServiceResult<Session> {
-        if run.transferExecution != Some(session::TransferExecution::RecordedRestrictedWorkerV2) {
+        if run.transferExecution != Some(session::TransferExecution::RecordedRestrictedWorkerV3) {
             return Err("Bound load collection requires isolated-worker execution evidence".into());
         }
         if (configuration == Configuration::Candidate) != self.checkpoint.is_some() {
             return Err("Candidate load measurements require their exact issued checkpoint".into());
         }
-        let measured = comparisonLoad::fromRun(
+        let transferPlan = resources::transferPlan(
+            &self.plan.comparison,
+            self.scope.selections.len(),
+            self.scope.transferCohortSha256.clone(),
+        )?;
+        let mut measured = comparisonLoad::fromRun(
             run,
             &self.scope.selections,
-            &self.plan.comparison,
+            &transferPlan,
             comparison::baseline::Context {
                 environmentSha256: &self.scope.hashes.environmentSha256,
                 configurationSha256: if configuration == Configuration::Candidate {
@@ -321,6 +339,13 @@ impl Collector<'_> {
                 },
             },
         )?;
+        measured.values.extend(resources::values(
+            &before.1,
+            &after.1,
+            run,
+            &self.scope.adapterContext,
+        )?);
+        measured.cohortSha256 = self.scope.hashes.cohortSha256.clone();
         self.scope
             .adapter
             .verifyRecorded(&before.0, &before.1, configuration)?;
@@ -345,7 +370,7 @@ impl Collector<'_> {
         {
             return Err("Native load evidence does not bracket its raw session".into());
         }
-        let receipt = serde_json::json!({"schemaVersion":1,"benchmarkScope":"sourceBoundAdapterLoad","experimentId":self.plan.id,"checkpointId":self.checkpoint.as_ref().map(|document|document.id),"checkpointSha256":self.checkpoint.as_ref().map(crate::authorization::checkpointChecksum).transpose()?,"configuration":if configuration==Configuration::Candidate {"candidate"} else {"original"},"rawRunId":run.id,"rawRunSha256":hash(run)?,"nativeBefore":before.0,"nativeAfter":after.0,"routesBefore":before.1,"routesAfter":after.1});
+        let receipt = serde_json::json!({"schemaVersion":2,"benchmarkScope":"sourceBoundAdapterLoad","experimentId":self.plan.id,"checkpointId":self.checkpoint.as_ref().map(|document|document.id),"checkpointSha256":self.checkpoint.as_ref().map(crate::authorization::checkpointChecksum).transpose()?,"configuration":if configuration==Configuration::Candidate {"candidate"} else {"original"},"rawRunId":run.id,"rawRunSha256":hash(run)?,"nativeBefore":before.0,"nativeAfter":after.0,"routesBefore":before.1,"routesAfter":after.1,"adapterGuardPolicy":"reported-counters-v1","adapterGuardValues":&measured.values[self.scope.selections.len()..]});
         let payload = serde_json::to_string(&receipt)?;
         if payload.len() > 131_072 {
             return Err("Native load receipt exceeds 128 KiB".into());

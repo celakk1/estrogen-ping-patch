@@ -40,66 +40,65 @@ fn idle(header: &Header) -> SessionProgress {
 
 #[test]
 fn earlierRecordedExecutionRemainsReadableWithoutUpgradingItsCohort() {
-    let storage = Database::new();
-    let mut database = storage.open();
-    let (scope, policy, routes) = fixture();
-    let plan = plan(&scope);
-    let mut header = Header::capture(
-        &scope,
-        &plan,
-        Configuration::Original,
-        None,
-        &(policy, routes),
-    )
-    .unwrap();
-    let mut run = session::runSourceBoundSessionWithRunner(
-        scope.config,
-        scope.sessionPlan,
-        scope.bindings,
-        &AtomicBool::new(true),
-        |_| {},
-        &Runner,
-    )
-    .unwrap();
-    let currentCohort = header.experiment.comparison.cohortSha256.clone();
-    header.execution = TransferExecution::RecordedRestrictedWorkerV1;
-    run.transferExecution = Some(header.execution);
-    header.experiment.comparison.cohortSha256 =
-        comparisonLoad::cohortSha256(&run, &header.selections).unwrap();
-    assert_ne!(header.experiment.comparison.cohortSha256, currentCohort);
-    let legacyCohort = header.experiment.comparison.cohortSha256.clone();
-    let mut recorder = Recorder::start(&mut database, header).unwrap();
-    recorder
-        .append(&mut database, idle(&recorder.header), nowUnixMs().unwrap())
+    for execution in [
+        TransferExecution::RecordedRestrictedWorkerV1,
+        TransferExecution::RecordedRestrictedWorkerV2,
+    ] {
+        let storage = Database::new();
+        let mut database = storage.open();
+        let (scope, policy, routes) = fixture();
+        let plan = plan(&scope);
+        let mut header = Header::capture(
+            &scope,
+            &plan,
+            Configuration::Original,
+            None,
+            &(policy, routes),
+        )
         .unwrap();
-    recorder.finish(&mut database, &mut run, None).unwrap();
-    drop(database);
-    let database = storage.open();
-    let saved = history(&database, 1).unwrap();
-    assert_eq!(
-        saved[0].header.execution,
-        TransferExecution::RecordedRestrictedWorkerV1
-    );
-    assert_eq!(
-        saved[0].header.experiment.comparison.cohortSha256,
-        legacyCohort
-    );
-    assert_eq!(saved[0].runId, Some(run.id));
+        let mut run = session::runSourceBoundSessionWithRunner(
+            scope.config,
+            scope.sessionPlan,
+            scope.bindings,
+            &AtomicBool::new(true),
+            |_| {},
+            &Runner,
+        )
+        .unwrap();
+        let currentCohort = header.experiment.comparison.cohortSha256.clone();
+        header.execution = execution;
+        header
+            .experiment
+            .comparison
+            .metrics
+            .truncate(header.selections.len());
+        run.transferExecution = Some(header.execution);
+        header.experiment.comparison.cohortSha256 =
+            comparisonLoad::cohortSha256(&run, &header.selections).unwrap();
+        assert_ne!(header.experiment.comparison.cohortSha256, currentCohort);
+        let legacyCohort = header.experiment.comparison.cohortSha256.clone();
+        let mut recorder = Recorder::start(&mut database, header).unwrap();
+        recorder
+            .append(&mut database, idle(&recorder.header), nowUnixMs().unwrap())
+            .unwrap();
+        recorder.finish(&mut database, &mut run, None).unwrap();
+        drop(database);
+        let database = storage.open();
+        let saved = history(&database, 1).unwrap();
+        assert_eq!(saved[0].header.execution, execution);
+        assert_eq!(
+            saved[0].header.experiment.comparison.cohortSha256,
+            legacyCohort
+        );
+        assert_eq!(saved[0].runId, Some(run.id));
+    }
 }
 
 #[test]
 fn fullMultiProviderHeaderSurvivesDurableReadbackWithoutTruncatingRules() {
     let storage = Database::new();
     let mut database = storage.open();
-    let (scope, policy, mut routes) = crate::experiment::load::tests::wideFixture(3, 6);
-    for route in &mut routes {
-        let routing::Capture::Captured { snapshot } = route else {
-            unreachable!()
-        };
-        snapshot.linkStatistics = Some(Box::new(crate::routing::tests::statistics(
-            snapshot.capturedAtUnixMs,
-        )));
-    }
+    let (scope, policy, routes) = crate::experiment::load::tests::wideFixture(3, 6);
     let plan = plan(&scope);
     let header = Header::capture(
         &scope,
@@ -122,7 +121,7 @@ fn fullMultiProviderHeaderSurvivesDurableReadbackWithoutTruncatingRules() {
     let records = history(&database, 1).unwrap();
     assert_eq!(records[0].header.id, id);
     assert_eq!(records[0].header.selections.len(), 438);
-    assert_eq!(records[0].header.experiment.comparison.metrics.len(), 438);
+    assert_eq!(records[0].header.experiment.comparison.metrics.len(), 443);
     assert!(records[0].header.routesBefore.iter().all(|route| matches!(route, routing::Capture::Captured { snapshot } if snapshot.linkStatistics.as_ref().is_some_and(|statistics| statistics.receivedOctets == "9007199254740993"))));
     assert_eq!(records[0].state, State::Interrupted);
 }

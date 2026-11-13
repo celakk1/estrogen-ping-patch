@@ -13,6 +13,15 @@ use uuid::Uuid;
 
 type NativeEvidence = (policy::Capture, Vec<routing::Capture>);
 
+fn recordedStatistics(at: u64, advanced: bool) -> routing::LinkStatistics {
+    let mut statistics = crate::routing::tests::statistics(at);
+    statistics.queryStartedAtUnixMs = at;
+    statistics.receivedOctets =
+        (9_007_199_254_740_993u64 + u64::from(advanced) * 131_072).to_string();
+    statistics.sentOctets = (9_007_199_254_741_000u64 + u64::from(advanced) * 131_072).to_string();
+    statistics
+}
+
 pub(super) fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
     let (mut template, config, endpoints, _, current, mut routes) = evidence();
     template.createdAtUnixMs -= 30_000;
@@ -24,6 +33,15 @@ pub(super) fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
         snapshot.destination = address(peer);
     }
     routes.push(providerRoute);
+    for route in &mut routes {
+        let routing::Capture::Captured { snapshot } = route else {
+            unreachable!()
+        };
+        snapshot.linkStatistics = Some(Box::new(recordedStatistics(
+            snapshot.capturedAtUnixMs,
+            false,
+        )));
+    }
     let plan = SessionPlan {
         providers: vec![Provider::UserOwnedHttp {
             origin: "https://owned-benchmark.example/".into(),
@@ -271,6 +289,7 @@ fn wideRaw(
         for route in &mut routes {
             if let routing::Capture::Captured { snapshot } = route {
                 snapshot.capturedAtUnixMs = at;
+                snapshot.linkStatistics = Some(Box::new(recordedStatistics(at, at > start)));
             }
         }
         (current, routes)
@@ -284,7 +303,7 @@ pub(super) fn plan(scope: &Scope) -> Plan {
         absolute,
         relativeFraction: 0.0,
     };
-    let metrics = scope
+    let mut metrics: Vec<_> = scope
         .selections
         .iter()
         .enumerate()
@@ -321,6 +340,16 @@ pub(super) fn plan(scope: &Scope) -> Plan {
             maximumBaselineDrift: threshold(5.0),
         })
         .collect();
+    metrics.extend(ADAPTER_GUARD_IDS.into_iter().map(|id| MetricRule {
+        id: id.into(),
+        unit: Unit::Count,
+        direction: Direction::LowerIsBetter,
+        role: Role::Guard,
+        resolution: 1.0,
+        minimumImprovement: threshold(1.0),
+        maximumRegression: threshold(0.0),
+        maximumBaselineDrift: threshold(5.0),
+    }));
     let add = |left: Resources, right: &Resources| Resources {
         probeAttempts: left.probeAttempts + right.probeAttempts,
         providerRequests: left.providerRequests + right.providerRequests,
@@ -370,7 +399,7 @@ fn time(value: u64) -> String {
         .to_rfc3339()
 }
 
-fn savedRaw(
+pub(super) fn savedRaw(
     collector: &mut Collector<'_>,
     current: &policy::Capture,
     routes: &[routing::Capture],
@@ -486,6 +515,7 @@ fn savedRaw(
         for route in &mut routes {
             if let routing::Capture::Captured { snapshot } = route {
                 snapshot.capturedAtUnixMs = at;
+                snapshot.linkStatistics = Some(Box::new(recordedStatistics(at, at > start)));
             }
         }
         (current, routes)
@@ -548,7 +578,7 @@ fn multiProviderCohortsPreserveEveryRawMetricAndSelectedRoute() {
         let measured = collector
             .acceptRaw(&run, &before, &after, Configuration::Original)
             .unwrap();
-        assert_eq!(measured.values.len(), metricCount);
+        assert_eq!(measured.values.len(), metricCount + ADAPTER_GUARD_IDS.len());
         let payload: String = collector
             .database
             .query_row(
@@ -713,8 +743,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
             let routing::Capture::Captured { snapshot } = capture else {
                 unreachable!()
             };
-            let mut statistics = crate::routing::tests::statistics(snapshot.capturedAtUnixMs);
-            statistics.receivedOctets = (9_007_199_254_740_993u64 + phase as u64 * 101).to_string();
+            let statistics = recordedStatistics(snapshot.capturedAtUnixMs, phase != 0);
             snapshot.linkStatistics = Some(Box::new(statistics));
         }
     }
@@ -722,7 +751,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
         .acceptRaw(&run, &before, &after, Configuration::Original)
         .unwrap();
     assert_eq!(measured.values[2..4], [20.0, 0.0]);
-    assert_eq!(measured.values.len(), 50);
+    assert_eq!(measured.values.len(), 55);
     let (payload, checksum): (String, String) = collector
         .database
         .query_row(
@@ -740,7 +769,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
     );
     assert_eq!(
         receipt["routesAfter"][0]["snapshot"]["linkStatistics"]["receivedOctets"],
-        "9007199254741094"
+        "9007199254872065"
     );
     assert_eq!(receipt["routesBefore"].as_array().unwrap().len(), 3);
     assert_eq!(receipt["experimentId"], collector.plan.id);
@@ -749,7 +778,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
 
 #[test]
 fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
-    for failure in 0..12 {
+    for failure in 0..13 {
         let (scope, current, routes) = fixture();
         let plan = plan(&scope);
         let storage = Database::new();
@@ -781,6 +810,9 @@ fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
             10 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV3),
             11 => {
                 run.transferExecution = Some(session::TransferExecution::RecordedRestrictedWorkerV1)
+            }
+            12 => {
+                run.transferExecution = Some(session::TransferExecution::RecordedRestrictedWorkerV2)
             }
             _ => {}
         }
