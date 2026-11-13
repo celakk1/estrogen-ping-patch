@@ -252,6 +252,9 @@ fn wideRaw(
             };
             for ordinal in 0..2 {
                 result.streams.push(StreamResult {
+                    tcpInfo: Some(transfer::TcpInfoEvidence::Unavailable {
+                        reason: "fixture socket information unavailable".into(),
+                    }),
                     ordinal,
                     requestedBytes: 4096,
                     downloadBytesRead: if direction == transfer::Direction::Download {
@@ -484,6 +487,9 @@ pub(super) fn savedRaw(
                 systemCpu: None,
                 streams: (0..2)
                     .map(|ordinal| StreamResult {
+                        tcpInfo: Some(transfer::TcpInfoEvidence::Unavailable {
+                            reason: "fixture socket information unavailable".into(),
+                        }),
                         ordinal,
                         requestedBytes: 4096,
                         downloadBytesRead: if direction == transfer::Direction::Download {
@@ -778,7 +784,7 @@ fn nativeReceiptBindsTheSavedLoadRunAndEveryTransferAndEchoRoute() {
 
 #[test]
 fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
-    for failure in 0..13 {
+    for failure in 0..15 {
         let (scope, current, routes) = fixture();
         let plan = plan(&scope);
         let storage = Database::new();
@@ -814,6 +820,10 @@ fn driftedNativePolicyRoutesAndMismatchedCandidateStateCannotProduceReceipts() {
             12 => {
                 run.transferExecution = Some(session::TransferExecution::RecordedRestrictedWorkerV2)
             }
+            13 => {
+                run.transferExecution = Some(session::TransferExecution::RecordedRestrictedWorkerV3)
+            }
+            14 => run.transferExecution = Some(session::TransferExecution::RestrictedWorkerV4),
             _ => {}
         }
         assert!(

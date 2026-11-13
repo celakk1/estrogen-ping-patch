@@ -45,6 +45,9 @@ pub(super) fn response(input: &Request) -> Response {
                 .map(|ordinal| {
                     let requestedBytes = if ordinal == 0 { 2049 } else { 2048 };
                     StreamResult {
+                        tcpInfo: Some(epp_core::transfer::TcpInfoEvidence::Unavailable {
+                            reason: "fixture socket information unavailable".into(),
+                        }),
                         ordinal,
                         requestedBytes,
                         downloadBytesRead: requestedBytes,
@@ -144,6 +147,56 @@ fn rejectsResultIdentityCountersStreamsAndSummaryDrift() {
         assert!(
             validateResult(&request, result).is_err(),
             "accepted drift {index}"
+        );
+    }
+}
+
+#[test]
+fn rejectsMissingMalformedAndMismatchedSocketEvidence() {
+    let request = input("127.0.0.1:8080".parse().unwrap(), Direction::Download);
+    let mut original = serde_json::to_value(response(&request)).unwrap();
+    let evidence = serde_json::json!({
+        "status": "measured",
+        "snapshot": {
+            "schemaVersion": 1,
+            "source": "127.0.0.1:50000", "peer": "127.0.0.1:8080",
+            "capturedAt": "2026-11-03T12:00:00.5Z", "queryElapsedNs": "1",
+            "state": 4, "maximumSegmentSize": 1460, "connectionTimeMs": "500",
+            "timestampsEnabled": true, "rttUs": 0, "minimumRttUs": 0,
+            "bytesInFlight": 0, "congestionWindowBytes": 65536,
+            "sendWindowBytes": 65536, "receiveWindowBytes": 65536,
+            "receiveBufferBytes": 65536, "bytesOut": "9007199254740993",
+            "bytesIn": "9007199254740994", "bytesReordered": 0,
+            "bytesRetransmitted": 0, "fastRetransmissions": 0,
+            "duplicateAcksIn": 0, "timeoutEpisodes": 0, "synRetransmissions": 0
+        }
+    });
+    original["result"]["streams"][0]["tcpInfo"] = evidence;
+    parseResult(&request, &serde_json::to_vec(&original).unwrap()).unwrap();
+    for failure in 0..10 {
+        let mut value = original.clone();
+        let stream = &mut value["result"]["streams"][0];
+        match failure {
+            0 => {
+                stream.as_object_mut().unwrap().remove("tcpInfo");
+            }
+            1 => stream["tcpInfo"] = serde_json::Value::Null,
+            2 => stream["tcpInfo"] = serde_json::json!({"status": "unavailable", "reason": ""}),
+            3 => stream["tcpInfo"]["snapshot"]["source"] = "127.0.0.2:50000".into(),
+            4 => stream["tcpInfo"]["snapshot"]["peer"] = "127.0.0.1:8081".into(),
+            5 => stream["tcpInfo"]["snapshot"]["capturedAt"] = "2026-11-03T12:00:02Z".into(),
+            6 => stream["tcpInfo"]["snapshot"]["state"] = 2.into(),
+            7 => {
+                stream["tcpInfo"]["snapshot"]["bytesRetransmitted"] =
+                    (u64::from(u32::MAX) + 1).into()
+            }
+            8 => stream["tcpInfo"]["snapshot"]["bytesOut"] = "18446744073709551616".into(),
+            9 => stream["tcpInfo"]["snapshot"]["extra"] = true.into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            parseResult(&request, &serde_json::to_vec(&value).unwrap()).is_err(),
+            "accepted socket drift {failure}"
         );
     }
 }
@@ -251,6 +304,30 @@ fn verifySystemCpu(result: &TransferResult) {
             evidence,
             epp_core::transfer::SystemCpuEvidence::Unavailable { .. }
         ));
+    }
+}
+
+fn verifySocketTcp(result: &TransferResult) {
+    let binding = result.sourceBinding.unwrap();
+    for stream in &result.streams {
+        let Some(epp_core::transfer::TcpInfoEvidence::Measured { snapshot }) = &stream.tcpInfo
+        else {
+            panic!(
+                "owned worker socket statistics unavailable: {:?}",
+                stream.tcpInfo
+            );
+        };
+        snapshot.validate().unwrap();
+        stream
+            .tcpInfo
+            .as_ref()
+            .unwrap()
+            .validateFor(binding, &result.startedAt, &result.finishedAt)
+            .unwrap();
+        assert_eq!(
+            snapshot.peer.to_string(),
+            stream.remoteAddress.as_ref().unwrap().as_str()
+        );
     }
 }
 
@@ -930,7 +1007,7 @@ fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
     assert_eq!(released, [true, true]);
     assert_eq!(
         run.transferExecution,
-        Some(TransferExecution::RestrictedWorkerV3)
+        Some(TransferExecution::RestrictedWorkerV4)
     );
     for phase in [Phase::Download, Phase::Upload] {
         assert!(run.latencySamples.iter().any(|sample| sample.phase == phase
@@ -938,6 +1015,7 @@ fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
             && sample.inFlightRequestsAtEnd > 0));
     }
     for transfer in &run.transfers {
+        verifySocketTcp(transfer.result.as_ref().unwrap());
         verifySystemCpu(transfer.result.as_ref().unwrap());
         let Some(epp_core::transfer::WorkerCpuEvidence::Measured { usage }) =
             &transfer.result.as_ref().unwrap().workerCpu
@@ -1062,6 +1140,7 @@ fn isolatedWorkerTransfersOverIpv4AndIpv6WithoutAServiceInstall() {
             assert_eq!(result.status, TransferStatus::Completed);
             assert_eq!(result.acceptedPayloadBytes, 4097);
             verifySystemCpu(&result);
+            verifySocketTcp(&result);
             let Some(epp_core::transfer::WorkerCpuEvidence::Measured { usage }) = &result.workerCpu
             else {
                 panic!("completed owned worker is missing native CPU evidence");

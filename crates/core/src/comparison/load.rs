@@ -316,6 +316,20 @@ fn validateTransfers(run: &SessionRun, start: u64, finish: u64) -> AppResult<Vec
             return Err("Load transfer order, binding, duration, provider, payload, or completion evidence is inconsistent".into());
         }
         for (ordinal, stream) in result.streams.iter().enumerate() {
+            if let Some(info) = &stream.tcpInfo {
+                info.validateFor(binding, &result.startedAt, &result.finishedAt)?;
+            } else if matches!(
+                run.transferExecution,
+                Some(
+                    transfer::session::TransferExecution::RestrictedWorkerV4
+                        | transfer::session::TransferExecution::RecordedRestrictedWorkerV4
+                )
+            ) {
+                return Err(
+                    "Owned HTTP execution requires explicit socket TCP evidence or unavailability"
+                        .into(),
+                );
+            }
             let requested = expectedBytes / u64::from(run.plan.streams)
                 + u64::from((ordinal as u64) < expectedBytes % u64::from(run.plan.streams));
             if stream.ordinal as usize != ordinal

@@ -3,6 +3,7 @@ mod provider;
 mod resources;
 pub mod session;
 mod system_cpu;
+mod tcp_info;
 
 use crate::AppResult;
 pub use provider::{Provider, ProviderInfo};
@@ -17,6 +18,7 @@ use std::{
     time::Duration,
 };
 pub use system_cpu::{SystemCpu, SystemCpuEvidence, SystemCpuSnapshot};
+pub use tcp_info::{TcpInfo, TcpInfoEvidence};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -94,6 +96,8 @@ pub enum TransferStatus {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcpInfo: Option<TcpInfoEvidence>,
     pub ordinal: u8,
     pub requestedBytes: u64,
     pub downloadBytesRead: u64,

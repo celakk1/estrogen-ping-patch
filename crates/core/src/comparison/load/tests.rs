@@ -84,6 +84,7 @@ fn fixture() -> (SessionRun, Vec<Selection>, Plan) {
             systemCpu: None,
             streams: (0..2)
                 .map(|ordinal| StreamResult {
+                    tcpInfo: None,
                     ordinal,
                     requestedBytes: 4096,
                     downloadBytesRead: if direction == transfer::Direction::Download {
@@ -797,6 +798,42 @@ fn optionalCpuAccountingDoesNotBecomeAComparisonMetric() {
         Some(crate::transfer::SystemCpuEvidence::Unavailable {
             reason: String::new(),
         });
+    assert!(convert(&run, &selections, &plan).is_err());
+}
+
+#[test]
+fn ownedExecutionRequiresSocketEvidenceAndCannotReuseEarlierCohorts() {
+    use transfer::session::TransferExecution;
+    let (mut run, selections, mut plan) = fixture();
+    let mut cohorts = std::collections::HashSet::new();
+    for execution in [
+        TransferExecution::RestrictedWorkerV3,
+        TransferExecution::RecordedRestrictedWorkerV3,
+        TransferExecution::RestrictedWorkerV4,
+        TransferExecution::RecordedRestrictedWorkerV4,
+    ] {
+        run.transferExecution = Some(execution);
+        plan.cohortSha256 = cohortSha256(&run, &selections).unwrap();
+        assert!(cohorts.insert(plan.cohortSha256.clone()));
+        assert_eq!(
+            convert(&run, &selections, &plan).is_ok(),
+            matches!(
+                execution,
+                TransferExecution::RestrictedWorkerV3
+                    | TransferExecution::RecordedRestrictedWorkerV3
+            )
+        );
+    }
+    for transfer in &mut run.transfers {
+        for stream in &mut transfer.result.as_mut().unwrap().streams {
+            stream.tcpInfo = Some(transfer::TcpInfoEvidence::Unavailable {
+                reason: "unsupported socket query".into(),
+            });
+        }
+    }
+    assert!(convert(&run, &selections, &plan).is_ok());
+    run.transfers[0].result.as_mut().unwrap().streams[0].tcpInfo =
+        Some(transfer::TcpInfoEvidence::Unavailable { reason: "".into() });
     assert!(convert(&run, &selections, &plan).is_err());
 }
 

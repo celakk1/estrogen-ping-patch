@@ -23,7 +23,7 @@ impl BoundTransferRunner for Runner {
     }
 
     fn execution(&self) -> Option<TransferExecution> {
-        Some(TransferExecution::RecordedRestrictedWorkerV3)
+        Some(TransferExecution::RecordedRestrictedWorkerV4)
     }
 
     fn snapshot(&self, progress: &transfer::TransferProgress) -> ServiceResult<ProgressSnapshot> {
@@ -80,7 +80,7 @@ impl Header {
                 std::process::id(),
             )?,
             appVersion: env!("CARGO_PKG_VERSION").into(),
-            execution: TransferExecution::RecordedRestrictedWorkerV3,
+            execution: TransferExecution::RecordedRestrictedWorkerV4,
             experiment: experiment.clone(),
             configuration,
             config: scope.config.clone(),
@@ -107,6 +107,7 @@ impl Header {
                 TransferExecution::RecordedRestrictedWorkerV1
                     | TransferExecution::RecordedRestrictedWorkerV2
                     | TransferExecution::RecordedRestrictedWorkerV3
+                    | TransferExecution::RecordedRestrictedWorkerV4
             )
             || self.id.is_nil()
             || self.createdAtUnixMs < self.experiment.createdAtUnixMs
@@ -145,7 +146,11 @@ impl Header {
             );
         }
         let transferCohort = comparisonLoad::cohortSha256(&blueprint, &self.selections)?;
-        let cohort = if self.execution == TransferExecution::RecordedRestrictedWorkerV3 {
+        let cohort = if matches!(
+            self.execution,
+            TransferExecution::RecordedRestrictedWorkerV3
+                | TransferExecution::RecordedRestrictedWorkerV4
+        ) {
             resources::transferPlan(
                 &self.experiment.comparison,
                 self.selections.len(),

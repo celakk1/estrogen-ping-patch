@@ -57,6 +57,7 @@ export interface TransferResult {
   acceptedPayloadBytes: number;
   applicationGoodputMbps: number | null;
   streams: {
+    tcpInfo?: { status: 'measured'; snapshot: TcpInfo } | { status: 'unavailable'; reason: string };
     ordinal: number;
     requestedBytes: number;
     downloadBytesRead: number;
@@ -69,6 +70,32 @@ export interface TransferResult {
     retryAfter: string | null;
     error: string | null;
   }[];
+}
+export interface TcpInfo {
+  schemaVersion: number;
+  source: string;
+  peer: string;
+  capturedAt: string;
+  queryElapsedNs: string;
+  state: number;
+  maximumSegmentSize: number;
+  connectionTimeMs: string;
+  timestampsEnabled: boolean;
+  rttUs: number;
+  minimumRttUs: number;
+  bytesInFlight: number;
+  congestionWindowBytes: number;
+  sendWindowBytes: number;
+  receiveWindowBytes: number;
+  receiveBufferBytes: number;
+  bytesOut: string;
+  bytesIn: string;
+  bytesReordered: number;
+  bytesRetransmitted: number;
+  fastRetransmissions: number;
+  duplicateAcksIn: number;
+  timeoutEpisodes: number;
+  synRetransmissions: number;
 }
 export type CpuEvidence<T> =
   { status: 'measured'; usage: T } | { status: 'unavailable'; reason: string };
@@ -91,9 +118,11 @@ export interface LoadRun {
     | 'restrictedWorkerV1'
     | 'restrictedWorkerV2'
     | 'restrictedWorkerV3'
+    | 'restrictedWorkerV4'
     | 'recordedRestrictedWorkerV1'
     | 'recordedRestrictedWorkerV2'
-    | 'recordedRestrictedWorkerV3';
+    | 'recordedRestrictedWorkerV3'
+    | 'recordedRestrictedWorkerV4';
   config: Config;
   plan: LoadPlan;
   transfers: {

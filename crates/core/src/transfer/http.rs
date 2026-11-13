@@ -18,10 +18,15 @@ use std::{
 const CHUNK_SIZE: usize = 32 * 1024;
 const ACK_LIMIT: usize = 4096;
 
+#[cfg(feature = "isolated-tls")]
+mod owned;
+
 struct RequestContext<'a> {
-    client: &'a Client,
+    client: Option<&'a Client>,
     plan: &'a TransferPlan,
     binding: Option<&'a SourceBinding>,
+    #[cfg(feature = "isolated-tls")]
+    tlsConfig: Option<Arc<rustls::ClientConfig>>,
 }
 
 struct ActiveRequest<'a>(&'a AtomicU64);
@@ -81,12 +86,38 @@ fn protocolFailure(message: &str) -> Failure {
     Failure(TransferStatus::ProtocolError, message.into())
 }
 
+fn uploadStream(
+    remaining: u64,
+    uploaded: Arc<AtomicU64>,
+    totalProgress: TransferProgress,
+    payload: Bytes,
+) -> impl futures_util::Stream<Item = Result<Bytes, io::Error>> {
+    stream::unfold((remaining, payload), move |(remaining, payload)| {
+        let uploaded = uploaded.clone();
+        let totalProgress = totalProgress.clone();
+        async move {
+            if remaining == 0 {
+                return None;
+            }
+            tokio::task::yield_now().await;
+            let size = remaining.min(payload.len() as u64) as usize;
+            uploaded.fetch_add(size as u64, Ordering::SeqCst);
+            totalProgress
+                .uploadBodyBytesProvided
+                .fetch_add(size as u64, Ordering::SeqCst);
+            Some((
+                Ok::<_, io::Error>(payload.slice(..size)),
+                (remaining - size as u64, payload),
+            ))
+        }
+    })
+}
+
 fn validateHeaders(
     response: &Response,
     context: &RequestContext<'_>,
     result: &mut StreamResult,
 ) -> Result<(), Failure> {
-    let plan = context.plan;
     result.httpStatus = Some(response.status().as_u16());
     result.remoteAddress = response.remote_addr().map(|address| address.to_string());
     if context
@@ -97,19 +128,32 @@ fn validateHeaders(
             "Transfer peer differs from the pinned benchmark destination",
         ));
     }
-    result.retryAfter = response
-        .headers()
+    validateResponse(
+        response.status().as_u16(),
+        response.headers(),
+        context.plan,
+        result,
+    )
+}
+
+fn validateResponse(
+    status: u16,
+    headers: &header::HeaderMap,
+    plan: &TransferPlan,
+    result: &mut StreamResult,
+) -> Result<(), Failure> {
+    result.httpStatus = Some(status);
+    result.retryAfter = headers
         .get(header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .map(|value| value.chars().take(160).collect());
-    if !response.status().is_success() {
+    if !(200..=299).contains(&status) {
         return Err(Failure(
             TransferStatus::HttpError,
-            format!("HTTP {}; no automatic retry", response.status().as_u16()),
+            format!("HTTP {status}; no automatic retry"),
         ));
     }
-    if response
-        .headers()
+    if headers
         .get(header::CONTENT_ENCODING)
         .is_some_and(|value| value.as_bytes() != b"identity")
     {
@@ -118,8 +162,7 @@ fn validateHeaders(
         ));
     }
     if matches!(plan.provider, Provider::UserOwnedHttp { .. })
-        && response
-            .headers()
+        && headers
             .get("x-epp-benchmark-protocol")
             .is_none_or(|value| value.as_bytes() != b"1")
     {
@@ -137,8 +180,24 @@ async fn exchange(
     upload: &Arc<AtomicU64>,
     progress: &TransferProgress,
     payload: Bytes,
+    #[cfg(feature = "isolated-tls")] trace: Option<&super::tcp_info::Slot>,
 ) -> Result<(), Failure> {
-    let client = context.client;
+    #[cfg(feature = "isolated-tls")]
+    if context.client.is_none() {
+        return owned::exchange(
+            context,
+            result,
+            download,
+            upload,
+            progress,
+            payload,
+            trace.unwrap(),
+        )
+        .await;
+    }
+    let client = context
+        .client
+        .ok_or_else(|| protocolFailure("Missing transfer transport"))?;
     let plan = context.plan;
     let url = plan
         .provider
@@ -148,27 +207,7 @@ async fn exchange(
         Direction::Download => client.get(url).send().await?,
         Direction::Upload => {
             let remaining = result.requestedBytes;
-            let uploaded = upload.clone();
-            let totalProgress = progress.clone();
-            let body = stream::unfold((remaining, payload), move |(remaining, payload)| {
-                let uploaded = uploaded.clone();
-                let totalProgress = totalProgress.clone();
-                async move {
-                    if remaining == 0 {
-                        return None;
-                    }
-                    tokio::task::yield_now().await;
-                    let size = remaining.min(payload.len() as u64) as usize;
-                    uploaded.fetch_add(size as u64, Ordering::SeqCst);
-                    totalProgress
-                        .uploadBodyBytesProvided
-                        .fetch_add(size as u64, Ordering::SeqCst);
-                    Some((
-                        Ok::<_, io::Error>(payload.slice(..size)),
-                        (remaining - size as u64, payload),
-                    ))
-                }
-            });
+            let body = uploadStream(remaining, upload.clone(), progress.clone(), payload);
             client
                 .post(url)
                 .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -260,6 +299,7 @@ async fn measureStream(
     let requestedBytes =
         base + u64::from(u64::from(ordinal) < plan.bytes % u64::from(plan.streams));
     let mut result = StreamResult {
+        tcpInfo: None,
         ordinal,
         requestedBytes,
         downloadBytesRead: 0,
@@ -272,20 +312,36 @@ async fn measureStream(
         retryAfter: None,
         error: None,
     };
+    #[cfg(feature = "isolated-tls")]
+    if context.client.is_none() {
+        result.tcpInfo = Some(super::tcp_info::unavailable("Transfer did not start"));
+    }
     if cancelled.load(Ordering::SeqCst) {
         return result;
     }
     let upload = Arc::new(AtomicU64::new(0));
     let download = AtomicU64::new(0);
     progress.activeRequests.fetch_add(1, Ordering::SeqCst);
-    let _activeRequest = ActiveRequest(&progress.activeRequests);
+    let activeRequest = ActiveRequest(&progress.activeRequests);
     let streamStart = Instant::now();
+    #[cfg(feature = "isolated-tls")]
+    let trace = context
+        .client
+        .is_none()
+        .then(super::tcp_info::Slot::default);
     let failure = tokio::select! {
         biased;
         _ = waitForCancellation(cancelled) => Some(Failure(TransferStatus::Cancelled, "Transfer cancelled".into())),
         _ = tokio::time::sleep_until(tokio::time::Instant::from_std(started + deadline(plan))) => Some(Failure(TransferStatus::TimedOut, "Transfer deadline expired".into())),
-        response = exchange(context, &mut result, &download, &upload, progress, payload) => response.err(),
+        response = exchange(context, &mut result, &download, &upload, progress, payload,
+            #[cfg(feature = "isolated-tls")] trace.as_ref()
+        ) => response.err(),
     };
+    drop(activeRequest);
+    #[cfg(feature = "isolated-tls")]
+    if let Some(trace) = trace {
+        result.tcpInfo = Some(trace.finish());
+    }
     result.elapsedMs = streamStart.elapsed().as_secs_f64() * 1000.0;
     result.downloadBytesRead = download.load(Ordering::SeqCst);
     result.uploadBodyBytesProvided = upload.load(Ordering::SeqCst);
@@ -308,56 +364,55 @@ pub(super) async fn measure(
 ) -> AppResult<TransferResult> {
     let provider = plan.provider.info()?;
     let client = match tls {
-        TransferTls::Native => Client::builder().tls_backend_native(),
-        #[cfg(feature = "isolated-tls")]
-        TransferTls::IsolatedRustls => {
-            static PROVIDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if !*PROVIDER.get_or_init(|| {
-                rustls::crypto::ring::default_provider()
-                    .install_default()
-                    .is_ok()
-            }) {
-                return Err("The fixed isolated TLS cryptography provider is unavailable".into());
-            }
-            Client::builder().tls_backend_rustls()
+        TransferTls::Native => {
+            let client = Client::builder()
+                .tls_backend_native()
+                .http1_only()
+                .http1_max_headers(64)
+                .no_proxy()
+                .no_gzip()
+                .no_brotli()
+                .no_deflate()
+                .no_zstd()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .timeout(deadline(&plan))
+                .pool_max_idle_per_host(0)
+                .user_agent(concat!("estrogen-ping-patch/", env!("CARGO_PKG_VERSION")))
+                .default_headers(
+                    [
+                        (
+                            header::ACCEPT_ENCODING,
+                            header::HeaderValue::from_static("identity"),
+                        ),
+                        (
+                            header::CACHE_CONTROL,
+                            header::HeaderValue::from_static("no-store"),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                );
+            let client = if let Some(binding) = binding {
+                let origin = reqwest::Url::parse(&provider.origin)?;
+                client.local_address(binding.source).resolve(
+                    origin.host_str().ok_or("Missing provider hostname")?,
+                    binding.peer,
+                )
+            } else {
+                client
+            };
+            Some(client.build()?)
         }
-    }
-    .http1_only()
-    .http1_max_headers(64)
-    .no_proxy()
-    .no_gzip()
-    .no_brotli()
-    .no_deflate()
-    .no_zstd()
-    .redirect(reqwest::redirect::Policy::none())
-    .retry(reqwest::retry::never())
-    .timeout(deadline(&plan))
-    .pool_max_idle_per_host(0)
-    .user_agent(concat!("estrogen-ping-patch/", env!("CARGO_PKG_VERSION")))
-    .default_headers(
-        [
-            (
-                header::ACCEPT_ENCODING,
-                header::HeaderValue::from_static("identity"),
-            ),
-            (
-                header::CACHE_CONTROL,
-                header::HeaderValue::from_static("no-store"),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    );
-    let client = if let Some(binding) = binding {
-        let origin = reqwest::Url::parse(&provider.origin)?;
-        client.local_address(binding.source).resolve(
-            origin.host_str().ok_or("Missing provider hostname")?,
-            binding.peer,
-        )
+        #[cfg(feature = "isolated-tls")]
+        TransferTls::IsolatedRustls => None,
+    };
+    #[cfg(feature = "isolated-tls")]
+    let tlsConfig = if client.is_none() {
+        owned::tlsConfig(&plan)?
     } else {
-        client
-    }
-    .build()?;
+        None
+    };
     let mut random = vec![0; CHUNK_SIZE];
     getrandom::fill(&mut random)
         .map_err(|error| format!("Transfer payload generation failed: {error}"))?;
@@ -365,9 +420,11 @@ pub(super) async fn measure(
     let startedAt = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
     let context = RequestContext {
-        client: &client,
+        client: client.as_ref(),
         plan: &plan,
         binding: binding.as_ref(),
+        #[cfg(feature = "isolated-tls")]
+        tlsConfig,
     };
     let streams = join_all((0..plan.streams).map(|ordinal| {
         measureStream(

@@ -51,7 +51,7 @@ impl WorkerCpuEvidence {
 
 pub(super) fn validateUnavailableReason(reason: &str) -> AppResult<()> {
     if reason.is_empty() || reason.chars().count() > 512 || reason.chars().any(char::is_control) {
-        return Err("Unavailable CPU evidence needs a bounded readable reason".into());
+        return Err("Unavailable resource evidence needs a bounded readable reason".into());
     }
     Ok(())
 }

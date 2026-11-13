@@ -159,9 +159,11 @@ pub enum TransferExecution {
     RestrictedWorkerV1,
     RestrictedWorkerV2,
     RestrictedWorkerV3,
+    RestrictedWorkerV4,
     RecordedRestrictedWorkerV1,
     RecordedRestrictedWorkerV2,
     RecordedRestrictedWorkerV3,
+    RecordedRestrictedWorkerV4,
 }
 
 struct DirectBoundTransfer;

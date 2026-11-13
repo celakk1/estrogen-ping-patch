@@ -1,6 +1,125 @@
 use super::*;
 use std::net::{IpAddr, SocketAddr};
 
+#[cfg(feature = "isolated-tls")]
+#[test]
+fn cancelledOwnedTransfersPreserveUnavailableSocketEvidenceWithoutConnecting() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let peer = listener.local_addr().unwrap();
+    let result = measureIsolatedFrom(
+        plan(
+            Provider::UserOwnedHttp {
+                origin: format!("http://{peer}/"),
+            },
+            Direction::Download,
+            2,
+        ),
+        SourceBinding {
+            source: peer.ip(),
+            peer,
+        },
+        &AtomicBool::new(true),
+        &TransferProgress::default(),
+    )
+    .unwrap();
+    assert_eq!(result.status, TransferStatus::Cancelled);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    for stream in result.streams {
+        assert!(matches!(
+            stream.tcpInfo,
+            Some(TcpInfoEvidence::Unavailable { .. })
+        ));
+    }
+}
+
+#[cfg(feature = "isolated-tls")]
+#[test]
+fn ownedHttpTransportRetainsBoundStreamsAndProtocolRefusals() {
+    for (behavior, direction, expected) in [
+        (
+            Behavior::Normal,
+            Direction::Download,
+            TransferStatus::Completed,
+        ),
+        (
+            Behavior::Normal,
+            Direction::Upload,
+            TransferStatus::Completed,
+        ),
+        (
+            Behavior::Refused,
+            Direction::Download,
+            TransferStatus::HttpError,
+        ),
+        (
+            Behavior::Redirect,
+            Direction::Download,
+            TransferStatus::HttpError,
+        ),
+        (
+            Behavior::Encoded,
+            Direction::Download,
+            TransferStatus::ProtocolError,
+        ),
+        (
+            Behavior::Short,
+            Direction::Download,
+            TransferStatus::NetworkError,
+        ),
+        (
+            Behavior::WrongAck,
+            Direction::Upload,
+            TransferStatus::ProtocolError,
+        ),
+    ] {
+        let (provider, worker) = fixture(behavior, 2);
+        let peer: SocketAddr = provider
+            .info()
+            .unwrap()
+            .origin
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .parse()
+            .unwrap();
+        let binding = SourceBinding {
+            source: peer.ip(),
+            peer,
+        };
+        let progress = TransferProgress::default();
+        let result = measureIsolatedFrom(
+            plan(provider, direction, 2),
+            binding,
+            &AtomicBool::new(false),
+            &progress,
+        )
+        .unwrap();
+        worker.join().unwrap();
+        assert_eq!(result.status, expected, "{result:?}");
+        assert_eq!(progress.activeRequests.load(Ordering::SeqCst), 0);
+        for stream in &result.streams {
+            let evidence = stream
+                .tcpInfo
+                .as_ref()
+                .expect("owned transport omitted TCP evidence");
+            evidence
+                .validateFor(binding, &result.startedAt, &result.finishedAt)
+                .unwrap();
+            #[cfg(windows)]
+            assert!(
+                matches!(evidence, TcpInfoEvidence::Measured { .. }),
+                "{evidence:?}"
+            );
+        }
+        if expected != TransferStatus::Completed {
+            assert!(result.applicationGoodputMbps.is_none());
+        }
+    }
+}
+
 fn server(
     address: IpAddr,
     count: usize,

@@ -43,6 +43,7 @@ fn earlierRecordedExecutionRemainsReadableWithoutUpgradingItsCohort() {
     for execution in [
         TransferExecution::RecordedRestrictedWorkerV1,
         TransferExecution::RecordedRestrictedWorkerV2,
+        TransferExecution::RecordedRestrictedWorkerV3,
     ] {
         let storage = Database::new();
         let mut database = storage.open();
@@ -67,14 +68,25 @@ fn earlierRecordedExecutionRemainsReadableWithoutUpgradingItsCohort() {
         .unwrap();
         let currentCohort = header.experiment.comparison.cohortSha256.clone();
         header.execution = execution;
-        header
-            .experiment
-            .comparison
-            .metrics
-            .truncate(header.selections.len());
+        if execution != TransferExecution::RecordedRestrictedWorkerV3 {
+            header
+                .experiment
+                .comparison
+                .metrics
+                .truncate(header.selections.len());
+        }
         run.transferExecution = Some(header.execution);
+        let transferCohort = comparisonLoad::cohortSha256(&run, &header.selections).unwrap();
         header.experiment.comparison.cohortSha256 =
-            comparisonLoad::cohortSha256(&run, &header.selections).unwrap();
+            if execution == TransferExecution::RecordedRestrictedWorkerV3 {
+                resources::cohort(
+                    &transferCohort,
+                    &resources::AdapterContext::fromRoutes(&header.routesBefore).unwrap(),
+                )
+                .unwrap()
+            } else {
+                transferCohort
+            };
         assert_ne!(header.experiment.comparison.cohortSha256, currentCohort);
         let legacyCohort = header.experiment.comparison.cohortSha256.clone();
         let mut recorder = Recorder::start(&mut database, header).unwrap();

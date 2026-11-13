@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-isolated-tls = ["reqwest/rustls-no-provider", "dep:rustls"]
+isolated-tls = ["dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
 
 [dependencies]
 serde.workspace = true
@@ -19,12 +19,20 @@ hickory-proto = { version = "=0.26.3", default-features = false, features = ["st
 getrandom = "0.4"
 reqwest = { version = "=0.13.5", default-features = false, features = ["native-tls", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
-tokio = { version = "1", features = ["rt", "time", "macros", "net"] }
+rustls-platform-verifier = { version = "=0.7.1", optional = true }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"], optional = true }
+hyper = { version = "=1.12.0", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio"], optional = true }
+http-body-util = { version = "=0.1.5", optional = true }
+tokio = { version = "1", features = ["rt", "time", "macros", "net", "io-util"] }
 futures-util = "0.3"
 bytes = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_IO", "Win32_System_LibraryLoader"] }
+
+[dev-dependencies]
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
 
 [[bin]]
 name = "epp-check"

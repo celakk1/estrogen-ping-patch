@@ -30,7 +30,7 @@ impl epp_core::transfer::session::BoundTransferRunner for IsolatedTransferRunner
     }
 
     fn execution(&self) -> Option<epp_core::transfer::session::TransferExecution> {
-        Some(epp_core::transfer::session::TransferExecution::RestrictedWorkerV3)
+        Some(epp_core::transfer::session::TransferExecution::RestrictedWorkerV4)
     }
 
     fn snapshot(
@@ -363,6 +363,11 @@ fn validateResult(input: &Request, response: &Response) -> ServiceResult<()> {
         {
             return Err("Benchmark worker stream exceeds or contradicts its frozen request".into());
         }
+        stream
+            .tcpInfo
+            .as_ref()
+            .ok_or("Owned HTTP worker omitted socket TCP evidence")?
+            .validateFor(input.binding, &result.startedAt, &result.finishedAt)?;
         accepted += stream.acceptedPayloadBytes;
     }
     let status = result
