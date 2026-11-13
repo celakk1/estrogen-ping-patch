@@ -78,9 +78,9 @@ impl AdapterScope {
         template.validate()?;
         if template.schemaVersion != 4
             || !(1280..template.originalMtu).contains(&template.proposedMtu)
-            || !(1..=8).contains(&targets.len())
+            || !(1..=routing::MAX_DESTINATIONS).contains(&targets.len())
         {
-            return Err("Measurement scope requires a policy-backed MTU reduction and one to eight selected route targets".into());
+            return Err(format!("Measurement scope requires a policy-backed MTU reduction and one to {} selected route targets", routing::MAX_DESTINATIONS).into());
         }
         for (index, target) in targets.iter().enumerate() {
             target.validateDestination()?;
@@ -102,7 +102,7 @@ impl AdapterScope {
             template.addressFamily,
             cancelled,
         )?;
-        let routes = routing::capture(&targets, cancelled)?;
+        let routes = crate::read_worker::routes(&targets, cancelled)?;
         Self::fromEvidence(template, targets, current, routes)
     }
 
@@ -149,7 +149,7 @@ impl AdapterScope {
             self.template.addressFamily,
             &cancelled,
         )?;
-        let routes = routing::capture(&self.targets, &cancelled)?;
+        let routes = crate::read_worker::routes(&self.targets, &cancelled)?;
         self.verify(&current, &routes, configuration)?;
         Ok((current, routes))
     }

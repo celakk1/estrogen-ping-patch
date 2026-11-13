@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::time::Duration;
 use uuid::Uuid;
 
-const HEADER_BYTES: usize = 131_072;
+const HEADER_BYTES: usize = 1024 * 1024;
 const EVENT_BYTES: usize = 16_384;
 const MAX_EVENTS: u32 = 4096;
 const MAX_RECORDINGS: u32 = 2000;
@@ -365,7 +365,7 @@ fn eventChecksum(id: Uuid, previous: &str, value: &str) -> ServiceResult<String>
 
 fn load(database: &Connection, id: Uuid) -> ServiceResult<(Recording, Recorder)> {
     let (headerJson, headerSha256, state, runId, metadataJson, metadataSha256): (String,String,String,Option<i64>,String,String) = database.query_row(
-        "SELECT header_json,header_sha256,state,run_id,metadata_json,metadata_sha256 FROM adapter_load_recordings WHERE id=?1 AND length(CAST(header_json AS BLOB))<=131072 AND length(CAST(metadata_json AS BLOB))<=8192", [id.to_string()], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))?;
+        "SELECT header_json,header_sha256,state,run_id,metadata_json,metadata_sha256 FROM adapter_load_recordings WHERE id=?1 AND length(CAST(header_json AS BLOB))<=1048576 AND length(CAST(metadata_json AS BLOB))<=8192", [id.to_string()], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))?;
     if checksum(&headerJson) != headerSha256
         || stateChecksum(id, &headerSha256, &metadataJson)? != metadataSha256
     {

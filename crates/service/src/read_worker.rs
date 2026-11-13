@@ -34,8 +34,12 @@ impl Request {
     fn validate(&self) -> ServiceResult<()> {
         match self {
             Self::Routes { targets } => {
-                if !(1..=8).contains(&targets.len()) {
-                    return Err("Route worker requires one to eight destinations".into());
+                if !(1..=routing::MAX_DESTINATIONS).contains(&targets.len()) {
+                    return Err(format!(
+                        "Route worker requires one to {} destinations",
+                        routing::MAX_DESTINATIONS
+                    )
+                    .into());
                 }
                 for (index, target) in targets.iter().enumerate() {
                     target.validateDestination()?;

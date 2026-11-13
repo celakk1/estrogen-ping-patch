@@ -69,6 +69,36 @@ fn blocks(count: usize) -> Vec<MatchedBlock> {
 }
 
 #[test]
+fn checkedAnalysisStopsBeforeReturningPartialOrCancelledStatistics() {
+    let plan = plan();
+    let blocks = blocks(12);
+    let mut completeChecks = 0;
+    let checked = analyzeWithCheck(&plan, &blocks, || {
+        completeChecks += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(checked).unwrap(),
+        serde_json::to_value(analyze(&plan, &blocks).unwrap()).unwrap()
+    );
+    for stopAt in [1, 4, 30, completeChecks - 1, completeChecks] {
+        let mut checks = 0;
+        let error = analyzeWithCheck(&plan, &blocks, || {
+            checks += 1;
+            if checks == stopAt {
+                Err("fixture analysis stop".into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("fixture analysis stop"));
+        assert_eq!(checks, stopAt);
+    }
+}
+
+#[test]
 fn repeatedSessionBenefitIsExploratoryReproducibleAndAuditable() {
     let plan = plan();
     let blocks = blocks(12);
@@ -102,7 +132,7 @@ fn repeatedSessionBenefitIsExploratoryReproducibleAndAuditable() {
 fn bootstrapKeepsOppositeMetricsPairedAcrossEveryResample() {
     let first: Vec<_> = (0..12).map(|value| value as f64 - 5.0).collect();
     let second: Vec<_> = first.iter().map(|value| -value).collect();
-    let intervals = bootstrap::intervals(&[first, second], [7; 32]);
+    let intervals = bootstrap::intervals(&[first, second], [7; 32], &mut || Ok(())).unwrap();
     assert!((intervals[0].lower + intervals[1].upper).abs() < 1e-12);
     assert!((intervals[0].upper + intervals[1].lower).abs() < 1e-12);
 }

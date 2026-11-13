@@ -12,7 +12,7 @@ mod tests;
 
 const MIN_BLOCKS: usize = 12;
 const MAX_BLOCKS: usize = 128;
-const MAX_METRICS: usize = 64;
+const MAX_METRICS: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,12 +283,23 @@ fn midpoint(session: &Session, origin: u64) -> f64 {
 }
 
 pub fn analyze(plan: &Plan, blocks: &[MatchedBlock]) -> AppResult<Report> {
+    analyzeWithCheck(plan, blocks, || Ok(()))
+}
+
+pub fn analyzeWithCheck(
+    plan: &Plan,
+    blocks: &[MatchedBlock],
+    mut check: impl FnMut() -> AppResult<()>,
+) -> AppResult<Report> {
+    check()?;
     plan.validate()?;
     validateSessions(plan, blocks)?;
+    check()?;
     let seed: [u8; 32] = Sha256::digest(serde_json::to_vec(&(plan, blocks))?).into();
     let mut differences = Vec::new();
     let mut metrics = Vec::new();
     for (metricIndex, rule) in plan.metrics.iter().enumerate() {
+        check()?;
         let mut baseline = Vec::new();
         let mut candidate = Vec::new();
         let mut benefits = Vec::new();
@@ -355,7 +366,7 @@ pub fn analyze(plan: &Plan, blocks: &[MatchedBlock]) -> AppResult<Report> {
         .iter()
         .any(|metric| !metric.driftedBlocks.is_empty());
     if !invalid && blocks.len() >= MIN_BLOCKS {
-        let mut intervals = bootstrap::intervals(&differences, seed).into_iter();
+        let mut intervals = bootstrap::intervals(&differences, seed, &mut check)?.into_iter();
         for metric in &mut metrics {
             let interval = intervals.next().unwrap();
             let practicalMargin = intervals.next().unwrap();
@@ -406,7 +417,7 @@ pub fn analyze(plan: &Plan, blocks: &[MatchedBlock]) -> AppResult<Report> {
             metric.outcome = Outcome::Reject;
         }
     }
-    Ok(Report {
+    let report = Report {
         schemaVersion: 1,
         method: "paired-session-percentile-bootstrap-bonferroni-v1".into(),
         evidenceSha256: seed.iter().map(|byte| format!("{byte:02x}")).collect(),
@@ -423,5 +434,7 @@ pub fn analyze(plan: &Plan, blocks: &[MatchedBlock]) -> AppResult<Report> {
         exploratory: true,
         outcome,
         metrics,
-    })
+    };
+    check()?;
+    Ok(report)
 }

@@ -278,14 +278,30 @@ fn image() -> std::path::PathBuf {
 fn isolatedReadWorkerCapturesLoopbackRoutesAndActualSourceBoundPackets() {
     let image = image();
     let cancelled = AtomicBool::new(false);
-    let targets = vec![routing::Address {
-        ip: "127.0.0.1".parse().unwrap(),
+    let targets: Vec<_> = (1..=routing::MAX_DESTINATIONS)
+        .map(|index| routing::Address {
+            ip: format!("127.0.0.{index}").parse().unwrap(),
+            scopeId: 0,
+        })
+        .collect();
+    Request::Routes {
+        targets: targets.clone(),
+    }
+    .validate()
+    .unwrap();
+    let mut excessive = targets.clone();
+    excessive.push(routing::Address {
+        ip: "127.0.0.200".parse().unwrap(),
         scopeId: 0,
-    }];
+    });
+    assert!(Request::Routes { targets: excessive }.validate().is_err());
     let routes = routesUsing(&image, &targets, &cancelled).unwrap();
-    assert!(
-        matches!(&routes[0],routing::Capture::Captured {snapshot} if snapshot.destination==targets[0])
-    );
+    assert_eq!(routes.len(), targets.len());
+    for (route, target) in routes.iter().zip(&targets) {
+        assert!(
+            matches!(route, routing::Capture::Captured { snapshot } if snapshot.destination == *target)
+        );
+    }
     let Request::Packet { plan, limits } = input() else {
         unreachable!()
     };

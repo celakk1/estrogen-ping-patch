@@ -428,6 +428,7 @@ fn advance<H: Host>(
     snapshot: &mut Snapshot,
     host: &mut H,
     control: &Control<'_>,
+    comparison: &mut Option<comparison::Report>,
 ) -> AppResult<State> {
     while snapshot.blocks.len() < snapshot.plan.blockCount {
         control.check()?;
@@ -536,10 +537,17 @@ fn advance<H: Host>(
         snapshot.pendingCandidate = None;
         snapshot.blocks.push(block);
         snapshot.checkpoints.push(checkpointId);
-        let comparison = comparison::analyze(&snapshot.plan.comparison, &snapshot.blocks)?;
+        *comparison = None;
         persist(store, snapshot, State::Ready)?;
         control.check()?;
-        match comparison.outcome {
+        let evaluated =
+            comparison::analyzeWithCheck(&snapshot.plan.comparison, &snapshot.blocks, || {
+                control.check()
+            })?;
+        let outcome = evaluated.outcome;
+        *comparison = Some(evaluated);
+        control.check()?;
+        match outcome {
             comparison::Outcome::Invalid => return Ok(State::Invalid),
             comparison::Outcome::Reject => return Ok(State::Rejected),
             _ => {}
@@ -574,7 +582,8 @@ pub fn execute<H: Host>(
         .bind(&guarded(|| host.maximumTraffic())?)?;
     control.check()?;
     let mut snapshot = store.begin(plan, nowUnixMs()?)?;
-    let result = advance(store, &mut snapshot, host, &control);
+    let mut comparison = None;
+    let result = advance(store, &mut snapshot, host, &control, &mut comparison);
     let (state, error) = match result {
         Ok(state) => (state, snapshot.error.clone()),
         Err(error) => (
@@ -590,14 +599,6 @@ pub fn execute<H: Host>(
         }
         .into());
     }
-    let comparison = if snapshot.blocks.is_empty() {
-        None
-    } else {
-        Some(comparison::analyze(
-            &snapshot.plan.comparison,
-            &snapshot.blocks,
-        )?)
-    };
     Ok(Report {
         traffic: snapshot
             .plan

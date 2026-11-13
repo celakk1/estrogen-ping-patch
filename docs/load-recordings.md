@@ -16,7 +16,7 @@ On initialization, an unfinished recording is validated before its owner is insp
 
 ## Limits and measurement context
 
-- Header: 128 KiB; event: 16 KiB; at most 4096 events.
+- Header: 1 MiB; event: 16 KiB; at most 4096 events.
 - Header plus event payloads: at most 8 MiB; final raw report: at most 8 MiB.
 - At most 2000 recordings; no automatic deletion or capacity bypass.
 - History: at most 100 recordings and 32 MiB of header, metadata, and event payloads per request. An oversized request fails with instructions to request fewer records.

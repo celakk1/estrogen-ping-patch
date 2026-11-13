@@ -310,19 +310,41 @@ fn fourPhaseSafetySelectionsCoverEveryEndpointAndProduceRawValues() {
 }
 
 #[test]
-fn oversizedSafetyCohortsAreRefusedWithoutDroppingServers() {
+fn fullProviderAndDestinationCoverageKeepsEveryServerAndRefusesInvalidCounts() {
     let (mut run, _, _) = fixture();
-    run.plan.providers.push(Provider::UserOwnedHttp {
-        origin: "https://second-owned.example/".into(),
-    });
-    let error = requiredSafetySelections(&run.config, &run.plan).unwrap_err();
-    assert!(error.to_string().contains("100 metrics"));
-    assert_eq!(run.plan.providers.len(), 2);
-    assert_eq!(run.plan.latencyEndpoints.len(), 2);
-    run.plan.providers.pop();
+    run.plan.providers = (0..4)
+        .map(|index| Provider::UserOwnedHttp {
+            origin: format!("https://owned-{index}.example/"),
+        })
+        .collect();
+    run.plan.latencyEndpoints = (0..8)
+        .map(|index| {
+            let mut endpoint = run.plan.latencyEndpoints[0].clone();
+            endpoint.id = format!("endpoint-{index}");
+            endpoint.address = format!("192.0.2.{}", 20 + index);
+            endpoint
+        })
+        .collect();
+    run.config.sessionMinutes = 8;
+    run.plan.phaseTimeoutMs = 30_000;
     let selections = requiredSafetySelections(&run.config, &run.plan).unwrap();
-    assert_eq!(selections.len(), 50);
-    assert_eq!(run.plan.latencyEndpoints.len(), 2);
+    assert_eq!(selections.len(), 776);
+    validateSafetyCoverage(&run.config, &run.plan, &selections).unwrap();
+    for providerIndex in 0..4 {
+        assert_eq!(
+            selections
+                .iter()
+                .filter(|selection| selection.providerIndex == providerIndex)
+                .count(),
+            194
+        );
+    }
+    run.plan.providers.push(Provider::UserOwnedHttp {
+        origin: "https://too-many.example/".into(),
+    });
+    assert!(requiredSafetySelections(&run.config, &run.plan).is_err());
+    assert_eq!(run.plan.providers.len(), 5);
+    run.plan.providers.pop();
     run.plan.latencyEndpoints.truncate(1);
     assert!(requiredSafetySelections(&run.config, &run.plan).is_err());
 }

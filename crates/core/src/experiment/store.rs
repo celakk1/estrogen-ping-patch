@@ -5,7 +5,8 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
 
 const APPLICATION_ID: u32 = 0x45505045;
-const MAX_PAYLOAD: usize = 262_144;
+const MAX_PAYLOAD: usize = 4 * 1024 * 1024;
+const STORE_BYTES: u64 = 256 * 1024 * 1024;
 
 pub struct Store {
     connection: Connection,
@@ -37,14 +38,14 @@ fn payload(snapshot: &Snapshot) -> AppResult<String> {
     snapshot.validate()?;
     let payload = serde_json::to_string(snapshot)?;
     if payload.len() > MAX_PAYLOAD {
-        return Err("Experiment exceeds its 256 KiB durable evidence limit".into());
+        return Err("Experiment exceeds its four MiB durable evidence limit".into());
     }
     Ok(payload)
 }
 
 fn load(connection: &Connection, id: &str) -> AppResult<Snapshot> {
     let (payload, expected, revision, active): (String, String, u32, bool) = connection.query_row(
-        "SELECT payload_json,sha256,revision,active FROM experiments WHERE id=?1 AND length(CAST(payload_json AS BLOB))<=262144",
+        "SELECT payload_json,sha256,revision,active FROM experiments WHERE id=?1 AND length(CAST(payload_json AS BLOB))<=4194304",
         [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     if checksum(&payload) != expected {
@@ -59,6 +60,21 @@ fn load(connection: &Connection, id: &str) -> AppResult<Snapshot> {
         return Err("Experiment progress metadata differs from its durable evidence".into());
     }
     Ok(snapshot)
+}
+
+fn verifyCapacity(connection: &Connection, reservedBytes: u64, limit: u64) -> AppResult<()> {
+    let bytes: i64 = connection.query_row(
+        "SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) FROM experiments",
+        [],
+        |row| row.get(0),
+    )?;
+    if u64::try_from(bytes)?
+        .checked_add(reservedBytes)
+        .is_none_or(|total| total > limit)
+    {
+        return Err("Experiment evidence capacity is full; preserve and archive existing evidence before more trials".into());
+    }
+    Ok(())
 }
 
 impl Store {
@@ -98,6 +114,7 @@ impl Store {
     }
 
     fn verifyAll(&self) -> AppResult<()> {
+        verifyCapacity(&self.connection, 0, STORE_BYTES)?;
         let mut query = self
             .connection
             .prepare("SELECT id FROM experiments ORDER BY id LIMIT 2001")?;
@@ -153,6 +170,7 @@ impl Store {
         if active || count >= 2000 {
             return Err("An unfinished experiment or full evidence store blocks new trials; verify recovery before continuing".into());
         }
+        verifyCapacity(&transaction, MAX_PAYLOAD as u64, STORE_BYTES)?;
         transaction.execute(
             "INSERT INTO experiments(id,revision,active,payload_json,sha256) VALUES(?1,0,1,?2,?3)",
             params![snapshot.plan.id, payload, checksum(&payload)],
@@ -181,10 +199,34 @@ impl Store {
         if changed != 1 {
             return Err("Experiment ownership changed before durable progress was recorded".into());
         }
+        verifyCapacity(&transaction, 0, STORE_BYTES)?;
         transaction.commit()?;
         if serde_json::to_string(&self.load(&snapshot.plan.id)?)? != payload {
             return Err("Experiment progress failed committed readback verification".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacityIncludesUtf8BytesAndReservedGrowthWithoutDeletingEvidence() {
+        let database = Connection::open_in_memory().unwrap();
+        database
+            .execute_batch("CREATE TABLE experiments(payload_json TEXT NOT NULL);")
+            .unwrap();
+        database
+            .execute("INSERT INTO experiments VALUES(?1),(?2)", ["é", "abc"])
+            .unwrap();
+        verifyCapacity(&database, 3, 8).unwrap();
+        assert!(verifyCapacity(&database, 4, 8).is_err());
+        assert!(verifyCapacity(&database, u64::MAX, 8).is_err());
+        let count: u32 = database
+            .query_row("SELECT count(*) FROM experiments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
     }
 }

@@ -7,6 +7,8 @@ use std::{
 };
 use uuid::Uuid;
 
+pub(crate) const MAX_DESTINATIONS: usize = 16;
+
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]
@@ -125,8 +127,11 @@ pub enum Capture {
 }
 
 pub fn capture(destinations: &[Address], cancelled: &AtomicBool) -> ServiceResult<Vec<Capture>> {
-    if !(1..=8).contains(&destinations.len()) {
-        return Err("Route inspection requires one to eight numeric destinations".into());
+    if !(1..=MAX_DESTINATIONS).contains(&destinations.len()) {
+        return Err(format!(
+            "Route inspection requires one to {MAX_DESTINATIONS} numeric destinations"
+        )
+        .into());
     }
     for destination in destinations {
         destination.validateDestination()?;
@@ -156,8 +161,10 @@ pub fn capture(destinations: &[Address], cancelled: &AtomicBool) -> ServiceResul
 }
 
 pub fn fingerprint(captures: &[Capture]) -> ServiceResult<Option<String>> {
-    if !(1..=8).contains(&captures.len()) {
-        return Err("Routing identity requires one to eight capture results".into());
+    if !(1..=MAX_DESTINATIONS).contains(&captures.len()) {
+        return Err(
+            format!("Routing identity requires one to {MAX_DESTINATIONS} capture results").into(),
+        );
     }
     let mut stable = Vec::new();
     for capture in captures {

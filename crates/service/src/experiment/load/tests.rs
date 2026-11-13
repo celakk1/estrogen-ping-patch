@@ -91,6 +91,192 @@ pub(super) fn fixture() -> (Scope, policy::Capture, Vec<routing::Capture>) {
     )
 }
 
+pub(super) fn wideFixture(
+    providerCount: usize,
+    endpointCount: usize,
+) -> (Scope, policy::Capture, Vec<routing::Capture>) {
+    let (scope, current, routes) = fixture();
+    let mut template = scope.adapter.template;
+    template.createdAtUnixMs = nowUnixMs().unwrap() - 240_000;
+    template.leaseExpiresAtUnixMs = template.createdAtUnixMs + 300_000;
+    template.nativeOriginal.as_mut().unwrap().capturedAtUnixMs = template.createdAtUnixMs;
+    let mut config = scope.config;
+    config.sessionMinutes = 4;
+    let mut sessionPlan = scope.sessionPlan;
+    sessionPlan.phaseTimeoutMs = 30_000;
+    sessionPlan.providers = (0..providerCount)
+        .map(|index| Provider::UserOwnedHttp {
+            origin: format!("https://wide-{index}.example/"),
+        })
+        .collect();
+    sessionPlan.latencyEndpoints = (0..endpointCount)
+        .map(|index| {
+            let mut endpoint = sessionPlan.latencyEndpoints[0].clone();
+            endpoint.id = format!("server-{index}");
+            endpoint.address = format!("192.0.2.{}", 20 + index);
+            endpoint
+        })
+        .collect();
+    let peers: Vec<SocketAddr> = (0..providerCount)
+        .map(|index| format!("203.0.113.{}:443", 10 + index).parse().unwrap())
+        .collect();
+    let targets = targets(&sessionPlan.latencyEndpoints, &peers).unwrap();
+    let routes = targets
+        .iter()
+        .map(|target| {
+            let mut route = routes[0].clone();
+            if let routing::Capture::Captured { snapshot } = &mut route {
+                snapshot.destination = target.clone();
+            }
+            route
+        })
+        .collect::<Vec<_>>();
+    let selections = comparisonLoad::requiredSafetySelections(&config, &sessionPlan).unwrap();
+    let adapter =
+        AdapterScope::fromEvidence(template, targets, current.clone(), routes.clone()).unwrap();
+    (
+        Scope::fromAdapter(adapter, config, sessionPlan, peers, selections).unwrap(),
+        current,
+        routes,
+    )
+}
+
+fn wideRaw(
+    collector: &mut Collector<'_>,
+    current: &policy::Capture,
+    routes: &[routing::Capture],
+) -> (SessionRun, NativeEvidence, NativeEvidence) {
+    let endpointCount = collector.scope.sessionPlan.latencyEndpoints.len() as u64;
+    let intervalMs = collector.scope.sessionPlan.intervalMs;
+    let phaseMs = 12 * endpointCount * intervalMs + 1000;
+    let providerCount = collector.scope.sessionPlan.providers.len();
+    let durationMs = phaseMs * 4 * providerCount as u64;
+    let start = nowUnixMs().unwrap() - durationMs;
+    let mut run = session::runSourceBoundSessionWithRunner(
+        collector.scope.config.clone(),
+        collector.scope.sessionPlan.clone(),
+        collector.scope.bindings.clone(),
+        &AtomicBool::new(true),
+        |_| {},
+        &recording::Runner,
+    )
+    .unwrap();
+    run.startedAt = time(start);
+    run.finishedAt = time(start + durationMs);
+    run.status = "completed".into();
+    for providerIndex in 0..providerCount {
+        let base = start + providerIndex as u64 * 4 * phaseMs;
+        for (phase, offset, rtt) in [
+            (Phase::Idle, 0, 1),
+            (Phase::Download, phaseMs, 2),
+            (Phase::Upload, 2 * phaseMs, 3),
+            (Phase::Recovery, 3 * phaseMs, 1),
+        ] {
+            let loaded = matches!(phase, Phase::Download | Phase::Upload);
+            for round in 0..12 {
+                for (index, endpoint) in run.plan.latencyEndpoints.iter().enumerate() {
+                    run.latencySamples.push(LatencySample {
+                        providerIndex,
+                        phase,
+                        sample: epp_core::benchmark::Sample {
+                            endpointId: endpoint.id.clone(),
+                            address: endpoint.address.clone(),
+                            timestamp: time(
+                                base + offset
+                                    + 250
+                                    + (round * endpointCount + index as u64) * intervalMs,
+                            ),
+                            connectMs: None,
+                            error: None,
+                            dns: None,
+                            echo: Some(EchoOutcome {
+                                status: EchoStatus::Reply,
+                                rttMs: Some(rtt),
+                                rttUnitMs: 1,
+                                callDurationMs: f64::from(rtt),
+                                responder: Some(endpoint.address.parse().unwrap()),
+                                responderScopeId: None,
+                                nativeCode: Some(0),
+                            }),
+                        },
+                        inFlightRequestsAtStart: u64::from(loaded),
+                        inFlightRequestsAtEnd: u64::from(loaded),
+                        payloadProgressDuringProbe: if loaded { 64 } else { 0 },
+                    });
+                }
+            }
+        }
+        for (phase, direction, offset) in [
+            (Phase::Download, transfer::Direction::Download, phaseMs),
+            (Phase::Upload, transfer::Direction::Upload, 2 * phaseMs),
+        ] {
+            let provider = run.plan.providers[providerIndex].clone();
+            let binding = collector.scope.bindings.transfers[providerIndex];
+            let mut result = TransferResult {
+                plan: TransferPlan {
+                    provider: provider.clone(),
+                    direction,
+                    bytes: 8192,
+                    streams: 2,
+                    timeoutMs: run.plan.phaseTimeoutMs,
+                },
+                provider: provider.info().unwrap(),
+                startedAt: time(base + offset),
+                finishedAt: time(base + offset + phaseMs),
+                elapsedMs: phaseMs as f64,
+                status: TransferStatus::Completed,
+                acceptedPayloadBytes: 8192,
+                applicationGoodputMbps: None,
+                sourceBinding: Some(binding),
+                streams: Vec::new(),
+            };
+            for ordinal in 0..2 {
+                result.streams.push(StreamResult {
+                    ordinal,
+                    requestedBytes: 4096,
+                    downloadBytesRead: if direction == transfer::Direction::Download {
+                        4096
+                    } else {
+                        0
+                    },
+                    uploadBodyBytesProvided: if direction == transfer::Direction::Upload {
+                        4096
+                    } else {
+                        0
+                    },
+                    acceptedPayloadBytes: 4096,
+                    elapsedMs: (phaseMs - 100) as f64,
+                    status: TransferStatus::Completed,
+                    httpStatus: Some(200),
+                    remoteAddress: Some(binding.peer.to_string()),
+                    retryAfter: None,
+                    error: None,
+                });
+            }
+            run.transfers.push(PhaseResult {
+                providerIndex,
+                phase,
+                result: Some(result),
+                error: None,
+                interruptedProgress: None,
+            });
+        }
+    }
+    let observation = |at| {
+        let mut current = current.clone();
+        current.native.capturedAtUnixMs = at;
+        let mut routes = routes.to_vec();
+        for route in &mut routes {
+            if let routing::Capture::Captured { snapshot } = route {
+                snapshot.capturedAtUnixMs = at;
+            }
+        }
+        (current, routes)
+    };
+    epp_core::storage::saveLoadSession(collector.database, &mut run).unwrap();
+    (run, observation(start), observation(start + durationMs))
+}
+
 pub(super) fn plan(scope: &Scope) -> Plan {
     let threshold = |absolute| Threshold {
         absolute,
@@ -304,6 +490,77 @@ fn savedRaw(
     let after = observation(start + 28_000);
     epp_core::storage::saveLoadSession(collector.database, &mut run).unwrap();
     (run, before, after)
+}
+
+#[test]
+fn widestProviderDestinationCombinationCannotOverridePacingOrTrialDuration() {
+    let (scope, _, _) = wideFixture(4, 4);
+    let mut sessionPlan = scope.sessionPlan;
+    sessionPlan.latencyEndpoints = (0..8)
+        .map(|index| {
+            let mut endpoint = sessionPlan.latencyEndpoints[0].clone();
+            endpoint.id = format!("server-{index}");
+            endpoint.address = format!("192.0.2.{}", 20 + index);
+            endpoint
+        })
+        .collect();
+    let selections = comparisonLoad::requiredSafetySelections(&scope.config, &sessionPlan).unwrap();
+    assert_eq!(selections.len(), 776);
+    let peers = scope
+        .bindings
+        .transfers
+        .iter()
+        .map(|binding| binding.peer)
+        .collect();
+    let error = Scope::capture(
+        scope.adapter.template,
+        scope.config,
+        sessionPlan,
+        peers,
+        selections,
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("384.0 seconds"), "{error}");
+}
+
+#[test]
+fn multiProviderCohortsPreserveEveryRawMetricAndSelectedRoute() {
+    for (providerCount, endpointCount) in [(4, 4), (2, 8), (3, 6)] {
+        let (scope, current, routes) = wideFixture(providerCount, endpointCount);
+        let metricCount = providerCount * (2 + 24 * endpointCount);
+        let routeCount = providerCount + endpointCount;
+        assert_eq!(scope.selections.len(), metricCount);
+        assert_eq!(scope.adapter.targets.len(), routeCount);
+        let mut plan = plan(&scope);
+        plan.comparison.maximumBlockDurationMs = 750_000;
+        plan.expiresAtUnixMs = nowUnixMs().unwrap() + 14_000_000;
+        let storage = Database::new();
+        let mut database = storage.open();
+        let mut collector = scope.bind(&mut database, plan).unwrap();
+        let (run, before, after) = wideRaw(&mut collector, &current, &routes);
+        assert_eq!(run.latencySamples.len(), providerCount * endpointCount * 48);
+        let measured = collector
+            .acceptRaw(&run, &before, &after, Configuration::Original)
+            .unwrap();
+        assert_eq!(measured.values.len(), metricCount);
+        let payload: String = collector
+            .database
+            .query_row(
+                "SELECT payload_json FROM adapter_load_measurements WHERE run_id=?1",
+                [run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            receipt["routesBefore"].as_array().unwrap().len(),
+            routeCount
+        );
+        assert_eq!(receipt["routesAfter"].as_array().unwrap().len(), routeCount);
+        assert_eq!(receipt["rawRunSha256"], hash(&run).unwrap());
+    }
 }
 
 #[test]

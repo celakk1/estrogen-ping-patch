@@ -199,7 +199,13 @@ fn invalidOrCancelledCaptureCannotReturnPartialSuccess() {
         scopeId: 0,
     };
     assert!(capture(&[], &AtomicBool::new(false)).is_err());
-    assert!(capture(&vec![target.clone(); 9], &AtomicBool::new(false)).is_err());
+    assert!(
+        capture(
+            &vec![target.clone(); MAX_DESTINATIONS + 1],
+            &AtomicBool::new(false)
+        )
+        .is_err()
+    );
     assert!(capture(&[target], &AtomicBool::new(true)).is_err());
 }
 

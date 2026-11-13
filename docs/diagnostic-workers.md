@@ -4,7 +4,7 @@ The optional `automatic-trials` service library runs candidate-diagnosis route c
 
 ## Fixed process policies
 
-The parent selects its own canonical service executable and one of two fixed modes. `--network-read-worker` accepts only one to eight distinct numeric route destinations and uses the existing low-integrity restricted token. `--packet-read-worker` accepts only a validated packet plan and resource limits, and uses a separate medium-integrity restricted token. Each mode rejects the other's operation and token policy before executing a request. There is no runtime retry with a less restricted token.
+The parent selects its own canonical service executable and one of two fixed modes. `--network-read-worker` accepts only one to sixteen distinct numeric route destinations and uses the existing low-integrity restricted token. This accommodates latency destinations plus frozen provider peers. `--packet-read-worker` accepts only a validated packet plan and resource limits, and uses a separate medium-integrity restricted token. Each mode rejects the other's operation and token policy before executing a request. There is no runtime retry with a less restricted token.
 
 The separate packet policy follows a controlled local failure: an otherwise identical low-integrity restricted token returned Windows access denied from the native echo send path, while the medium-integrity version successfully sent source-bound loopback probes. This establishes compatibility on the tested Windows installation and account, not every Windows version or service account.
 

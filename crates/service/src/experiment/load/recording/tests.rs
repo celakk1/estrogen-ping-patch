@@ -39,6 +39,37 @@ fn idle(header: &Header) -> SessionProgress {
 }
 
 #[test]
+fn fullMultiProviderHeaderSurvivesDurableReadbackWithoutTruncatingRules() {
+    let storage = Database::new();
+    let mut database = storage.open();
+    let (scope, policy, routes) = crate::experiment::load::tests::wideFixture(3, 6);
+    let plan = plan(&scope);
+    let header = Header::capture(
+        &scope,
+        &plan,
+        Configuration::Original,
+        None,
+        &(policy, routes),
+    )
+    .unwrap();
+    let bytes = payload(&header, HEADER_BYTES).unwrap();
+    assert!(bytes.len() > 131_072);
+    assert!(bytes.len() <= 1024 * 1024);
+    let mut recorder = Recorder::start(&mut database, header).unwrap();
+    let id = recorder.header.id;
+    recorder
+        .abort(&mut database, "fixture collection not started")
+        .unwrap();
+    drop(database);
+    let database = storage.open();
+    let records = history(&database, 1).unwrap();
+    assert_eq!(records[0].header.id, id);
+    assert_eq!(records[0].header.selections.len(), 438);
+    assert_eq!(records[0].header.experiment.comparison.metrics.len(), 438);
+    assert_eq!(records[0].state, State::Interrupted);
+}
+
+#[test]
 fn progressAndFinalReportSurviveDatabaseReopen() {
     let storage = Database::new();
     let mut database = storage.open();

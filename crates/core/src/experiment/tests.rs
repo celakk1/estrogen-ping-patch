@@ -251,7 +251,7 @@ fn widestRepeatedPlanPreservesAllThirtyTwoBracketsWithinTheDurableLimit() {
     plan.blockCount = 32;
     let mut guard = plan.comparison.metrics[1].clone();
     guard.role = Role::Guard;
-    plan.comparison.metrics.resize(64, guard);
+    plan.comparison.metrics.resize(1024, guard);
     for (index, rule) in plan.comparison.metrics.iter_mut().enumerate() {
         rule.id = format!("metric-{index}-{}", "x".repeat(88));
     }
@@ -266,7 +266,7 @@ fn widestRepeatedPlanPreservesAllThirtyTwoBracketsWithinTheDurableLimit() {
             cohortSha256: snapshot.plan.comparison.cohortSha256.clone(),
             environmentSha256: snapshot.plan.comparison.environmentSha256.clone(),
             configurationSha256: configuration.into(),
-            values: vec![999_999_999_999.999_9; 64],
+            values: vec![999_999_999_999.999_9; 1024],
         };
         snapshot.blocks.push(MatchedBlock {
             originalBefore: session(0, &snapshot.plan.comparison.originalConfigurationSha256),
@@ -280,7 +280,7 @@ fn widestRepeatedPlanPreservesAllThirtyTwoBracketsWithinTheDurableLimit() {
     snapshot.revision = 1;
     store.save(&snapshot).unwrap();
     let expected = serde_json::to_value(&snapshot).unwrap();
-    assert!(serde_json::to_vec(&snapshot).unwrap().len() <= 262_144);
+    assert!(serde_json::to_vec(&snapshot).unwrap().len() <= 4 * 1024 * 1024);
     drop(store);
     let store = Store::open(&temporary.0).unwrap();
     assert_eq!(
@@ -303,6 +303,13 @@ fn repeatedTrialsPersistAllBracketsAndNeverAuthorizeRetention() {
     let exported = serde_json::to_value(&report).unwrap();
     assert_eq!(exported["snapshot"]["state"], "completed");
     assert_eq!(exported["comparison"]["exploratory"], true);
+    assert_eq!(
+        exported["comparison"],
+        serde_json::to_value(
+            comparison::analyze(&report.snapshot.plan.comparison, &report.snapshot.blocks).unwrap()
+        )
+        .unwrap()
+    );
     let comparison = report.comparison.unwrap();
     assert_eq!(comparison.outcome, comparison::Outcome::Promising);
     assert!(comparison.exploratory);

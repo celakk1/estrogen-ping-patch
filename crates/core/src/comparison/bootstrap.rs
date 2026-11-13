@@ -1,7 +1,9 @@
+use crate::AppResult;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 pub(super) const RESAMPLES: usize = 16384;
+const BATCH_SERIES: usize = 48;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,34 +62,71 @@ fn quantile(sorted: &[f64], probability: f64) -> f64 {
     sorted[lower] + (sorted[upper] - sorted[lower]) * position.fract()
 }
 
-pub(super) fn intervals(differences: &[Vec<f64>], seed: [u8; 32]) -> Vec<Interval> {
+pub(super) fn intervals(
+    differences: &[Vec<f64>],
+    seed: [u8; 32],
+    check: &mut impl FnMut() -> AppResult<()>,
+) -> AppResult<Vec<Interval>> {
+    check()?;
+    if differences.is_empty() || differences.len() > super::MAX_METRICS * 3 {
+        return Err("Bootstrap series exceed the comparison allowance".into());
+    }
     let count = differences[0].len();
+    if !(1..=super::MAX_BLOCKS).contains(&count)
+        || differences
+            .iter()
+            .any(|values| values.len() != count || values.iter().any(|value| !value.is_finite()))
+    {
+        return Err("Bootstrap series require matching bounded finite block values".into());
+    }
+    check()?;
     let mut indices = Indices::new(seed);
-    let mut distributions = vec![Vec::with_capacity(RESAMPLES); differences.len()];
-    let mut sums = vec![0.0; differences.len()];
-    for _ in 0..RESAMPLES {
-        sums.fill(0.0);
-        for _ in 0..count {
-            let index = indices.next(count);
-            for (sum, values) in sums.iter_mut().zip(differences) {
-                *sum += values[index];
-            }
+    // every batch replays these exact draws to preserve paired metrics.
+    let mut draws = Vec::with_capacity(RESAMPLES * count);
+    for resample in 0..RESAMPLES {
+        if resample % 64 == 0 {
+            check()?;
         }
-        for (distribution, sum) in distributions.iter_mut().zip(&sums) {
-            distribution.push(sum / count as f64);
+        for _ in 0..count {
+            draws.push(u8::try_from(indices.next(count))?);
         }
     }
     let alpha = 0.05 / differences.len() as f64;
-    distributions
-        .into_iter()
-        .map(|mut distribution| {
+    let mut result = Vec::with_capacity(differences.len());
+    for batch in differences.chunks(BATCH_SERIES) {
+        check()?;
+        let mut distributions: Vec<_> = (0..batch.len())
+            .map(|_| Vec::with_capacity(RESAMPLES))
+            .collect();
+        let mut sums = vec![0.0; batch.len()];
+        for (resample, draw) in draws.chunks_exact(count).enumerate() {
+            if resample % 64 == 0 {
+                check()?;
+            }
+            sums.fill(0.0);
+            for index in draw {
+                for (sum, values) in sums.iter_mut().zip(batch) {
+                    *sum += values[usize::from(*index)];
+                }
+            }
+            for (distribution, sum) in distributions.iter_mut().zip(&sums) {
+                distribution.push(sum / count as f64);
+            }
+        }
+        for mut distribution in distributions {
+            check()?;
             distribution.sort_by(f64::total_cmp);
-            Interval {
+            result.push(Interval {
                 lower: quantile(&distribution, alpha / 2.0),
                 upper: quantile(&distribution, 1.0 - alpha / 2.0),
                 nominalConfidence: 1.0 - alpha,
                 degenerate: distribution.first() == distribution.last(),
-            }
-        })
-        .collect()
+            });
+        }
+    }
+    check()?;
+    Ok(result)
 }
+
+#[cfg(test)]
+mod tests;
