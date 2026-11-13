@@ -4,8 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const FINAL_HEADROOM_MS: u64 = 19_000;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+pub mod recording;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plan {
     pub adapterGuid: Uuid,
     pub targets: Vec<routing::Address>,
@@ -40,7 +42,7 @@ impl Plan {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StopReason {
     Cancelled,
@@ -50,8 +52,8 @@ pub enum StopReason {
     Failed,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Partial {
     pub before: Option<policy::Capture>,
     pub routesBefore: Vec<routing::Capture>,

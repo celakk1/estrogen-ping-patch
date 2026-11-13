@@ -6,7 +6,7 @@ use crate::{
     routing,
 };
 use epp_core::packet_size::{Outcome, Report};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -14,8 +14,8 @@ const MAX_AGE_MS: u64 = 300_000;
 
 pub mod diagnosis;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Evidence {
     pub before: policy::Capture,
     pub routesBefore: Vec<routing::Capture>,
@@ -24,8 +24,8 @@ pub struct Evidence {
     pub routesAfter: Vec<routing::Capture>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Summary {
     pub candidateId: String,
     pub adapterGuid: Uuid,

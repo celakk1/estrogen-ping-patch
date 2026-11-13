@@ -2,19 +2,19 @@ use super::*;
 use epp_core::icmp::{EchoOutcome, EchoStatus};
 use epp_core::packet_size::Probe;
 
-struct Fixture {
+pub(super) struct Fixture {
     policy: policy::Capture,
     routes: Vec<routing::Capture>,
-    cutoff: u32,
+    pub(super) cutoff: u32,
     policies: usize,
     routeCalls: usize,
-    probes: usize,
+    pub(super) probes: usize,
     refuseFinal: bool,
     driftFinal: bool,
     staleBefore: bool,
 }
 
-fn fixture() -> (Plan, Fixture) {
+pub(super) fn fixture() -> (Plan, Fixture) {
     let (_, _, _, _, policy, routes) = crate::experiment::baseline::tests::evidence();
     let targets = routes
         .iter()

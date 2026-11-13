@@ -95,7 +95,7 @@ pub enum Outcome {
     Unsupported,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Sample {
     pub sequence: usize,
@@ -106,7 +106,7 @@ pub struct Sample {
     pub echo: EchoOutcome,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Report {
     pub schemaVersion: u32,
