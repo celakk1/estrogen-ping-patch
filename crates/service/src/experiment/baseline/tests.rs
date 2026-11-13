@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub(crate) struct Database {
     directory: PathBuf,
 }
+
 impl Database {
     pub(crate) fn new() -> Self {
         let directory = std::env::temp_dir().join(format!("epp-bound-baseline-{}", Uuid::new_v4()));
@@ -210,6 +211,31 @@ fn plan(scope: &Scope) -> Plan {
             providers,
         }),
     }
+}
+
+#[test]
+fn downloadProfileCannotStartEchoOnlyOptimizationCollection() {
+    use epp_core::config::Profile;
+    let (template, mut config, endpoints, selections, _, _) = evidence();
+    for profile in [Profile::Latency, Profile::Balanced] {
+        config.profile = profile;
+        Scope::validateInput(&template, &config, &endpoints, &selections).unwrap();
+    }
+    config.profile = Profile::Download;
+    let error = Scope::capture(
+        template,
+        config,
+        endpoints,
+        selections,
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("Download profile requires throughput collection")
+    );
 }
 
 #[test]

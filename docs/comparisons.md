@@ -55,6 +55,22 @@ The extra statistic selections change the cohort hash. Existing selections retai
 
 The adapter is not a settings backup or authorization source. The optional [service load collector](repeated-trials.md#adapter-bound-load-collector) now derives local sources from selected routes and requires bracketing native/policy evidence, frozen traffic declarations, exact checkpoint identity, and durable raw/receipt readback. Production service-protected storage/session integration must still establish provider eligibility, complete profile guards, recovery, and independent confirmation before an automatic decision. Caller-edited desktop history or supplied hashes do not establish that trust. Production loaded execution and automatic retention remain unfinished.
 
+## Profile objective admission
+
+Load conversion and service load-plan binding now enforce the selected profile's primary objective family. The profile is part of the frozen raw configuration and comparison cohort. Changing a metric's role cannot make an incompatible objective eligible.
+
+| Profile | Eligible objectives | Other selected measurements |
+| --- | --- | --- |
+| Latency | Median/p95/p99 RTT, IQR, successive RTT variation | Throughput and failure rates remain guards |
+| Balanced | RTT/variation, download/upload throughput | Failure rates remain guards |
+| Download | Download/upload throughput | RTT/variation and failure rates remain guards |
+
+At least one objective and one guard remain mandatory. An objective outside the permitted family rejects the plan even when another eligible objective is present. This prevents a throughput-only gain from promoting a Latency trial or a latency-only gain from promoting a Download trial. Every metric still has its own explicit practical-improvement, maximum-regression, and baseline-drift limits; objective metrics retain their regression checks. No universal score or new percentage weights are introduced.
+
+The optional service's echo-only trial collector additionally refuses the Download profile before native inspection, because it cannot measure a transfer objective. Ordinary desktop connection tests and the general read-only baseline adapter remain available for diagnostics.
+
+These are objective-family checks, not complete profile safety admission. They do not require every necessary provider/endpoint/phase metric, sufficient tail sampling, simultaneous load, sustained transfer behavior, retransmission or CPU evidence, or independently calibrated confirmation. The current sixteen-metric limit cannot express every multi-provider profile measurement in one plan. Missing coverage must be resolved before production optimization can be enabled. Existing raw reports remain readable; conversion now refuses profile-incompatible objective selections. No setting, grant, or retention authority is added.
+
 ## Validation
 
 Seventeen focused tests cover paired-block resampling, an exact binomial fixture for interval bounds, opposite-metric index pairing, reproducibility and evidence round trips, insufficient sessions, hard regressions despite a better average, complete-comparison drift refusal, uncertainty/degeneracy, timestamp precision, input bounds, and context/cohort mismatch. A targeted failing test reproduced false promotion when relative-threshold uncertainty was ignored; it passed after practical and non-regression margins were resampled together. Baseline tests recalculate deliberately false saved summaries, reject inconsistent or reordered raw evidence and recorded route failures, preserve ICMP/DNS outcome semantics, and convert actual loopback TCP measurements after SQLite persistence. The loopback test verifies the adapter execution path, not internet performance or optimization efficacy.

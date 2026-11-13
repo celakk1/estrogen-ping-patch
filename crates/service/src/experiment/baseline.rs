@@ -55,6 +55,9 @@ impl Scope {
         template.validate()?;
         config.validate()?;
         benchmark::validateEndpoints(endpoints)?;
+        if config.profile == epp_core::config::Profile::Download {
+            return Err("The Download profile requires throughput collection; echo-only trials cannot measure its objective".into());
+        }
         let lease = template.leaseExpiresAtUnixMs - template.createdAtUnixMs;
         let worstCase = u64::from(config.sampleCount)
             .checked_mul(endpoints.len() as u64)

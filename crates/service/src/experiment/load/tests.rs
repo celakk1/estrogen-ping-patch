@@ -621,6 +621,56 @@ fn loadEvidenceOutsideItsIssuedCheckpointLeaseCannotProduceACandidateReceipt() {
 }
 
 #[test]
+fn profileObjectiveMismatchIsRefusedBeforeRecordingOrTrialBinding() {
+    use epp_core::config::Profile;
+    for profile in [Profile::Latency, Profile::Balanced, Profile::Download] {
+        for objective in 0..3 {
+            let (mut scope, _, _) = fixture();
+            scope.config.profile = profile;
+            let peers = scope
+                .bindings
+                .transfers
+                .iter()
+                .map(|binding| binding.peer)
+                .collect();
+            let scope = Scope::fromAdapter(
+                scope.adapter,
+                scope.config,
+                scope.sessionPlan,
+                peers,
+                scope.selections,
+            )
+            .unwrap();
+            let mut plan = plan(&scope);
+            for rule in &mut plan.comparison.metrics {
+                rule.role = Role::Guard;
+            }
+            if objective != 1 {
+                plan.comparison.metrics[2].role = Role::Objective;
+            }
+            if objective != 0 {
+                plan.comparison.metrics[0].role = Role::Objective;
+            }
+            let storage = Database::new();
+            let mut database = storage.open();
+            let result = scope.bind(&mut database, plan);
+            let expected = match profile {
+                Profile::Latency => objective == 0,
+                Profile::Balanced => true,
+                Profile::Download => objective == 1,
+            };
+            assert_eq!(result.is_ok(), expected, "{profile:?}, {objective}");
+            if let Err(error) = &result {
+                assert!(error.to_string().contains("safety guard"));
+            }
+            drop(result);
+            let initialized: u32 = database.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('adapter_load_measurements','adapter_load_recordings')", [], |row| row.get(0)).unwrap();
+            assert_eq!(initialized, if expected { 2 } else { 0 });
+        }
+    }
+}
+
+#[test]
 fn medianAndP99ReceiptsPreserveNativeResolutionAndRawValues() {
     for tail in [false, true] {
         for tooPrecise in [false, true] {

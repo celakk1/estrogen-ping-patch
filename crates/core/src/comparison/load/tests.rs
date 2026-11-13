@@ -242,6 +242,86 @@ fn convert(run: &SessionRun, selections: &[Selection], plan: &Plan) -> AppResult
 }
 
 #[test]
+fn primaryObjectivesFollowTheFrozenProfileWithoutRemovingSafetyRules() {
+    for profile in [Profile::Latency, Profile::Balanced, Profile::Download] {
+        for objective in 0..4 {
+            let (mut run, selections, mut plan) = fixture();
+            run.config.profile = profile;
+            plan.cohortSha256 = cohortSha256(&run, &selections).unwrap();
+            for rule in &mut plan.metrics {
+                rule.role = Role::Guard;
+            }
+            match objective {
+                0 => plan.metrics[2].role = Role::Objective,
+                1 => plan.metrics[0].role = Role::Objective,
+                2 => {
+                    plan.metrics[0].role = Role::Objective;
+                    plan.metrics[2].role = Role::Objective;
+                }
+                _ => plan.metrics[3].role = Role::Objective,
+            }
+            let expected = match profile {
+                Profile::Latency => objective == 0,
+                Profile::Balanced => objective != 3,
+                Profile::Download => objective == 1,
+            };
+            assert_eq!(
+                validateProfileObjectives(profile, &selections, &plan).is_ok(),
+                expected,
+                "{profile:?}, {objective}"
+            );
+            assert_eq!(
+                convert(&run, &selections, &plan).is_ok(),
+                expected,
+                "{profile:?}, {objective}"
+            );
+        }
+    }
+}
+
+#[test]
+fn latencyObjectiveKindsAreAcceptedForLatencyAndGuardedForDownload() {
+    for statistic in [
+        Statistic::MedianMs {
+            phase: Phase::Download,
+            endpointId: "endpoint-0".into(),
+        },
+        Statistic::P95Ms {
+            phase: Phase::Download,
+            endpointId: "endpoint-0".into(),
+        },
+        Statistic::P99Ms {
+            phase: Phase::Download,
+            endpointId: "endpoint-0".into(),
+        },
+        Statistic::IqrMs {
+            phase: Phase::Download,
+            endpointId: "endpoint-0".into(),
+        },
+        Statistic::SuccessiveVariationMs {
+            phase: Phase::Download,
+            endpointId: "endpoint-0".into(),
+        },
+    ] {
+        let (run, mut selections, mut plan) = fixture();
+        selections[2].statistic = statistic;
+        plan.cohortSha256 = cohortSha256(&run, &selections).unwrap();
+        assert!(validateProfileObjectives(Profile::Latency, &selections, &plan).is_ok());
+        assert!(validateProfileObjectives(Profile::Balanced, &selections, &plan).is_ok());
+        assert!(validateProfileObjectives(Profile::Download, &selections, &plan).is_err());
+        plan.metrics[2].role = Role::Guard;
+        plan.metrics[0].role = Role::Objective;
+        assert!(validateProfileObjectives(Profile::Download, &selections, &plan).is_ok());
+        plan.metrics[0].role = Role::Guard;
+        assert!(validateProfileObjectives(Profile::Download, &selections, &plan).is_err());
+    }
+    let (_, selections, mut plan) = fixture();
+    assert!(validateProfileObjectives(Profile::Balanced, &selections[..3], &plan).is_err());
+    plan.metrics[2].id = "changed-order".into();
+    assert!(validateProfileObjectives(Profile::Balanced, &selections, &plan).is_err());
+}
+
+#[test]
 fn loadValuesAreRecomputedFromRawStreamsAndQualifyingEchoes() {
     let (run, selections, plan) = fixture();
     let session = convert(&run, &selections, &plan).unwrap();

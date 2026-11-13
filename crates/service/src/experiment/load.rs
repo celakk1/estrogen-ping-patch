@@ -209,9 +209,11 @@ impl Scope {
 
     pub fn bind(self, database: &mut Connection, plan: Plan) -> ServiceResult<Collector<'_>> {
         measurement::validatePlan(&plan, &self.hashes, &self.costs)?;
-        if plan.comparison.metrics.len() != self.selections.len() {
-            return Err("Load metric rules differ from their frozen selections".into());
-        }
+        comparisonLoad::validateProfileObjectives(
+            self.config.profile,
+            &self.selections,
+            &plan.comparison,
+        )?;
         for (rule, selection) in plan.comparison.metrics.iter().zip(&self.selections) {
             let (unit, direction, resolution, guard) = match selection.statistic {
                 comparisonLoad::Statistic::GoodputMbps { .. } => (

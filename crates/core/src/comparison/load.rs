@@ -6,6 +6,7 @@ use super::{
 use crate::{
     AppResult,
     benchmark::summarizeEndpoint,
+    config::Profile,
     transfer::{
         self, TransferStatus,
         session::{LatencySample, Phase, SessionRun},
@@ -33,6 +34,46 @@ pub struct Selection {
     pub metricId: String,
     pub providerIndex: usize,
     pub statistic: Statistic,
+}
+
+pub fn validateProfileObjectives(
+    profile: Profile,
+    selections: &[Selection],
+    plan: &Plan,
+) -> AppResult<()> {
+    plan.validate()?;
+    if selections.len() != plan.metrics.len() {
+        return Err("Profile objectives require the complete frozen metric selections".into());
+    }
+    for (selection, rule) in selections.iter().zip(&plan.metrics) {
+        if selection.metricId != rule.id {
+            return Err("Profile objective order differs from its frozen metric rules".into());
+        }
+        if rule.role != Role::Objective {
+            continue;
+        }
+        let throughput = match &selection.statistic {
+            Statistic::GoodputMbps { .. } => true,
+            Statistic::MedianMs { .. }
+            | Statistic::P95Ms { .. }
+            | Statistic::P99Ms { .. }
+            | Statistic::IqrMs { .. }
+            | Statistic::SuccessiveVariationMs { .. } => false,
+            Statistic::FailurePercent { .. } => {
+                return Err("Failure rates must remain safety guards in every profile".into());
+            }
+        };
+        match profile {
+            Profile::Latency if throughput => {
+                return Err("Latency trials must score response time or variation; keep throughput as a safety guard".into());
+            }
+            Profile::Download if !throughput => {
+                return Err("Download trials must score transfer throughput; keep response time and variation as safety guards".into());
+            }
+            Profile::Latency | Profile::Balanced | Profile::Download => {}
+        }
+    }
+    Ok(())
 }
 
 pub fn cohortSha256(run: &SessionRun, selections: &[Selection]) -> AppResult<String> {
@@ -339,7 +380,7 @@ pub fn fromRun(
     plan: &Plan,
     context: Context<'_>,
 ) -> AppResult<Session> {
-    plan.validate()?;
+    validateProfileObjectives(run.config.profile, selections, plan)?;
     let cohort = cohortSha256(run, selections)?;
     let start = timestamp(&run.startedAt)?;
     let finish = timestamp(&run.finishedAt)?;
