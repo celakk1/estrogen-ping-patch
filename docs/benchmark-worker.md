@@ -49,6 +49,14 @@ When an isolated phase returns an error to a living collector, its optional `int
 
 The existing raw-session save/history path preserves this evidence across database close/reopen. The optional collector now additionally commits a [progress journal](load-recordings.md) before traffic and at each session progress callback. An owner crash preserves the committed prefix, not observations between callbacks or an unsaved final report. Interrupted recordings cannot become comparison evidence or resume an experiment.
 
+## Parent-owned process CPU evidence
+
+Successful isolated transfers additionally carry optional `workerCpu` evidence. After zero exit and verified job quiescence, the parent reads creation, exit, kernel, and user times from its existing owned process handle. Child-supplied CPU fields are refused before the terminal result can be accepted. There is no caller-selected PID or extra handle-opening authority. The parent attaches its evidence only after terminal framing and shared-counter agreement succeed. A failed query records an explicit unavailable reason rather than zero; failed worker/protocol/consumer operations still return errors.
+
+The schema-one counters are canonical unsigned decimal strings, preserving exact 64-bit values in JSON. [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) reports creation/exit timestamps and summed per-thread kernel/user CPU amounts in 100-nanosecond units. CPU amounts can exceed elapsed time across cores. Those units do not establish effective measurement precision, and a measured zero remains distinct from unavailable data.
+
+This accounts for the complete transfer process lifetime, including startup, TLS, framing, and teardown. It excludes parent/service work, other processes, whole-system utilization, and separate driver interrupt/DPC accounting. The raw session/history path preserves measured and unavailable evidence; direct and older transfers omit it. Existing HTTP execution cohorts are unchanged because acquisition occurs after shutdown. No CPU comparison selector, resource guard, calibrated threshold, or optimization admission is enabled. A future guard must require trusted native capture and explicitly bind its measurement policy; raw caller-supplied JSON is not authority.
+
 ## TLS backend and manual smoke
 
 The initial actual HTTPS check failed before payload reception with Schannel `SEC_E_NO_CREDENTIALS` under the restricted token. A source-bound control request succeeded. The installed native TLS library already sets `SCH_CRED_NO_DEFAULT_CREDS`; removing the token restrictions or restoring the unsafe logon SID was not an acceptable fix.

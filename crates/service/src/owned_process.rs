@@ -521,12 +521,72 @@ impl CommandJob {
 
     // streamed bytes remain provisional until exit and verified cleanup succeed.
     pub(crate) fn stream(
+        self,
+        limit: usize,
+        check: impl FnMut() -> ServiceResult<()>,
+        onChunk: impl FnMut(&[u8]) -> ServiceResult<()>,
+    ) -> ServiceResult<()> {
+        self.streamFinishing(limit, check, onChunk, |_| Ok(()))
+    }
+
+    #[cfg(feature = "automatic-trials")]
+    pub(crate) fn streamWithCpu(
+        self,
+        limit: usize,
+        check: impl FnMut() -> ServiceResult<()>,
+        onChunk: impl FnMut(&[u8]) -> ServiceResult<()>,
+    ) -> ServiceResult<epp_core::transfer::WorkerCpuEvidence> {
+        self.streamFinishing(limit, check, onChunk, |job| {
+            let captured = (|| -> ServiceResult<epp_core::transfer::WorkerCpu> {
+                let mut creation = FILETIME::default();
+                let mut exit = FILETIME::default();
+                let mut kernel = FILETIME::default();
+                let mut user = FILETIME::default();
+                succeeded("Read completed worker CPU time", unsafe {
+                    GetProcessTimes(
+                        job.process.as_raw_handle(),
+                        &mut creation,
+                        &mut exit,
+                        &mut kernel,
+                        &mut user,
+                    )
+                })?;
+                let value = |time: FILETIME| {
+                    ((u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime))
+                        .to_string()
+                };
+                let usage = epp_core::transfer::WorkerCpu {
+                    schemaVersion: 1,
+                    creationTime100ns: value(creation),
+                    exitTime100ns: value(exit),
+                    kernelTime100ns: value(kernel),
+                    userTime100ns: value(user),
+                };
+                usage.validate()?;
+                Ok(usage)
+            })();
+            Ok(match captured {
+                Ok(usage) => epp_core::transfer::WorkerCpuEvidence::Measured { usage },
+                Err(error) => epp_core::transfer::WorkerCpuEvidence::Unavailable {
+                    reason: error
+                        .to_string()
+                        .chars()
+                        .take(512)
+                        .map(|value| if value.is_control() { ' ' } else { value })
+                        .collect(),
+                },
+            })
+        })
+    }
+
+    fn streamFinishing<T>(
         mut self,
         limit: usize,
         mut check: impl FnMut() -> ServiceResult<()>,
         mut onChunk: impl FnMut(&[u8]) -> ServiceResult<()>,
-    ) -> ServiceResult<()> {
-        let outcome = (|| {
+        onFinished: impl FnOnce(&Self) -> ServiceResult<T>,
+    ) -> ServiceResult<T> {
+        let outcome: ServiceResult<()> = (|| {
             if self.role != ProcessRole::ReadOnly || limit == 0 || limit > 4 * 1024 * 1024 {
                 return Err("Owned streaming reader requires a read-only process and a byte allowance between one and four MiB".into());
             }
@@ -573,7 +633,8 @@ impl CommandJob {
             }
         })();
         self.terminate()?;
-        outcome
+        outcome?;
+        onFinished(&self)
     }
 
     fn resume(&self, context: &str) -> ServiceResult<()> {

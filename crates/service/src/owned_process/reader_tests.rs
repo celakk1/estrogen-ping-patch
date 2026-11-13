@@ -40,6 +40,129 @@ fn within(deadline: Instant) -> ServiceResult<()> {
 
 #[test]
 #[ignore]
+#[cfg(feature = "automatic-trials")]
+fn consumesCpu() {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut value = 1u64;
+    loop {
+        for index in 0..100_000u64 {
+            value = std::hint::black_box(value.wrapping_mul(31).wrapping_add(index));
+        }
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        assert_ne!(
+            unsafe {
+                GetProcessTimes(
+                    windows_sys::Win32::System::Threading::GetCurrentProcess(),
+                    &mut creation,
+                    &mut exit,
+                    &mut kernel,
+                    &mut user,
+                )
+            },
+            0
+        );
+        let counter =
+            |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+        if counter(kernel) + counter(user) >= 1_000_000 {
+            break;
+        }
+        within(deadline).unwrap();
+    }
+}
+
+#[test]
+#[cfg(feature = "automatic-trials")]
+fn cpuEvidenceComesFromTheExitedOwnedProcess() {
+    let child = fixture("consumesCpu");
+    let process = child.process.try_clone().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let captured = child
+        .streamWithCpu(8192, || within(deadline), |_| Ok(()))
+        .unwrap();
+    let epp_core::transfer::WorkerCpuEvidence::Measured { usage } = captured else {
+        panic!("native process CPU capture was unavailable");
+    };
+    usage.validate().unwrap();
+    assert!(
+        usage.kernelTime100ns.parse::<u64>().unwrap() + usage.userTime100ns.parse::<u64>().unwrap()
+            >= 1_000_000
+    );
+    assert_eq!(
+        unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+        WAIT_OBJECT_0
+    );
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    assert_ne!(
+        unsafe {
+            GetProcessTimes(
+                process.as_raw_handle(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        },
+        0
+    );
+    for (reported, actual) in [
+        (usage.creationTime100ns, creation),
+        (usage.exitTime100ns, exit),
+        (usage.kernelTime100ns, kernel),
+        (usage.userTime100ns, user),
+    ] {
+        assert_eq!(
+            reported,
+            ((u64::from(actual.dwHighDateTime) << 32) | u64::from(actual.dwLowDateTime))
+                .to_string()
+        );
+    }
+}
+
+#[test]
+fn completionCannotRunAfterARefusedOrFailedWorker() {
+    for (name, refuse) in [("writesOutput", true), ("exitsWithFailure", false)] {
+        let child = fixture(name);
+        let process = child.process.try_clone().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut finished = false;
+        let error = child
+            .streamFinishing(
+                8192,
+                || within(deadline),
+                |_| {
+                    if refuse {
+                        Err("test consumer refusal".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_| {
+                    finished = true;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+        assert!(!finished);
+        assert!(error.to_string().contains(if refuse {
+            "test consumer refusal"
+        } else {
+            "exit code 23"
+        }));
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+            WAIT_OBJECT_0
+        );
+    }
+}
+
+#[test]
+#[ignore]
 fn writesOutput() {
     std::io::stdout().write_all(&vec![b'Q'; 6000]).unwrap();
     println!("bounded-worker-output");

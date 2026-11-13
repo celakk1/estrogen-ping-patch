@@ -80,6 +80,7 @@ fn fixture() -> (SessionRun, Vec<Selection>, Plan) {
             acceptedPayloadBytes: 8192,
             applicationGoodputMbps: Some(999_999.0),
             sourceBinding: Some(binding),
+            workerCpu: None,
             streams: (0..2)
                 .map(|ordinal| StreamResult {
                     ordinal,
@@ -749,6 +750,38 @@ fn partialMismatchedAndCorruptStreamEvidenceIsNeverAccepted() {
             "failure {failure}"
         );
     }
+}
+
+#[test]
+fn optionalCpuAccountingDoesNotBecomeAComparisonMetric() {
+    use crate::transfer::{WorkerCpu, WorkerCpuEvidence};
+    let (mut run, selections, plan) = fixture();
+    let original = serde_json::to_value(convert(&run, &selections, &plan).unwrap()).unwrap();
+    for evidence in [
+        WorkerCpuEvidence::Measured {
+            usage: WorkerCpu {
+                schemaVersion: 1,
+                creationTime100ns: "134000000000000001".into(),
+                exitTime100ns: "134000000010000001".into(),
+                kernelTime100ns: "0".into(),
+                userTime100ns: "0".into(),
+            },
+        },
+        WorkerCpuEvidence::Unavailable {
+            reason: "fixture query unavailable".into(),
+        },
+    ] {
+        run.transfers[0].result.as_mut().unwrap().workerCpu = Some(evidence);
+        assert_eq!(cohortSha256(&run, &selections).unwrap(), plan.cohortSha256);
+        assert_eq!(
+            serde_json::to_value(convert(&run, &selections, &plan).unwrap()).unwrap(),
+            original
+        );
+    }
+    run.transfers[0].result.as_mut().unwrap().workerCpu = Some(WorkerCpuEvidence::Unavailable {
+        reason: String::new(),
+    });
+    assert!(convert(&run, &selections, &plan).is_err());
 }
 
 #[test]

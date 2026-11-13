@@ -258,13 +258,15 @@ fn measureUsingStorage(
         Some(&progressHandle),
     )?;
     let mut decoder = protocol::Decoder::new(&input);
-    child.stream(protocol::STREAM_BYTES, check, |chunk| {
+    let cpu = child.streamWithCpu(protocol::STREAM_BYTES, check, |chunk| {
         decoder.consume(chunk, &mut onProgress)
     })?;
-    let result = decoder.finish()?;
+    let mut result = decoder.finish()?;
     if shared.read()? != Counters::fromResult(&result) {
         return Err("Benchmark worker result disagrees with its shared counters".into());
     }
+    cpu.validate()?;
+    result.workerCpu = Some(cpu);
     Ok(result)
 }
 
@@ -285,6 +287,7 @@ fn parseResult(input: &Request, output: &[u8]) -> ServiceResult<TransferResult> 
 fn validateResult(input: &Request, response: &Response) -> ServiceResult<()> {
     let result = &response.result;
     if response.schemaVersion != SCHEMA_VERSION
+        || result.workerCpu.is_some()
         || serde_json::to_value(&result.plan)? != serde_json::to_value(&input.plan)?
         || serde_json::to_value(&result.provider)?
             != serde_json::to_value(input.plan.provider.info()?)?

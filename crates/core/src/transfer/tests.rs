@@ -289,6 +289,13 @@ fn parallelDownloadsShareTheTotalBudgetAndRetainRealPeerAddresses() {
     }));
     let saved: TransferResult =
         serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+    assert!(saved.workerCpu.is_none());
+    assert!(
+        serde_json::to_value(&result)
+            .unwrap()
+            .get("workerCpu")
+            .is_none()
+    );
     assert_eq!(
         serde_json::to_value(saved).unwrap(),
         serde_json::to_value(result).unwrap()
@@ -490,6 +497,25 @@ fn sessionsKeepProviderCohortsAndConcurrentRequestLatencySeparate() {
         && sample.inFlightRequestsAtEnd > 0));
     assert!(progress.iter().any(|event| event.phase == Phase::Recovery));
     let mut database = crate::storage::openDatabase(std::path::Path::new(":memory:")).unwrap();
+    for (index, transfer) in result.transfers.iter_mut().enumerate() {
+        let evidence = if index % 2 == 0 {
+            WorkerCpuEvidence::Measured {
+                usage: WorkerCpu {
+                    schemaVersion: 1,
+                    creationTime100ns: "134000000000000001".into(),
+                    exitTime100ns: "134000000010000001".into(),
+                    kernelTime100ns: "0".into(),
+                    userTime100ns: "125000".into(),
+                },
+            }
+        } else {
+            WorkerCpuEvidence::Unavailable {
+                reason: "fixture query unavailable".into(),
+            }
+        };
+        evidence.validate().unwrap();
+        transfer.result.as_mut().unwrap().workerCpu = Some(evidence);
+    }
     crate::storage::saveLoadSession(&mut database, &mut result).unwrap();
     let history = crate::storage::loadSessionHistory(&database, 10).unwrap();
     assert_eq!(

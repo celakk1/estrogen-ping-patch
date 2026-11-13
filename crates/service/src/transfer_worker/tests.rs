@@ -39,6 +39,7 @@ pub(super) fn response(input: &Request) -> Response {
             acceptedPayloadBytes: 4097,
             applicationGoodputMbps: Some(4097.0 * 8.0 / 1_000_000.0),
             sourceBinding: Some(input.binding),
+            workerCpu: None,
             streams: (0..2)
                 .map(|ordinal| {
                     let requestedBytes = if ordinal == 0 { 2049 } else { 2048 };
@@ -172,6 +173,31 @@ fn rejectsUnknownMissingTrailingAndInvalidResultData() {
     assert!(parseResult(&request, &vec![b' '; RESULT_BYTES + 1]).is_err());
 }
 
+#[test]
+fn childCannotSupplyMeasuredOrUnavailableCpuEvidence() {
+    use epp_core::transfer::{WorkerCpu, WorkerCpuEvidence};
+    let request = input("127.0.0.1:8080".parse().unwrap(), Direction::Download);
+    for evidence in [
+        WorkerCpuEvidence::Measured {
+            usage: WorkerCpu {
+                schemaVersion: 1,
+                creationTime100ns: "134000000000000001".into(),
+                exitTime100ns: "134000000000000002".into(),
+                kernelTime100ns: "0".into(),
+                userTime100ns: "0".into(),
+            },
+        },
+        WorkerCpuEvidence::Unavailable {
+            reason: "child cannot measure this".into(),
+        },
+    ] {
+        evidence.validate().unwrap();
+        let mut forged = response(&request);
+        forged.result.workerCpu = Some(evidence);
+        assert!(parseResult(&request, &serde_json::to_vec(&forged).unwrap()).is_err());
+    }
+}
+
 struct Image(PathBuf);
 
 impl Image {
@@ -224,6 +250,9 @@ impl Drop for Image {
             "interrupted.sqlite",
             "interrupted.sqlite-wal",
             "interrupted.sqlite-shm",
+            "worker-cpu.sqlite",
+            "worker-cpu.sqlite-wal",
+            "worker-cpu.sqlite-shm",
         ] {
             let _ = std::fs::remove_file(self.0.parent().unwrap().join(name));
         }
@@ -786,7 +815,7 @@ fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
         image: Some(image.0.clone()),
     };
     let mut released = [false; 2];
-    let run = session::runSourceBoundSessionWithRunner(
+    let mut run = session::runSourceBoundSessionWithRunner(
         Config::default(),
         SessionPlan {
             providers: vec![request.plan.provider],
@@ -852,9 +881,27 @@ fn isolatedWorkerSessionReadsLiveCountersAtProbeBoundaries() {
             && sample.inFlightRequestsAtStart > 0
             && sample.inFlightRequestsAtEnd > 0));
     }
+    for transfer in &run.transfers {
+        let Some(epp_core::transfer::WorkerCpuEvidence::Measured { usage }) =
+            &transfer.result.as_ref().unwrap().workerCpu
+        else {
+            panic!("completed owned worker is missing native CPU evidence");
+        };
+        usage.validate().unwrap();
+    }
     let restored: session::SessionRun =
         serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
     assert_eq!(restored.transferExecution, run.transferExecution);
+    let databasePath = image.0.parent().unwrap().join("worker-cpu.sqlite");
+    let mut database = epp_core::storage::openDatabase(&databasePath).unwrap();
+    epp_core::storage::saveLoadSession(&mut database, &mut run).unwrap();
+    drop(database);
+    let database = epp_core::storage::openDatabase(&databasePath).unwrap();
+    let history = epp_core::storage::loadSessionHistory(&database, 1).unwrap();
+    assert_eq!(
+        serde_json::to_value(&history[0]).unwrap(),
+        serde_json::to_value(&run).unwrap()
+    );
 }
 
 #[test]
@@ -957,6 +1004,11 @@ fn isolatedWorkerTransfersOverIpv4AndIpv6WithoutAServiceInstall() {
             .unwrap();
             assert_eq!(result.status, TransferStatus::Completed);
             assert_eq!(result.acceptedPayloadBytes, 4097);
+            let Some(epp_core::transfer::WorkerCpuEvidence::Measured { usage }) = &result.workerCpu
+            else {
+                panic!("completed owned worker is missing native CPU evidence");
+            };
+            usage.validate().unwrap();
             assert_eq!(server.join().unwrap(), 4097);
         }
     }

@@ -228,6 +228,7 @@ fn wideRaw(
                 acceptedPayloadBytes: 8192,
                 applicationGoodputMbps: None,
                 sourceBinding: Some(binding),
+                workerCpu: None,
                 streams: Vec::new(),
             };
             for ordinal in 0..2 {
@@ -449,6 +450,7 @@ fn savedRaw(
                 acceptedPayloadBytes: 8192,
                 applicationGoodputMbps: None,
                 sourceBinding: Some(binding),
+                workerCpu: None,
                 streams: (0..2)
                     .map(|ordinal| StreamResult {
                         ordinal,

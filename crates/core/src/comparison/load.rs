@@ -275,6 +275,9 @@ fn validateTransfers(run: &SessionRun, start: u64, finish: u64) -> AppResult<Vec
             .result
             .as_ref()
             .ok_or("Missing completed transfer evidence")?;
+        if let Some(cpu) = &result.workerCpu {
+            cpu.validate()?;
+        }
         let expectedBytes = if index % 2 == 0 {
             run.plan.downloadBytesPerProvider
         } else {

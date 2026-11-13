@@ -409,6 +409,7 @@ pub(super) async fn measure(
         applicationGoodputMbps,
         streams,
         sourceBinding: binding,
+        workerCpu: None,
     })
 }
 

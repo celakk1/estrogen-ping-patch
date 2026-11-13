@@ -1,9 +1,11 @@
 mod http;
 mod provider;
+mod resources;
 pub mod session;
 
 use crate::AppResult;
 pub use provider::{Provider, ProviderInfo};
+pub use resources::{WorkerCpu, WorkerCpuEvidence};
 use serde::{Deserialize, Serialize};
 use std::{
     net::{IpAddr, SocketAddr},
@@ -117,6 +119,8 @@ pub struct TransferResult {
     pub streams: Vec<StreamResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sourceBinding: Option<SourceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workerCpu: Option<WorkerCpuEvidence>,
 }
 
 #[derive(Default)]
