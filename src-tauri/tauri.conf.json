@@ -32,7 +32,7 @@
     "shortDescription": "Measured, reversible network experimentation",
     "longDescription": "A local Windows network diagnostics and controlled experimentation application. No paid AI service is required.",
     "icon": ["icons/icon.ico"],
-    "resources": { "../docs/iconoir-license.txt": "iconoir-license.txt" },
+    "resources": { "../assets/iconoir-license.txt": "iconoir-license.txt" },
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": {

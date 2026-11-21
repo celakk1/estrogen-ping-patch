@@ -24,7 +24,7 @@ function invokeChecked {
 function testToolchain {
     foreach ($tool in @('rustc.exe', 'cargo.exe', 'node.exe', 'npm.cmd')) {
         if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
-            throw "Missing $tool. Install Rust from https://rustup.rs and Node.js 24 LTS from https://nodejs.org, then reopen this launcher. See docs/setup.md."
+            throw "Missing $tool. Install Rust from https://rustup.rs and Node.js 24 LTS from https://nodejs.org, then reopen this launcher. See README.md."
         }
     }
     $nodeMajor = [int](& node.exe -p 'parseInt(process.versions.node)')
@@ -162,7 +162,7 @@ try {
 } catch {
     Write-Host ''
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Task '$task' failed. See docs/setup.md for recovery instructions. No launcher elevation is required."
+    Write-Host "Task '$task' failed. Review the error above and the setup steps in README.md. No launcher elevation is required."
     exit $script:failureCode
 } finally {
     if ($ownsMutex) { $workspaceMutex.ReleaseMutex() }

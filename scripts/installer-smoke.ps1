@@ -23,7 +23,7 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $installDirectory $resource) -PathType Leaf)) { throw "Installer omitted service resource: $resource" }
     }
     $sourceFiles = @{
-        'iconoir-license.txt' = (Join-Path $PSScriptRoot '..\docs\iconoir-license.txt')
+        'iconoir-license.txt' = (Join-Path $PSScriptRoot '..\assets\iconoir-license.txt')
         'service\epp-network-service.exe' = (Join-Path $PSScriptRoot '..\target\release\epp-network-service.exe')
         'service\manage-service.ps1' = (Join-Path $PSScriptRoot 'manage-service.ps1')
         'install-service.bat' = (Join-Path $PSScriptRoot '..\install-service.bat')

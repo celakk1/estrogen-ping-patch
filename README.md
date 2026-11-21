@@ -1,116 +1,89 @@
 # estrogen ping patch
 
-A local Windows network experimentation application built with Rust, Tauri 2, React, and TypeScript. Measure, experiment, validate, retain or revert. Lower ping is an experimental outcome, never a promise.
+**A Windows network benchmarking app and an MCP server for AI-assisted network tuning.**
 
-## Development status
+This is an unfinished MIT-licensed project. The desktop app can run network tests today. The Model Context Protocol (MCP) server can tell an AI client which operations the app permits. **Automatic optimization is still disabled.** Forks are welcome to finish and release it.
 
-This is an early development build. It provides read-only network discovery, bounded TCP connection, IPv4/IPv6 ICMP echo, and direct DNS A/AAAA baselines across multiple destinations, plus bounded HTTP download/upload sessions with concurrent latency and recovery probes. It includes cancellation, live progress, local SQLite history, JSON/HTML reports, local network settings snapshots with SHA-256-verified JSON exports, and a read-only MCP stdio interface. It preserves the existing network configuration. Automatic snapshot restoration is not implemented.
+![The Windows desktop app showing the three available network tests](assets/screenshots/network-tests.png)
 
-A separate Windows service provides authenticated local status reporting, with optional installation and management from **Safety & privacy**. It runs as LocalService, accepts no network setters, and is not needed for diagnostics or backups. Protected service-owned recovery journal storage verifies checkpoint integrity and detects incomplete work at startup. Disposable Windows CI passed storage permissions, simulated pending-checkpoint detection, corrupted-storage refusal, restart, and journal preservation across service removal/reinstallation. Production automatic changes and consent, physical-adapter recovery, broader provider support, scheduling, and optional inference providers remain under development. See [implementation plan](docs/development.md) and the [full specification](docs/specification.md).
+## What works today
 
-The service additionally implements [MTU preview and temporary approval records](docs/consent.md), with authenticated caller identity, asynchronous capture, cancellation, and revocation. Desktop command bindings exist, while the review screen and autonomous session integration remain unfinished. Every preview reports execution unavailable; recording permission does not change network settings or establish a restorable backup. Updated service binaries use pipe protocol four and require reinstalling an older preview service.
+| In the app | What it measures or saves |
+| --- | --- |
+| **Connection test** | Ping, TCP connection time, and DNS lookup time across selected destinations. |
+| **Speed test** | HTTP download and upload speeds and how response time changes while the connection is busy. Uses Cloudflare or a server you control. |
+| **Large packet check** | Tests whether a destination can receive larger IPv4 packets. A timeout alone is inconclusive. |
+| **History and reports** | Saves results locally and exports HTML or JSON. Network settings snapshots can be exported for inspection. |
 
-An isolated `native-recovery` build adds a separately selected LocalSystem recovery-only mode. It restores exact pending service-owned MTU originals at startup, without apply permission, the GUI, or internet access, and reports recovery progress through authenticated status. It cannot apply or retain a candidate. The normal packaged LocalService remains read-only. Installed recovery passed expired IPv4/IPv6 original restoration, automatic SCM crash restart, policy preservation, and completed-record exclusion on an owned hosted adapter; physical-adapter, client-OS, reboot, and performance validation remain unfinished. See [recovery-only service mode](docs/service.md#recovery-only-service-mode).
+The tests measure the Windows connection as a whole. Pick benchmark destinations that represent the routes you care about. The app needs no game selection or in-game telemetry. Results depend on the destinations and current network conditions.
 
-Backup exports additionally preserve native IPv4/IPv6 interface fields with GUID/LUID checks and OS/PnP-driver context. Missing context and persistent-store/restore limits remain explicit. These diagnostic snapshots do not enable automatic restoration or settings changes.
+<details>
+<summary>See example benchmark results</summary>
 
-New service snapshots also preserve fixed DNS/addressing registry markers as exact presence, type, and bytes. Unavailable originals block new native checkpoints, while MTU-only recovery preserves external origin changes and reports drift. This is additional [backup evidence](docs/backups.md#service-owned-registry-origin-evidence), not complete DNS/addressing restoration or an enabled production optimizer.
+![Connection test results and response time chart](assets/screenshots/connection-test.png)
 
-An isolated read-only service worker additionally captures eleven fixed interface policy fields from ActiveStore and PersistentStore, preserving null values and missing rows. Its parent enforces cancellation, output and time limits, and verified worker exit. New version-four checkpoints bind this evidence to the exact durable original and check policy before prepare, apply, and retain. MTU recovery runs before any final policy query; unavailable or changed policy produces an explicit incomplete-verification report. Its [coverage and blocking-call limits](docs/backups.md#read-only-ip-policy-worker) remain explicit; production consent, service mutation, and physical-adapter recovery integration are unfinished.
+![Speed test results showing download, upload, and response time under load](assets/screenshots/speed-test.png)
 
-The service journal separately records policy-verification receipts after MTU restoration. Missing or unsuccessful checks remain pending across restart and block another experiment; retrying that metadata check never replays a setting command. The journal's version-four migration preserves original checkpoint bytes and does not fabricate earlier policy verification.
+These results are from local loopback tests in an isolated app profile.
 
-The read-only service's attention count includes restored checkpoints awaiting final verification. These records keep the service at `recoveryRequired`; successful MTU readback alone does not make the service report ready.
+</details>
 
-The service recovery library now coordinates native-evidence MTU checkpoints, write intent, readback, and exact-value recovery through a typed backend contract. Simulated-adapter tests cover interrupted writes, authorization revocation, outside changes, and failed journal writes. The installed read-only service has no native setter/backend or recovery watchdog yet; these tests do not establish native adapter restoration.
+## Run on Windows
 
-A [service-owned experiment watchdog](docs/watchdog.md) now monitors temporary MTU trials in the disabled native lab. Missing heartbeats, deadlines, shutdown, revoked permission, and failed readback trigger exact-value recovery. Its expanded twenty-trial native matrix passed, including automatic SCM crash restart. The [temporary trial controller](docs/automatic-trials.md) runs measurements under that watchdog and verifies restoration before reporting completion; its native integration and final candidate-readback fix passed that matrix. A [durable repeated-trial runner](docs/repeated-trials.md) now brackets candidates with original-setting baselines, saves progress, rejects drift/regression, and blocks new work until interrupted recovery is verified. These components do not add write operations to the installed application service.
+Use Windows 10 or 11 x64 with Rust stable (MSVC), Node.js 24 LTS with npm 11 or 12, Visual Studio 2022 C++ Build Tools with the Windows SDK, and the Microsoft Edge WebView2 Runtime.
 
-A separate, disabled-by-default [native MTU lab](docs/native-mtu-lab.md) passed twenty owned-loopback trials on a disposable hosted Windows runner: normal apply/restore, deadline/heartbeat/shutdown recovery, automatic SCM crash restart, process termination after apply/restore, a crash after durable command registration before execution, revoked permission, and unavailable authorization storage, for IPv4 and IPv6. Exact original MTU, unrelated fields, persistent policy, and DNS origin values were verified afterward. The lab is excluded from ordinary launch/build/package workflows and does not enable optimization in the application.
+1. Clone or fork this repository.
+2. Double-click [setup.bat](setup.bat) to check the toolchain and install project dependencies.
+3. Double-click [launch.bat](launch.bat) and open **Network tests**.
 
-The lab's later repeated lifecycle fixture passed twelve actual temporary trials and thirty-six saved measurement sessions per family, with independently checked native receipts and restoration. Its full twenty-two-case matrix passed. The measurements use software loopback and do not measure the changed adapter's performance. Production consent, trusted traffic budgets/collection, recovery, and keep/revert integration remain unfinished.
+| Script | Use it to |
+| --- | --- |
+| [test.bat](test.bat) | Run the automated checks. |
+| [build.bat](build.bat) | Build the desktop executable at <code>target/release/estrogen-ping-patch.exe</code>. |
+| [package.bat](package.bat) | Build an unsigned installer under <code>target/release/bundle/nsis</code>. The installed app opens from the Start menu. |
+| [clean.bat](clean.bat) | Remove generated builds while preserving dependencies and local app data. |
 
-## Quick start
+If setup reports missing C++ components, select **Desktop development with C++** and a Windows SDK in Visual Studio Installer. Close the app and launcher before starting another project script. Set <code>EPP_NO_PAUSE=1</code> when running the scripts unattended. The optional Windows service is managed separately from **Safety & privacy**.
 
-Supported development platform: Windows 10/11 x64, Rust stable MSVC, Node.js 24 LTS with npm 11 or 12, Visual Studio 2022 C++ Build Tools with a Windows SDK, and Microsoft Edge WebView2 Runtime.
+### Test with a local server
 
-1. Clone this private repository into a local directory. Spaces in the path are supported.
-2. Double-click `setup.bat` once. It validates the toolchain, installs locked JavaScript dependencies, fetches Rust dependencies, checks TypeScript, and validates local storage and MCP initialization.
-3. Double-click `launch.bat` whenever you want to work on the application. It starts Vite and the Tauri desktop application, which owns the local application-service lifecycle. Close the GUI to stop it; Tauri stops its development server.
+Run <code>node scripts/benchmark-server.mjs</code>. In **Speed test → Advanced settings**, turn off Cloudflare and enter <code>http://127.0.0.1:8088/</code>. Use loopback latency targets to keep the test local.
 
-No manual terminal commands are needed for these normal workflows. If a system prerequisite is missing, the script provides the official installation link and required component. System prerequisite installers remain a separate, explicit step. The launchers never elevate themselves or change network settings.
+For a server you control, the [reference implementation](scripts/benchmark-server.mjs) shows the two endpoints. <code>GET /epp/v1/download?bytes=N</code> returns exactly N uncompressed synthetic bytes. <code>POST /epp/v1/upload</code> consumes the declared body and acknowledges its size in <code>X-Epp-Received-Bytes</code>. Both responses require <code>X-Epp-Benchmark-Protocol: 1</code>. Remote origins require HTTPS with valid certificates.
 
-| Script | Behavior | Output |
-| --- | --- | --- |
-| `setup.bat` | Validate prerequisites and install project dependencies | Local toolchain ready |
-| `launch.bat` | Preflight, Vite, Tauri development GUI | Development desktop window |
-| `test.bat` | TypeScript, frontend tests, Rust formatting/tests/Clippy, launcher tests | Automated verification |
-| `build.bat` | Build optimized desktop application | `target/release/estrogen-ping-patch.exe` |
-| `package.bat` | Build a per-user NSIS installer | `target/release/bundle/nsis/*-setup.exe` |
-| `clean.bat` | Remove allowlisted build artifacts | Preserves source, dependencies, application data |
+## Connect an AI client over MCP
 
-Scripts retain output for double-click users and return the failing command's exit code. Set `EPP_NO_PAUSE=1` for unattended execution; CI also skips pauses. Project dependencies are reinstalled only when missing, invalid, or inconsistent with the lockfile. Each checkout runs one script task at a time; close development mode before testing, building, packaging, or refreshing dependencies.
+Build the desktop executable, then add it to a client that supports local stdio MCP servers. In clients that use an <code>mcpServers</code> JSON object, replace the example path with the absolute path to your executable.
 
-The installed application launches from its Start menu shortcut without a terminal. Development scripts are not part of its runtime requirements. Installers are unsigned until a signing identity is configured; no release is published automatically.
+~~~json
+{
+  "mcpServers": {
+    "estrogen-ping-patch": {
+      "command": "C:/path/to/estrogen-ping-patch.exe",
+      "args": ["--mcp"]
+    }
+  }
+}
+~~~
 
-The optional service has separate `install-service.bat` and `uninstall-service.bat` helpers. Service management requests its own Windows administrator approval; `launch.bat` and the desktop remain unelevated. Uninstall the service through **Safety & privacy** before uninstalling the desktop. See [service management and trust boundaries](docs/service.md).
+The server currently exposes two read-only tools:
 
-## Networking baselines
+- <code>get_current_constraints</code> returns the app's safety and benchmark defaults.
+- <code>get_candidate_catalog</code> reports that no setting change is enabled.
 
-Open **Network tests**, select **Connection test**, and choose what to check: **Ping (response time)**, **Opening a connection**, or **Finding a website (DNS)**. Ping is selected initially: review the named servers and time allowance, then press **Start test**. No traffic runs until you start. The results explain each measurement and show successful checks per server; expand **Technical details** for raw statistics. Use **Save report** for a readable HTML report or **Export raw data (JSON)** for the raw data.
+The intended workflow is for an AI client to review benchmark evidence and propose a typed change. The user approves a bounded trial, and the Windows service saves the exact original settings, applies the approved candidate temporarily, and verifies restoration or a separate decision to keep it. The AI client would never receive arbitrary shell, registry, or network-setting access. Today, the MCP server stops at capability discovery. Run benchmarks from the desktop.
 
-**Advanced settings** contains sample counts, time limits, and custom destinations. TCP/DNS targets use numeric `IP:port` addresses; ICMP targets use numeric IP addresses without a port. IPv6 link-local echo targets require a numeric interface scope, such as `fe80::1%12`. Starting a baseline sends only the selected bounded probes. Default public resolver addresses do not represent every internet route. TCP and ICMP do not measure DNS lookup performance.
+## What a fork needs to finish
 
-ICMP reports Windows' whole-millisecond RTT separately from TCP connect time and API call duration. Raw zero RTT is displayed as `<1 ms`. Timeouts, IP errors, system errors, and invalid replies remain distinct; timeout percentage is unavailable if non-timeout errors prevent a clean estimate. ICMP may be filtered or rate-limited and is not application packet loss. Automatic optimization remains unfinished. No game selection, game launch, or in-game telemetry is required.
+1. **Connect MCP proposals to the app.** Expose reviewed benchmark evidence and a typed proposal interface. Show the proposed change and its scope in the desktop, then require explicit, revocable approval before the service can act.
+2. **Finish and verify recovery before turning on changes.** The repo contains scoped MTU trial and recovery code for a separate Windows lab. Wire the production service to verify a durable backup of the exact original values, adapter GUID, and OS and driver context before applying a candidate. Preserve automatic versus static DNS and addressing. Test offline recovery and exact readback after cancellation, a crash, and a reboot on real adapters.
+3. **Prove the optimizer can make a reliable decision.** Complete provider eligibility and traffic budgets, stable-route and workload checks, sustained load testing, and regression guards. Use repeated comparable benchmarks to show a meaningful improvement, and offer **Keep** or **Revert** with an honest inconclusive outcome.
+4. **Validate and package the finished release.** Exercise Ethernet, Wi-Fi, IPv4 and IPv6, supported Windows versions, upgrades, and least-privilege service accounts. Finish optional AI provider controls, scheduling, and progress estimates as needed. Sign the installer for distribution.
 
-Connection tests also save Windows' selected local routes before and after measurements. A short results note reports matching, changed, or unavailable route evidence. Matching local routes do not establish a stable internet path or complete experiment environment. Older reports have no route evidence.
+Start with [the MCP server](crates/core/src/mcp.rs), [the Tauri command layer](src-tauri/src/main.rs), [the experiment code](crates/service/src/experiment), and [the Windows service](crates/service). The packaged service is read-only. Exported diagnostic snapshots are not automatic restore points.
 
-New raw route records also preserve [adapter-wide traffic and error counters](docs/routing.md#adapter-statistics), reported link speeds, and capture timing. These include other applications' traffic and do not measure end-to-end capacity or application packet loss. Changing traffic counters do not make the route note report a changed route.
+## Data and license
 
-DNS benchmarks send the chosen query name directly to each resolver over UDP with TCP fallback. Successful lookup timing, negative answers, timeouts, and system errors remain separate. Resolver cache state is unknown, and AD is resolver-reported rather than independently validated DNSSEC. Windows DNS settings stay unchanged. See [DNS behavior and limitations](docs/dns.md).
+The app keeps history and snapshots in <code>%LOCALAPPDATA%\estrogen-ping-patch</code>. Starting a benchmark sends test traffic to the selected destinations. Exports can contain IP addresses and adapter details, so review them before sharing.
 
-Under **Network tests**, choose **Speed test**, review **Test size**, the providers and data limit, then press **Start speed test**. The default Quick test requests 16 MiB down and 4 MiB up per provider, about 21 MB of payload in total. The four stages measure responsiveness before downloading, during download, during upload, and afterward. Results show download/upload speed in Mbps and a side-by-side response-time table in ms. **Advanced settings** exposes custom providers, exact payload sizes, parallel streams, and probe targets.
-
-The form supports Cloudflare's documented transfer endpoints plus an optional user-owned server, with one to four parallel HTTP/1.1 streams. Starting explicitly sends synthetic traffic and shares your IP with selected providers. Payload and time limits are enforced, and raw stream outcomes, peer addresses, and concurrent TCP/ICMP samples are saved separately from unloaded baselines. Goodput includes connection setup and server time; it is not a link-capacity estimate or the provider website score. Short transfers may provide insufficient concurrent samples, and saturation is not guaranteed. See [providers and methodology](docs/providers.md) and the [owned-server protocol](docs/transfer-protocol.md). Independent public discovery, NDT7/iperf3, sustained/bidirectional testing, utilization, and repeated-session comparisons remain unfinished.
-
-Application database version six supports separate packet checks and load sessions while retaining earlier baseline history and configuration snapshots. Older previews refuse this newer database. Use the current application to read it; do not downgrade the database version manually. The dedicated service journal has its own independent schema.
-
-Under **Network tests**, choose **Large packet check** to investigate whether larger IPv4 requests can reach one destination. It compares small and large requests, keeps timeouts inconclusive, and saves native route and adapter evidence. It never changes MTU or enables optimization. See [packet-size diagnosis](docs/packet-size.md).
-
-## Privacy and safety
-
-- No telemetry, advertising, or automatic cloud inference.
-- No network measurement traffic until the user starts a connection test, speed test, or packet check.
-- AI is disabled with a zero cloud budget. MCP exposes an explicit read-only tool allowlist.
-- Inventory and raw measurements are stored in `%LOCALAPPDATA%/estrogen-ping-patch`, outside the source checkout.
-- Use `.env.example` as documentation only. No `.env` loader is installed and no credentials are required.
-- JSON and HTML exports may contain endpoint addresses; JSON connection-test and packet-check exports also include local route, source-address, and adapter identifiers. Review exports before sharing.
-
-## Documentation
-
-- [Setup and troubleshooting](docs/setup.md)
-- [Architecture and feasibility](docs/architecture.md)
-- [Security and threat model](docs/security.md)
-- [Development and acceptance tracking](docs/development.md)
-- [Candidate registry](docs/candidates.md)
-- [Network settings backups and recovery requirements](docs/backups.md)
-- [Dedicated Windows service](docs/service.md)
-- [Operation authorization](docs/authorization.md)
-- [Settings-command recovery barrier](docs/mutators.md)
-- [Experiment watchdog](docs/watchdog.md)
-- [Automatic temporary trials](docs/automatic-trials.md)
-- [Durable repeated trials](docs/repeated-trials.md)
-- [Repeated-experiment traffic budgets](docs/traffic-budgets.md)
-- [Repeated-session comparisons](docs/comparisons.md)
-- [Local route evidence](docs/routing.md)
-- [IPv4 packet-size diagnosis](docs/packet-size.md)
-- [Research sources](docs/research.md)
-- [Direct DNS benchmarks](docs/dns.md)
-- [Transfer providers and methodology](docs/providers.md)
-- [User-owned transfer protocol](docs/transfer-protocol.md)
-
-## License
-
-MIT, selected by the project owner. See [LICENSE](LICENSE). Private repository visibility and software licensing are independent.
-
-Interface icons use [Iconoir](https://iconoir.com/), pinned through `iconoir-react`. Its [MIT notice](docs/iconoir-license.txt) is included with the Windows installer. Icons are bundled locally and do not contact an icon service.
+MIT licensed. See [LICENSE](LICENSE). The desktop bundles [Iconoir](https://iconoir.com/) icons under their [MIT notice](assets/iconoir-license.txt).
