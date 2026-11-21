@@ -38,7 +38,7 @@ Use Windows 10 or 11 x64 with Rust stable (MSVC), Node.js 24 LTS with npm 11 or 
 
 | Script | Use it to |
 | --- | --- |
-| [test.bat](test.bat) | Run the automated checks. |
+| [test.bat](test.bat) | Run the local Rust workspace, frontend, and launcher checks. |
 | [build.bat](build.bat) | Build the desktop executable at <code>target/release/estrogen-ping-patch.exe</code>. |
 | [package.bat](package.bat) | Build an unsigned installer under <code>target/release/bundle/nsis</code>. The installed app opens from the Start menu. |
 | [clean.bat](clean.bat) | Remove generated builds while preserving dependencies and local app data. |
@@ -76,7 +76,7 @@ The intended workflow is for an AI client to review benchmark evidence and propo
 ## What a fork needs to finish
 
 1. **Connect MCP proposals to the app.** Expose reviewed benchmark evidence and a typed proposal interface. Show the proposed change and its scope in the desktop, then require explicit, revocable approval before the service can act.
-2. **Finish and verify recovery before turning on changes.** The repo contains scoped MTU trial and recovery code for a separate Windows lab. Wire the production service to verify a durable backup of the exact original values, adapter GUID, and OS and driver context before applying a candidate. Preserve automatic versus static DNS and addressing. Test offline recovery and exact readback after cancellation, a crash, and a reboot on real adapters.
+2. **Finish and verify recovery before turning on changes.** The Rust source contains scoped MTU trial and recovery code. Wire the production service to verify a durable backup of the exact original values, adapter GUID, and OS and driver context before applying a candidate. Preserve automatic versus static DNS and addressing. Test offline recovery and exact readback after cancellation, a crash, and a reboot on real adapters.
 3. **Prove the optimizer can make a reliable decision.** Complete provider eligibility and traffic budgets, stable-route and workload checks, sustained load testing, and regression guards. Use repeated comparable benchmarks to show a meaningful improvement, and offer **Keep** or **Revert** with an honest inconclusive outcome.
 4. **Validate and package the finished release.** Exercise Ethernet, Wi-Fi, IPv4 and IPv6, supported Windows versions, upgrades, and least-privilege service accounts. Finish optional AI provider controls, scheduling, and progress estimates as needed. Sign the installer for distribution.
 
